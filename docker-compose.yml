@@ -43,7 +43,9 @@ services:
     volumes:
       - ./config.yaml:/app/config.yaml:ro
     restart: unless-stopped
-    mem_limit: 512m
+    # Sized from the 1.5 probe: agent peaked at ~420 MiB per-turn (idle ~180); 768m
+    # is ~1.8x that peak so a heavy conversation won't OOM-kill mid-turn.
+    mem_limit: 768m
 
   signal-cli-rest-api:
     image: bbernhard/signal-cli-rest-api:latest
@@ -53,8 +55,9 @@ services:
       - signal-cli-config:/home/.local/share/signal-cli
     # No `ports:` — deliberately unpublished so the bridge stays private.
     restart: unless-stopped
-    # PLACEHOLDER: size from the task 1.5 RSS probe (JVM ~300-500 MB observed).
-    mem_limit: 600m
+    # Sized from the 1.5 probe: JVM working-set is steady at ~332 MiB; 512m is ~1.5x
+    # for GC/heap swing (was a 600m placeholder).
+    mem_limit: 512m
 
 volumes:
   tailscale-state:
