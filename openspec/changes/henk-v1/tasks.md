@@ -5,7 +5,7 @@
 - [ ] 1.1 Open ACL PR in `enhulsman/tailscale-acl-gitops`: define `tag:henk`, grant egress to `tag:server` on tcp 8080/8000 (rp5) and 9090/8089/2586 (vps), no inbound, no SSH; merge after CI passes
 - [ ] 1.2 Verify obsidian-todo-api (:8089) listens on the VPS Tailscale interface (Prometheus :9090 and ntfy :2586 are already documented dual-bound); dual-bind it (127.0.0.1 + Tailscale IP) per the VPS convention if not
 - [ ] 1.3 Mint scoped tokens: ntfy publish token (one topic), obsidian-todo-api read token, Taiga MCP token (if the server requires one); generate a pre-authorized `tag:henk` Tailscale auth key
-- [ ] 1.4 Resolve the Anthropic credential type for headless Agent SDK use (console check) and confirm credit pool tier; pin the `claude-agent-sdk` package version and confirm its allowed-tools configuration disables all built-in tools
+- [ ] 1.4 Set up the Anthropic credential for headless Agent SDK use: try `claude setup-token` (subscription OAuth — the June 2026 "separate Agent SDK credit pool" was cancelled 2026-06-15; SDK usage draws from normal subscription limits, monitor via `/usage`); fallback if OAuth is refused for SDK use: a low-budget API key from the console. Pin the `claude-agent-sdk` package version and confirm its allowed-tools configuration disables all built-in tools
 - [ ] 1.5 Feasibility probes: run signal-cli-rest-api in json-rpc mode on rp5 for ~10 min — confirm websocket receive works and record steady-state RSS to size `mem_limit`; confirm taiga-mcp (rp5:8000) serves an HTTP-based MCP transport (fallback if stdio-only: `taiga_read` uses Taiga REST read endpoints, per design D4)
 
 ## 2. Project scaffold and test harness

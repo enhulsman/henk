@@ -35,6 +35,6 @@ None — this is the project's first change; no existing specs.
 
 - New repo code: channel adapter, agent loop, tool wrappers, approval gate, Docker/compose files.
 - Homelab infrastructure: one new container stack on the chosen host; a Tailscale ACL PR for the new tag (per the "any new service port = an ACL PR" rule); a new scoped Taiga token and obsidian-todo-api token; a dedicated Signal identity (linked device or dedicated number — decided in design.md).
-- External dependencies: `signal-cli-rest-api` image, Claude Agent SDK (draws from the Agent SDK credit pool — light chat use fits; no 24/7 polling loops beyond the Signal receive channel).
+- External dependencies: `signal-cli-rest-api` image, Claude Agent SDK (draws from the normal subscription limits — the mooted separate credit pool was cancelled 2026-06-15; light chat use fits; no 24/7 polling loops beyond the Signal receive channel).
 - Docs: homelab docs need a new service entry + ACL/port updates after implementation (`/docs-update`).
 - No work/Anamata systems or credentials touched (Tier W untouched, per posture).

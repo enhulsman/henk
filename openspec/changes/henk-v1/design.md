@@ -64,7 +64,7 @@ Three read tools + notify matches the "2–3 read tools" weekend budget. `homela
 
 ### D5 — Runtime: Python + Claude Agent SDK
 
-Python with the `claude-agent-sdk` package (Anthropic's Claude Agent SDK for Python, the renamed successor of `claude-code-sdk`) and async I/O. Rationale: the adjacent homelab agent surface is already Python (taiga-mcp is FastMCP), MCP client support is first-class, and the codebase is small enough that the language choice is low-stakes. Model default: Sonnet (interactive judgment-light traffic; decision rule 3/4 of the brief), configurable via env. SDK auth via a dedicated credential in the container env — drawing on the Agent SDK credit pool; usage is bursty-interactive, which fits the pool.
+Python with the `claude-agent-sdk` package (Anthropic's Claude Agent SDK for Python, the renamed successor of `claude-code-sdk`) and async I/O. Rationale: the adjacent homelab agent surface is already Python (taiga-mcp is FastMCP), MCP client support is first-class, and the codebase is small enough that the language choice is low-stakes. Model default: Sonnet (interactive judgment-light traffic; decision rule 3/4 of the brief), configurable via env. SDK auth via a dedicated credential in the container env. Verified 2026-07-20: the reported "separate Agent SDK credit pool" was cancelled by Anthropic on 2026-06-15 — SDK/headless usage draws from the normal subscription limits. Auth path: `claude setup-token` OAuth (personal use of own plan), with a low-budget API key as fallback (task 1.4).
 
 The SDK ships built-in host-touching tools (Bash, file read/write, web); these MUST be disabled via its allowed/disallowed-tools options so the session exposes exactly the four Henk tools (spec: agent-core). The agent-core tests assert this configuration; task 1.4 pins the package version and confirms the mechanism.
 
@@ -82,7 +82,7 @@ The SDK ships built-in host-touching tools (Bash, file read/write, web); these M
 ## Risks / Trade-offs
 
 - [Prometheus/todo-api not Tailscale-bound on VPS] → verified early in implementation; dual-bind (127.0.0.1 + Tailscale IP) via the established VPS convention if needed. Small, reversible change.
-- [Agent SDK credit pool tier unknown (brief §8)] → v1 is interactive-only and light; check the console during the first week; if the pool is tight, drop model to Haiku via config.
+- [Henk's SDK usage shares the subscription's normal limits with interactive Claude Code work] → v1 is interactive-only and light; watch `/usage` during the first week; if it crowds the allowance, drop model to Haiku via config or move Henk to a spend-capped API key.
 - [signal-cli-rest-api JVM memory on Pi5] → ~300–500 MB against multi-GB headroom; set a compose `mem_limit` so a leak can't squeeze DNS. Pi5 remains primary DNS — the limit is the blast-radius control.
 - [Prompt injection via tool outputs (Gatus/Taiga/todo content is semi-trusted)] → the trifecta is cut structurally: even a fully hijacked agent can only read homelab state and message the owner/its own ntfy topic; no mutations exist, no other recipients are reachable. Residual risk accepted for v1.
 - [Dedicated number acquisition friction] → owner-provided prepaid/VoIP number; registration is a one-time manual step in the deploy runbook.
@@ -95,4 +95,4 @@ Greenfield — no migration. Deploy order: ACL PR (`tag:henk` + grants) → veri
 ## Open Questions
 
 - Which number source for Henk's Signal identity (prepaid SIM vs VoIP provider)? Owner decision at registration time; does not block implementation.
-- Exact Anthropic credential type for headless Agent SDK use under the work subscription (OAuth token vs API key from the credit pool) — resolve against the console during setup (brief §8 open question; affects one env var, not the design).
+- Exact Anthropic credential type for headless Agent SDK use under the work subscription — narrowed 2026-07-20: no separate credit pool exists (cancelled 2026-06-15); try subscription OAuth via `claude setup-token`, fall back to a spend-capped API key (task 1.4; affects one env var, not the design).
