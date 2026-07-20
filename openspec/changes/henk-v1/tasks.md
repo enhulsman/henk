@@ -55,5 +55,5 @@
 ## 6. Wrap-up
 
 - [x] 6.1 README: architecture sketch (mermaid), config reference, tool table, local-dev, deploy + Signal registration runbook, deploy-verify checklist, rollback, cost note
-- [ ] 6.2 `/docs-update`: homelab docs entry (service page, ports, ACL tag), present diff for review
+- [x] 6.2 `/docs-update`: homelab docs — DONE 2026-07-20 (commit `df8f12b` in homelab-docs-site). Henk Applications page + section; `tag:henk` ACL tier + Grant 6 in security.md + index.mdx; VPS enablers in vps.md (obsidian-todo-api tailnet dual-bind, ntfy write-only `henk` user / `homie-henk` topic); pi5 stack (3 containers) + DOCKER-USER egress + cgroup notes; DOCKER-USER cross-ref in troubleshooting.md; signal-cli-config backup gap flagged. Fact-gathered from planning/apply/deploy sessions (cclog) + repo, and scrutinizer-verified (all claims cross-checked → APPROVED).
 - [ ] 6.3 Watch Agent SDK credit pool usage for the first days; drop model to Haiku via config if tight
