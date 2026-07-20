@@ -27,6 +27,14 @@ built on the **Claude Agent SDK**, wired to existing homelab tools.
 OpenSpec project: `/opsx:propose` → `/scrutinize` to APPROVED → TDD from spec
 scenarios → implement in a fresh session → `/opsx:sync` + `/opsx:archive`.
 
+## Channel (user preference, 2026-07-20)
+
+**Signal-first** (FOSS/security stance; user plans to switch to Molly, a Signal client
+fork — so Henk lands natively in their daily messenger). Implement via a containerized
+signal-cli bridge (e.g. signal-cli-rest-api) as a linked device or dedicated number.
+Spec the channel layer as a thin, swappable adapter so a Telegram adapter can be added
+later without touching agent logic.
+
 ## Candidate first tools (spec decides final v1 set)
 
 `homelab-health` / `homelab-dns-check` (read-only CLIs in `~/.claude-config/bin/`),
