@@ -39,6 +39,17 @@ def test_group_message_ignored_and_logged(caplog):
     assert any("group" in r.message for r in caplog.records)
 
 
+def test_empty_sender_never_matches_owner():
+    # A senderless envelope must never be treated as the owner (fail-closed).
+    allow = AllowlistFilter(OWNER)
+    assert allow.allows(inbound("hi", sender="")) is False
+
+
+def test_empty_owner_id_refused_at_construction():
+    with pytest.raises(ValueError):
+        AllowlistFilter("")
+
+
 # --- Signal transport via the bridge -------------------------------------
 
 
@@ -128,6 +139,45 @@ async def test_send_retries_then_gives_up_without_crashing():
     )
     # Should not raise even though every attempt fails.
     await adapter.send("hi")
+
+
+async def test_send_failure_is_surfaced_not_silently_truncated():
+    async def nosleep(_):
+        return None
+
+    class PartialBridge:
+        """Fails the first N send calls, then succeeds."""
+
+        def __init__(self, fail_first):
+            self.fail_first = fail_first
+            self.calls = 0
+            self.sends = []
+
+        async def receive(self):
+            if False:
+                yield {}
+
+        async def send(self, recipient, text):
+            self.calls += 1
+            if self.calls <= self.fail_first:
+                raise SignalBridgeError("temp fail")
+            self.sends.append((recipient, text))
+
+    # 50 chars at safe_length 30 => two chunks. The first chunk's 3 attempts all
+    # fail; the follow-up delivery-failure marker then succeeds.
+    bridge = PartialBridge(fail_first=3)
+    adapter = SignalAdapter(
+        bridge,
+        account="+3",
+        owner=OWNER,
+        sleep=nosleep,
+        max_send_attempts=3,
+        safe_length=30,
+    )
+    await adapter.send("a" * 50)
+
+    assert len(bridge.sends) == 1  # the second chunk was NOT sent out of order
+    assert "could not be delivered" in bridge.sends[0][1]  # owner is told
 
 
 # --- Swappable channel-adapter contract (encapsulation) -------------------

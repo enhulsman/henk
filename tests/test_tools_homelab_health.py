@@ -101,5 +101,21 @@ async def test_prometheus_unreachable_still_returns_gatus():
     assert "Prometheus: source unreachable" in result.content
 
 
+async def test_prometheus_partial_data_is_kept_not_discarded():
+    # The first PromQL query (memory) succeeds; a later one fails. The real
+    # memory data must still be reported alongside the unreachable note.
+    def handler(request):
+        if request.url.path == "/api/v1/endpoints/statuses":
+            return httpx.Response(200, json=_gatus(all_up=True))
+        query = request.url.params["query"]
+        if "MemAvailable" in query:
+            return httpx.Response(200, json=_prom_value(query, 40, 50, 1.0))
+        raise httpx.ConnectError("refused", request=request)
+
+    result = await _make_tool(handler)._run()
+    assert "rp5:9100" in result.content  # partial (memory) data retained
+    assert "Prometheus: source unreachable" in result.content  # failure surfaced
+
+
 def test_classification_is_read_only():
     assert HomelabHealthTool.tool_class is ToolClass.READ_ONLY

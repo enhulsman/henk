@@ -14,7 +14,7 @@ dependencies = [
 # install and out of the test import path: agent-core is exercised with the SDK
 # mocked (task 2.4), and the real wrapper imports this lazily.
 runtime = [
-    "claude-agent-sdk==0.1.0",
+    "claude-agent-sdk==0.2.123",
     "websockets>=13.0",
 ]
 

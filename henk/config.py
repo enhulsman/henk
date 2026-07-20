@@ -107,6 +107,12 @@ class Config:
                 raise ConfigError(f"missing required key {name}.{key}")
             return sec[key]
 
+        def require_nonempty(sec: Mapping[str, Any], key: str, name: str) -> str:
+            value = require(sec, key, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ConfigError(f"{name}.{key} must be a non-empty string")
+            return value
+
         owner_sec = section("owner")
         signal_sec = section("signal")
         agent_sec = raw.get("agent", {}) or {}
@@ -126,7 +132,7 @@ class Config:
             raise ConfigError("missing endpoints.ntfy")
 
         return cls(
-            owner=OwnerConfig(id=require(owner_sec, "id", "owner")),
+            owner=OwnerConfig(id=require_nonempty(owner_sec, "id", "owner")),
             agent=AgentConfig(
                 model=agent_sec.get("model", AgentConfig.model),
                 idle_timeout_seconds=int(
@@ -140,8 +146,8 @@ class Config:
                 system_prompt=agent_sec.get("system_prompt", AgentConfig.system_prompt),
             ),
             signal=SignalConfig(
-                bridge_url=require(signal_sec, "bridge_url", "signal"),
-                account=require(signal_sec, "account", "signal"),
+                bridge_url=require_nonempty(signal_sec, "bridge_url", "signal"),
+                account=require_nonempty(signal_sec, "account", "signal"),
                 safe_length=int(signal_sec.get("safe_length", 2000)),
             ),
             gatus=endpoint("gatus"),

@@ -72,11 +72,14 @@ class SignalAdapter:
         while True:
             try:
                 async for envelope in self._bridge.receive():
-                    attempt = 0  # healthy traffic resets backoff
                     message = self._convert(envelope)
                     if message is not None:
                         yield message
             except SignalBridgeError as exc:
+                # Grow the backoff per consecutive error. We deliberately do NOT
+                # reset on every yielded envelope: a bridge that flaps (one
+                # message, then drops, repeatedly) would otherwise hot-reconnect
+                # at the base delay forever instead of backing off.
                 delay = min(
                     self._backoff_base * (2**attempt), self._max_backoff
                 )
@@ -86,24 +89,41 @@ class SignalAdapter:
                 )
                 await self._sleep(delay)
             else:
-                # The receive stream ended cleanly; brief pause, then reconnect.
+                # The receive stream ended cleanly; reset backoff, brief pause.
+                attempt = 0
                 await self._sleep(self._backoff_base)
 
     async def send(self, text: str) -> None:
-        for chunk in split_message(text, self._safe_length):
-            await self._send_chunk(chunk)
+        chunks = split_message(text, self._safe_length)
+        for index, chunk in enumerate(chunks):
+            if not await self._send_chunk(chunk):
+                # A chunk failed permanently. Do NOT silently truncate: stop
+                # (later chunks would arrive out of order) and make a best-effort
+                # attempt to tell the owner the reply was cut off.
+                remaining = len(chunks) - index
+                logger.error(
+                    "send failed on chunk %d/%d; %d chunk(s) undelivered",
+                    index + 1,
+                    len(chunks),
+                    remaining,
+                )
+                await self._send_chunk(
+                    "[⚠ part of this reply could not be delivered]"
+                )
+                return
 
-    async def _send_chunk(self, chunk: str) -> None:
+    async def _send_chunk(self, chunk: str) -> bool:
+        """Send one chunk with backoff. Returns True if delivered, False if given up."""
         attempt = 0
         while True:
             try:
                 await self._bridge.send(self._owner, chunk)
-                return
+                return True
             except SignalBridgeError as exc:
                 attempt += 1
                 if attempt >= self._max_send_attempts:
                     logger.error("giving up sending after %d attempts: %s", attempt, exc)
-                    return
+                    return False
                 delay = min(
                     self._backoff_base * (2 ** (attempt - 1)), self._max_backoff
                 )
@@ -123,6 +143,12 @@ class SignalAdapter:
         body = data.get("message")
         if not body:
             return None
+        # DEPLOY-VERIFY (task 1.5/5.3): which identity Signal actually reports for
+        # the owner (UUID vs E.164 number) must be confirmed against a real
+        # envelope and matched to config `owner.id`, or the allowlist silently
+        # drops every owner message. We prefer the stable UUID; do NOT loosen the
+        # match to "either field" — that widens the allowlist. Set owner.id to
+        # whatever this field emits, verified by the owner-accept smoke test.
         sender = env.get("sourceUuid") or env.get("source") or ""
         raw_ts = data.get("timestamp") or env.get("timestamp") or 0
         timestamp = float(raw_ts) / 1000.0 if raw_ts else 0.0

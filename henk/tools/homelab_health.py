@@ -62,6 +62,8 @@ class HomelabHealthTool(Tool):
         endpoints, gatus_err = await self._fetch_gatus()
         if gatus_err is not None:
             lines.append(f"Gatus: source unreachable ({gatus_err})")
+        elif not endpoints:
+            lines.append("Gatus: reachable but reported no endpoints")
         else:
             down = [name for name, up in endpoints if not up]
             if down:
@@ -73,16 +75,17 @@ class HomelabHealthTool(Tool):
                 lines.append(f"Gatus: all {len(endpoints)} endpoints healthy")
 
         nodes, prom_err = await self._fetch_prometheus()
+        # Render whatever node data we collected, even if a later query failed —
+        # partial real data beats discarding it. Any failure is surfaced too.
+        for node, metrics in sorted(nodes.items()):
+            problems = self._node_problems(metrics)
+            if problems:
+                degraded = True
+                lines.append(f"{node}: DEGRADED — {'; '.join(problems)}")
+            else:
+                lines.append(f"{node}: {self._format_metrics(metrics)}")
         if prom_err is not None:
             lines.append(f"Prometheus: source unreachable ({prom_err})")
-        else:
-            for node, metrics in sorted(nodes.items()):
-                problems = self._node_problems(metrics)
-                if problems:
-                    degraded = True
-                    lines.append(f"{node}: DEGRADED — {'; '.join(problems)}")
-                else:
-                    lines.append(f"{node}: {self._format_metrics(metrics)}")
 
         status = "DEGRADED" if degraded else "healthy"
         summary = f"Homelab status: {status}\n" + "\n".join(lines)

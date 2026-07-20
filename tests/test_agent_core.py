@@ -10,7 +10,6 @@ from henk.agent.core import AgentCore, RESET_CONFIRMATION
 from henk.agent.sdk_session import (
     BUILTIN_HOST_TOOLS,
     build_closed_toolset_config,
-    mcp_tool_name,
 )
 from henk.tools.base import Tool, ToolClass, ToolRegistry
 from tests.conftest import FakeChannel, FakeSessionFactory, make_clock
@@ -53,21 +52,25 @@ async def test_turn_failure_replies_honestly_and_stays_alive():
 # --- Closed, explicit toolset ---------------------------------------------
 
 
-def test_closed_toolset_exposes_only_registered_tools():
+def test_closed_toolset_auto_approves_nothing():
+    # Nothing in allowed_tools => every tool call must go through the
+    # can_use_tool callback (auto-approved tools would bypass the gate).
     registry = ToolRegistry()
     registry.register(_ReadTool())
     cfg = build_closed_toolset_config(registry, model="m", system_prompt="p")
-    assert cfg.allowed_tools == (mcp_tool_name("read_thing"),)
-    assert cfg.exposes_builtin() is False
+    assert cfg.allowed_tools == ()
+    assert cfg.auto_approves_any() is False
+    assert cfg.permission_mode == "default"
 
 
-def test_closed_toolset_disables_all_host_builtins():
+def test_closed_toolset_strips_all_host_builtins():
     registry = ToolRegistry()
     registry.register(_ReadTool())
     cfg = build_closed_toolset_config(registry, model="m", system_prompt="p")
     for builtin in BUILTIN_HOST_TOOLS:
         assert builtin in cfg.disallowed_tools
-        assert builtin not in cfg.allowed_tools
+    # The agent-spawning tool is explicitly stripped, not just host I/O tools.
+    assert "Task" in cfg.disallowed_tools
 
 
 # --- Conversation continuity and reset ------------------------------------

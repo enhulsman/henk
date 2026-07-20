@@ -40,9 +40,9 @@ def test_missing_required_section_raises():
         Config.from_dict({"owner": {"id": "x"}}, env={})
 
 
-def test_missing_owner_id_raises():
-    raw = {
-        "owner": {},
+def _minimal_raw(owner_id):
+    return {
+        "owner": {"id": owner_id},
         "signal": {"bridge_url": "http://b", "account": "+1"},
         "endpoints": {
             "gatus": {"base_url": "http://g"},
@@ -52,5 +52,18 @@ def test_missing_owner_id_raises():
             "ntfy": {"base_url": "http://n", "topic": "henk"},
         },
     }
+
+
+def test_missing_owner_id_raises():
+    raw = _minimal_raw("+1")
+    del raw["owner"]["id"]
     with pytest.raises(ConfigError):
         Config.from_dict(raw, env={})
+
+
+def test_empty_owner_id_rejected_fail_closed():
+    # An empty owner id would open a fail-open hole in the allowlist.
+    with pytest.raises(ConfigError):
+        Config.from_dict(_minimal_raw(""), env={})
+    with pytest.raises(ConfigError):
+        Config.from_dict(_minimal_raw("   "), env={})

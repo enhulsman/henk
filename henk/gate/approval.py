@@ -102,7 +102,7 @@ class ApprovalGate:
             )
 
         reference = f"appr-{next(self._refs)}"
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         future: "asyncio.Future[ApprovalOutcome]" = loop.create_future()
         self._pending = _Pending(tool.name, dict(arguments), reference, future)
         logger.info(
@@ -125,7 +125,10 @@ class ApprovalGate:
         message must then be processed as a normal new turn — it is not swallowed.
         """
         if self._pending is None:
-            raise GateBusyError("deliver() called with no pending approval")
+            # Race: the approval resolved (e.g. timed out) between the caller's
+            # has_pending() check and here. Per spec, a late reply is just a
+            # normal message — treat it as unrelated and re-queue, never crash.
+            return Classification.UNRELATED, True
 
         classification = self.classify(text)
         future = self._pending.future
