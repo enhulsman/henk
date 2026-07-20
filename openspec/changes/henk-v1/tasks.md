@@ -2,10 +2,14 @@
 
 ## 1. Prerequisites (infra, outside this repo)
 
-- [ ] 1.1 Open ACL PR in `enhulsman/tailscale-acl-gitops`: define `tag:henk`, grant egress to `tag:server` on tcp 8080/8000 (rp5) and 9090/8089/2586 (vps), no inbound, no SSH; merge after CI passes
-- [ ] 1.2 Verify obsidian-todo-api (:8089) listens on the VPS Tailscale interface (Prometheus :9090 and ntfy :2586 are already documented dual-bound); dual-bind it (127.0.0.1 + Tailscale IP) per the VPS convention if not
+- [x] 1.1 ACL PR #8 (`enhulsman/tailscale-acl-gitops`) MERGED: `tag:henk` egress to `tag:server` on tcp 8080/9090/8089/2586 (8000/taiga dropped — taiga_read deferred), no inbound, no SSH; guardrail tests assert exactly those ports + deny 8000/22/53/5432.
+- [x] 1.2 obsidian-todo-api (:8089) was 127.0.0.1-only. Dual-bound via an `API_HOST=0.0.0.0` systemd drop-in + a UFW rule scoping 8089 to the tailnet (v4+v6). It's a systemd service, so UFW governs it: default-deny blocks the public NIC, loopback stays served for the Cloudflare tunnel. Verified `LISTEN 0.0.0.0:8089`.
 - [ ] 1.3 Mint scoped tokens: ntfy publish token (one topic), obsidian-todo-api read token, Taiga MCP token (if the server requires one); generate a pre-authorized `tag:henk` Tailscale auth key
-- [ ] 1.4 Set up the Anthropic credential for headless Agent SDK use: try `claude setup-token` (subscription OAuth — the June 2026 "separate Agent SDK credit pool" was cancelled 2026-06-15; SDK usage draws from normal subscription limits, monitor via `/usage`); fallback if OAuth is refused for SDK use: a low-budget API key from the console. Pin the `claude-agent-sdk` package version and confirm its allowed-tools configuration disables all built-in tools
+  - [x] ntfy: write-only user `henk`, single topic `homie-henk`, token minted → `.env` NTFY_TOKEN; `config.yaml` topic set. (Topic-secrecy is moot: instance is auth-default-access deny-all.)
+  - [x] obsidian-todo-api: has NO caller auth → no token needed; access gated by the tag:henk ACL + read-only GET.
+  - [~] Taiga MCP token: N/A for v1 (taiga_read deferred to v1.1).
+  - [x] Tailscale `tag:henk` pre-authorized auth key: generated → `.env` `TS_AUTHKEY`.
+- [x] 1.4 Anthropic credential set: `claude setup-token` OAuth → `CLAUDE_CODE_OAUTH_TOKEN` in rp5 `.env` (regenerated clean, no whitespace). `claude-agent-sdk` pinned `==0.2.123`. Built-ins disabled structurally via the default-deny `can_use_tool` decision (see 3.4), not just allowed-tools config.
 - [ ] 1.5 Feasibility probes: run signal-cli-rest-api in json-rpc mode on rp5 for ~10 min — confirm websocket receive works and record steady-state RSS to size `mem_limit`; confirm taiga-mcp (rp5:8000) serves an HTTP-based MCP transport (fallback if stdio-only: `taiga_read` uses Taiga REST read endpoints, per design D4)
 
 ## 2. Project scaffold and test harness

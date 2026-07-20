@@ -29,7 +29,10 @@ services:
     mem_limit: 128m
 
   henk:
-    build: .
+    build:
+      context: .
+      network: host # build sandbox uses the host net stack (rp5's default bridge
+        # can't reach PyPI during RUN steps, though image pulls work)
     depends_on:
       - tailscale
       - signal-cli-rest-api
