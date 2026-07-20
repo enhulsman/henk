@@ -34,6 +34,18 @@ async def test_todos_fetched():
     assert "pay rent" in result.content
 
 
+async def test_requests_api_todos_path():
+    # Deploy 2026-07-20: obsidian-todo-api serves todos at /api/todos, not /todos
+    # (a /todos GET 404s). Pin the path so the default can't silently regress.
+    def handler(request):
+        assert request.url.path == "/api/todos"
+        return httpx.Response(200, json={"todos": []})
+
+    tool, calls = _make_tool(handler)
+    assert (await tool._run()).ok
+    assert calls[0].url.path == "/api/todos"
+
+
 async def test_only_get_method_used():
     def handler(request):
         assert request.method == "GET"

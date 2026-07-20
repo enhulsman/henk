@@ -23,7 +23,7 @@ class TodoReadTool(Tool):
         *,
         base_url: str,
         token: str = "",
-        path: str = "/todos",
+        path: str = "/api/todos",
         timeout: float = 10.0,
     ) -> None:
         self._client = client
