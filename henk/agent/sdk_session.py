@@ -4,10 +4,15 @@ The security-critical decision logic lives in ``henk.agent.permission`` and is
 unit-tested there without the SDK. This module translates that decision into the
 SDK's ``can_use_tool`` callback and assembles ``ClaudeAgentOptions`` so that:
 
-- all host-touching built-ins are stripped from context (``disallowed_tools``);
-- **nothing is auto-approved** (``allowed_tools`` empty) — auto-approved tools
-  would skip ``can_use_tool`` and bypass the gate, so we never use it;
-- ``permission_mode="default"`` keeps the callback in the loop for every call;
+- a ``PreToolUse`` hook is the real closed-toolset boundary: it default-denies
+  every tool that is not ``mcp__henk__*`` and runs *before* the SDK's permission
+  chain, so it cannot be bypassed (deploy 2026-07-20 proved ``can_use_tool`` is
+  NOT universal — ``ToolSearch``/``TaskCreate`` built-ins executed without it);
+- built-ins are also stripped from context (``disallowed_tools``) as hygiene;
+- ``setting_sources=[]`` + ``strict_mcp_config`` stop settings files / stray MCP
+  config from auto-approving tools behind our back;
+- ``can_use_tool`` (``allowed_tools`` empty) remains as the read/mutate + approval
+  decision for the Henk tools that pass the hook;
 - Henk's tools are exposed as an in-process MCP server.
 
 ``build_closed_toolset_config`` and the permission wiring are pure and testable;
@@ -21,7 +26,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from henk.agent.permission import decide_tool_permission
+from henk.agent.permission import decide_tool_permission, pretooluse_block_decision
 from henk.gate.approval import ApprovalGate
 from henk.tools.base import ToolRegistry
 
@@ -30,11 +35,14 @@ logger = logging.getLogger("henk.agent.sdk_session")
 #: In-process MCP server name Henk tools are exposed under.
 MCP_SERVER_NAME = "henk"
 
-#: Host-touching / agent-spawning built-ins the SDK ships. Listed in
-#: ``disallowed_tools`` to strip them from context. This is context hygiene, NOT
-#: the security boundary — the boundary is the default-deny permission callback,
-#: which denies anything not in the registry even if the SDK adds a new built-in
-#: not on this list.
+#: Built-ins the SDK/bundled-CLI ships. Listed in ``disallowed_tools`` to strip
+#: them from the model's context (hygiene: the model won't see or attempt them).
+#: This is NOT the security boundary — deploy 2026-07-20 proved ``can_use_tool``
+#: is bypassable and that built-ins NOT on this list (``ToolSearch``,
+#: ``TaskCreate``) executed ungated. The real boundary is the ``PreToolUse`` hook
+#: (:func:`~henk.agent.permission.pretooluse_block_decision`), which default-denies
+#: everything outside ``mcp__henk__*`` and cannot be bypassed. This list is kept
+#: broad so the model is not even tempted by tools the hook would block anyway.
 BUILTIN_HOST_TOOLS = (
     "Bash",
     "BashOutput",
@@ -49,6 +57,18 @@ BUILTIN_HOST_TOOLS = (
     "WebFetch",
     "WebSearch",
     "Task",
+    # Deploy 2026-07-20: these reached the model ungated and must be stripped too.
+    "ToolSearch",
+    "TaskCreate",
+    "TaskUpdate",
+    "TaskList",
+    "TaskGet",
+    "TaskOutput",
+    "TaskStop",
+    "TodoWrite",
+    "Skill",
+    "SlashCommand",
+    "ExitPlanMode",
 )
 
 
@@ -130,6 +150,26 @@ class SdkSessionFactory:
 
         return can_use_tool
 
+    def _build_pretooluse_hook(self):  # pragma: no cover - exercised at deploy
+        """Return the ``PreToolUse`` hook enforcing the closed toolset.
+
+        This is the actual, unbypassable security boundary. It runs before the
+        SDK's permission chain, so — unlike ``can_use_tool`` — it cannot be
+        skipped by auto-approved built-ins or settings-file allow rules. Non-Henk
+        tools are denied here; Henk tools return an empty output to defer to the
+        normal flow (``can_use_tool`` → the approval gate).
+        """
+
+        async def pre_tool_use(input_data, tool_use_id, context):
+            name = (input_data or {}).get("tool_name", "")
+            decision = pretooluse_block_decision(name)
+            if decision is not None:
+                logger.warning("closed-toolset hook blocked non-Henk tool: %s", name)
+                return decision
+            return {}
+
+        return pre_tool_use
+
     def _adapt_tool(self, henk_tool):  # pragma: no cover - deploy path
         """Wrap a Henk Tool as an in-process SDK MCP tool."""
         from claude_agent_sdk import tool as sdk_tool
@@ -157,7 +197,7 @@ class SdkSessionFactory:
         and ClaudeAgentOptions field names against installed 0.2.123, and smoke-test
         that a built-in (e.g. Bash) is genuinely uncallable.
         """
-        from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+        from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
 
         options = ClaudeAgentOptions(
             model=self._config.model,
@@ -167,6 +207,18 @@ class SdkSessionFactory:
             disallowed_tools=list(self._config.disallowed_tools),
             permission_mode=self._config.permission_mode,
             can_use_tool=self._build_can_use_tool(),
+            # The actual closed-toolset boundary (see _build_pretooluse_hook):
+            # unbypassable, unlike can_use_tool.
+            hooks={
+                "PreToolUse": [
+                    HookMatcher(matcher="*", hooks=[self._build_pretooluse_hook()])
+                ]
+            },
+            # Ignore user/project/local settings files so no settings.json allow
+            # rule can auto-approve a tool and skip our controls.
+            setting_sources=[],
+            # Only the explicitly-configured in-process MCP server.
+            strict_mcp_config=True,
         )
         return _SdkAgentSession(ClaudeSDKClient(options=options))
 

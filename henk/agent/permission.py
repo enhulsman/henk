@@ -43,6 +43,37 @@ def base_tool_name(sdk_tool_name: str) -> str:
     return sdk_tool_name
 
 
+def pretooluse_block_decision(sdk_tool_name: str) -> dict | None:
+    """Closed-toolset hard gate for the SDK ``PreToolUse`` hook.
+
+    Returns a ``deny`` hook output for any tool that is not one of Henk's
+    in-process MCP tools (``mcp__henk__*``), or ``None`` to let a Henk tool fall
+    through to the normal permission flow (``can_use_tool`` →
+    :func:`decide_tool_permission`, where read/mutate classification and the
+    approval gate apply).
+
+    Why this exists (deploy 2026-07-20): ``can_use_tool`` is NOT a universal
+    gate — the SDK skips it for tools auto-approved earlier in its permission
+    chain, and bundled-CLI built-ins (observed: ``ToolSearch``, ``TaskCreate``)
+    executed without ``can_use_tool`` ever being consulted. A ``PreToolUse`` hook
+    runs before that chain and cannot be bypassed by settings-file allow rules or
+    auto-approved built-ins, so the closed-toolset guarantee lives HERE. Keyed on
+    the ``mcp__henk__`` prefix as a strict allowlist (default-deny).
+    """
+    if sdk_tool_name.startswith(HENK_MCP_PREFIX):
+        return None
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": (
+                f"{sdk_tool_name} is not a Henk tool; blocked by the "
+                "closed-toolset hook"
+            ),
+        }
+    }
+
+
 async def decide_tool_permission(
     registry: ToolRegistry,
     gate: ApprovalGate,

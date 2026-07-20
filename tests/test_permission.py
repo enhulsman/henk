@@ -11,6 +11,7 @@ import asyncio
 from henk.agent.permission import (
     base_tool_name,
     decide_tool_permission,
+    pretooluse_block_decision,
 )
 from henk.gate.approval import ApprovalGate
 from henk.tools.base import ToolRegistry
@@ -84,3 +85,30 @@ async def test_mutating_tool_denied_on_timeout():
     )
     assert decision.allow is False
     assert "timed out" in decision.reason
+
+
+# --- PreToolUse hook (the unbypassable closed-toolset boundary) ---
+# Deploy 2026-07-20: can_use_tool was bypassed for bundled-CLI built-ins
+# (ToolSearch loaded TaskCreate's schema, TaskCreate then executed ungated). The
+# hook must hard-deny every tool outside mcp__henk__* BEFORE the permission chain.
+
+
+def test_hook_defers_henk_tools():
+    # Henk tools return None → fall through to can_use_tool / approval gate.
+    assert pretooluse_block_decision("mcp__henk__homelab_health") is None
+    assert pretooluse_block_decision("mcp__henk__notify") is None
+
+
+def test_hook_blocks_the_exact_tools_that_leaked():
+    for name in ("ToolSearch", "TaskCreate", "TaskUpdate", "TodoWrite"):
+        out = pretooluse_block_decision(name)
+        assert out is not None, f"{name} must be blocked"
+        spec = out["hookSpecificOutput"]
+        assert spec["hookEventName"] == "PreToolUse"
+        assert spec["permissionDecision"] == "deny"
+
+
+def test_hook_blocks_host_builtins_and_unknown_tools():
+    for name in ("Bash", "Read", "Write", "WebFetch", "Task", "mcp__other__x", ""):
+        out = pretooluse_block_decision(name)
+        assert out is not None and out["hookSpecificOutput"]["permissionDecision"] == "deny"
