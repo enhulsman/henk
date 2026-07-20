@@ -16,6 +16,8 @@ services:
     environment:
       - TS_AUTHKEY=${TS_AUTHKEY} # pre-authorized, tag:henk, ephemeral-off key
       - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=false # kernel networking (needs /dev/net/tun + NET_ADMIN) so
+        # containers sharing this namespace actually route over the tailnet
       - TS_EXTRA_ARGS=--advertise-tags=tag:henk
     volumes:
       - tailscale-state:/var/lib/tailscale
