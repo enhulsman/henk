@@ -23,8 +23,9 @@
 - [x] 3.4 Implement agent-core: Agent SDK session per conversation, built-in tools disabled, tool registration via the gate, message queueing, reset/idle logic, honest error replies
   - [x] session lifecycle, per-conversation reuse, message queueing, `/new` reset, idle expiry, honest error replies — implemented and tested (SDK mocked)
   - [x] closed toolset + gate as ONE default-deny `can_use_tool` decision (`henk/agent/permission.py`): unregistered/built-in tools denied, mutating tools routed through the gate — keyed on the registry so *registering* a mutating tool forces gating. No `allowed_tools` auto-approve (it would bypass the callback — confirmed against SDK 0.2.x). Unit-tested in `test_permission.py`.
-  - [ ] real `claude_agent_sdk` binding (`SdkSessionFactory.create`) + deploy smoke test that a built-in (e.g. Bash) is genuinely uncallable — deploy-gated (needs the SDK + creds); see task 1.4/5.3.
-- [x] 3.5 Composition layer (`henk/app.py`: `Dispatcher` + `App`) wiring adapter → allowlist → gate-routing → core, with an integration test (`test_app.py`) proving stranger-drop, owner-accept, and pending-approval fail-closed-then-requeue through the real path. [added post-scrutiny: the controls were previously unwired islands]
+  - [x] real `claude_agent_sdk` binding implemented (`SdkSessionFactory.create` + in-process MCP server + `can_use_tool`), lazy-imported so it stays off the test path. Marked VERIFY-AT-DEPLOY for the exact 0.2.123 client/option field names.
+  - [ ] deploy smoke test that a built-in (e.g. Bash) is genuinely uncallable in a real SDK session — deploy-gated (needs the SDK + creds); see task 1.4/5.3.
+- [x] 3.5 Composition layer (`henk/app.py`: `Dispatcher` + `App`) + production wiring (`henk/runtime.py`) + entrypoint (`henk/__main__.py`), with integration tests (`test_app.py`, `test_runtime.py`) proving stranger-drop, owner-accept, and pending-approval fail-closed-then-requeue through the real path. [added post-scrutiny: the controls were previously unwired islands]
 
 ## 4. Tools (tests first per tool, from specs/homelab-tools)
 
@@ -35,7 +36,7 @@
 
 ## 5. Containerization and deploy
 
-- [ ] 5.1 Dockerfile (non-root user) + `docker-compose.yml`: `henk` (network_mode: service:tailscale), `tailscale` sidecar, `signal-cli-rest-api` (internal network only, named volume, json-rpc mode); mem_limits on all three; `.env` mode-600
+- [x] 5.1 Dockerfile (non-root uid 10001) + `docker-compose.yml`: `henk` (network_mode: service:tailscale), `tailscale` sidecar (tag:henk), `signal-cli-rest-api` (json-rpc mode, named volume, **no published ports** — the private-bridge guarantee, since it needs outbound internet to reach Signal so an isolated network was wrong); mem_limits on all three (signal bridge = PLACEHOLDER pending the 1.5 RSS probe); `.env.example` + `.dockerignore` added; `.env` mode-600 documented in the runbook. `docker compose config` validates.
 - [ ] 5.2 Deploy to rp5 `/home/pi/Coding/henk/`; sign the new Henk tailnet node with rp5's Tailnet Lock signing key (`tailscale lock sign <node-key>`); register the dedicated Signal number (owner provides number); verify Signal state survives `compose down && up`; verify rp5's backup routine covers the Signal state volume (inspect backup config, confirm the volume path appears in a test backup run)
 - [ ] 5.3 Smoke tests on rp5: owner DM round-trip; stranger DM gets silence (needs any non-owner Signal account — family phone or throwaway signal-cli registration; if unavailable on deploy day, defer explicitly — allowlist behavior stays covered by 2.2's automated tests — and log-inspect a real stranger drop within the first week); each tool answers a real question; bridge port unreachable from host/LAN/tailnet; out-of-scope tailnet port (e.g., vps:5432) blocked
   - [ ] DEPLOY-VERIFY (M3/M4, from scrutiny): confirm the identity field Signal reports for the owner matches `owner.id` — else the allowlist silently drops every owner message (see `signal.py` DEPLOY-VERIFY); do NOT loosen the match. Capture a real group envelope and confirm `is_group` detection against it.
@@ -43,6 +44,6 @@
 
 ## 6. Wrap-up
 
-- [ ] 6.1 README: architecture sketch, config reference, deploy + Signal registration runbook, rollback
+- [x] 6.1 README: architecture sketch (mermaid), config reference, tool table, local-dev, deploy + Signal registration runbook, deploy-verify checklist, rollback, cost note
 - [ ] 6.2 `/docs-update`: homelab docs entry (service page, ports, ACL tag), present diff for review
 - [ ] 6.3 Watch Agent SDK credit pool usage for the first days; drop model to Haiku via config if tight

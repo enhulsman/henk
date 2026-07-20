@@ -114,16 +114,13 @@ class SdkSessionFactory:
     def config(self) -> ClosedToolsetConfig:
         return self._config
 
-    def _build_can_use_tool(self):
+    def _build_can_use_tool(self):  # pragma: no cover - exercised at deploy
         """Return the SDK ``can_use_tool`` callback bound to registry + gate."""
-        from claude_agent_sdk import (  # pragma: no cover - deploy path
-            PermissionResultAllow,
-            PermissionResultDeny,
-        )
+        from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 
         registry, gate = self._registry, self._gate
 
-        async def can_use_tool(tool_name, input_data, context):  # pragma: no cover
+        async def can_use_tool(tool_name, input_data, context):
             decision = await decide_tool_permission(
                 registry, gate, tool_name, input_data
             )
@@ -133,10 +130,68 @@ class SdkSessionFactory:
 
         return can_use_tool
 
+    def _adapt_tool(self, henk_tool):  # pragma: no cover - deploy path
+        """Wrap a Henk Tool as an in-process SDK MCP tool."""
+        from claude_agent_sdk import tool as sdk_tool
+
+        # VERIFY AT DEPLOY (task 1.4): confirm @tool accepts a JSON-schema dict for
+        # input_schema in 0.2.123 (the docs also show a {name: type} shorthand).
+        @sdk_tool(henk_tool.name, henk_tool.description, henk_tool.parameters)
+        async def _handler(args):
+            result = await henk_tool.run(**(args or {}))
+            text = result.content if result.ok else f"ERROR: {result.error}"
+            return {"content": [{"type": "text", "text": text}]}
+
+        return _handler
+
+    def _build_mcp_server(self):  # pragma: no cover - deploy path
+        from claude_agent_sdk import create_sdk_mcp_server
+
+        tools = [self._adapt_tool(t) for t in self._registry.tools()]
+        return create_sdk_mcp_server(name=MCP_SERVER_NAME, tools=tools)
+
     def create(self):  # pragma: no cover - requires the SDK + live credentials
-        raise NotImplementedError(
-            "Wire against claude_agent_sdk at deploy time: build the in-process "
-            "MCP server from the registry, set disallowed_tools + permission_mode "
-            "from self.config, and pass self._build_can_use_tool(). A deploy smoke "
-            "test must confirm a built-in (e.g. Bash) is uncallable. See task 1.4."
+        """Build a real Claude Agent SDK session with the closed toolset + gate.
+
+        VERIFY AT DEPLOY (task 1.4/5.3): confirm the ClaudeSDKClient method names
+        and ClaudeAgentOptions field names against installed 0.2.123, and smoke-test
+        that a built-in (e.g. Bash) is genuinely uncallable.
+        """
+        from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+
+        options = ClaudeAgentOptions(
+            model=self._config.model,
+            system_prompt=self._config.system_prompt,
+            mcp_servers={MCP_SERVER_NAME: self._build_mcp_server()},
+            allowed_tools=list(self._config.allowed_tools),  # empty by design
+            disallowed_tools=list(self._config.disallowed_tools),
+            permission_mode=self._config.permission_mode,
+            can_use_tool=self._build_can_use_tool(),
         )
+        return _SdkAgentSession(ClaudeSDKClient(options=options))
+
+
+class _SdkAgentSession:  # pragma: no cover - requires the SDK + live credentials
+    """Adapts a stateful claude_agent_sdk client to the AgentSession protocol."""
+
+    def __init__(self, client) -> None:
+        self._client = client
+        self._connected = False
+
+    async def run_turn(self, text: str) -> str:
+        if not self._connected:
+            await self._client.connect()
+            self._connected = True
+        await self._client.query(text)
+        parts: list[str] = []
+        async for message in self._client.receive_response():
+            for block in getattr(message, "content", None) or []:
+                chunk = getattr(block, "text", None)
+                if chunk:
+                    parts.append(chunk)
+        return "".join(parts).strip()
+
+    async def close(self) -> None:
+        if self._connected:
+            await self._client.disconnect()
+            self._connected = False

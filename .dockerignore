@@ -1,0 +1,11 @@
+.env
+.venv/
+.git/
+.gitignore
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+tests/
+openspec/
+uv.lock
