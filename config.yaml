@@ -34,5 +34,5 @@ endpoints:
     timeout_seconds: 10
   ntfy:
     base_url: "http://vps:2586"
-    topic: "henk"
+    topic: "homie-henk"
     timeout_seconds: 10
