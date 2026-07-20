@@ -10,24 +10,24 @@
 
 ## 2. Project scaffold and test harness
 
-- [ ] 2.1 Scaffold Python project (uv/pyproject): `henk/` package with `channel/`, `agent/`, `tools/`, `gate/` modules; pytest + async test setup; config loading (`config.yaml` + env secrets)
-- [ ] 2.2 Write channel-adapter contract tests from `specs/channel-adapter`: allowlist (owner passes, stranger silently dropped + logged, group ignored), adapter interface neutrality — against a fake transport
-- [ ] 2.3 Write approval-gate tests from `specs/approval-gate`: classification required at registration, read-only bypass, approve/deny/timeout paths, single-use argument-bound approvals — against a channel test double and a test-only mutating tool
-- [ ] 2.4 Write agent-core tests from `specs/agent-core`: closed toolset (no built-in bash/file/web tools), serial per-conversation processing, `/new` reset, idle expiry, error turn handling — with the Agent SDK mocked
+- [x] 2.1 Scaffold Python project (uv/pyproject): `henk/` package with `channel/`, `agent/`, `tools/`, `gate/` modules; pytest + async test setup; config loading (`config.yaml` + env secrets)
+- [x] 2.2 Write channel-adapter contract tests from `specs/channel-adapter`: allowlist (owner passes, stranger silently dropped + logged, group ignored), adapter interface neutrality — against a fake transport
+- [x] 2.3 Write approval-gate tests from `specs/approval-gate`: classification required at registration, read-only bypass, approve/deny/timeout paths, single-use argument-bound approvals — against a channel test double and a test-only mutating tool
+- [x] 2.4 Write agent-core tests from `specs/agent-core`: closed toolset (no built-in bash/file/web tools), serial per-conversation processing, `/new` reset, idle expiry, error turn handling — with the Agent SDK mocked
 
 ## 3. Core implementation (make 2.x tests pass)
 
-- [ ] 3.1 Implement the channel-neutral adapter interface + owner allowlist + drop logging
-- [ ] 3.2 Implement the Signal adapter against signal-cli-rest-api (json-rpc/websocket receive, send, backoff on bridge errors)
-- [ ] 3.3 Implement the approval gate (tool classification registry, inline prompt with one-time reference, approve/deny/timeout, fail-closed)
-- [ ] 3.4 Implement agent-core: Agent SDK session per conversation, built-in tools disabled, tool registration via the gate, message queueing, reset/idle logic, honest error replies
+- [x] 3.1 Implement the channel-neutral adapter interface + owner allowlist + drop logging
+- [x] 3.2 Implement the Signal adapter against signal-cli-rest-api (json-rpc/websocket receive, send, backoff on bridge errors)
+- [x] 3.3 Implement the approval gate (tool classification registry, inline prompt with one-time reference, approve/deny/timeout, fail-closed)
+- [x] 3.4 Implement agent-core: Agent SDK session per conversation, built-in tools disabled, tool registration via the gate, message queueing, reset/idle logic, honest error replies
 
 ## 4. Tools (tests first per tool, from specs/homelab-tools)
 
-- [ ] 4.1 `homelab_health`: tests (healthy/degraded/backend-unreachable against recorded Gatus+Prometheus fixtures), then implementation
-- [ ] 4.2 `taiga_read`: tests (read allowlist only, write tools absent), then MCP-client implementation against taiga-mcp
-- [ ] 4.3 `todo_read`: tests (GET-only, token used, honest failures), then implementation
-- [ ] 4.4 `notify`: tests (`[AI]` prefix mandatory, no topic/server parameter), then ntfy implementation
+- [x] 4.1 `homelab_health`: tests (healthy/degraded/backend-unreachable against recorded Gatus+Prometheus fixtures), then implementation
+- [x] 4.2 `taiga_read`: tests (read allowlist only, write tools absent), then implementation — REST read endpoints (design-D4 fallback; MCP transport is a deploy-time probe, task 1.5)
+- [x] 4.3 `todo_read`: tests (GET-only, token used, honest failures), then implementation
+- [x] 4.4 `notify`: tests (`[AI]` prefix mandatory, no topic/server parameter), then ntfy implementation
 
 ## 5. Containerization and deploy
 

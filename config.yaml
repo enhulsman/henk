@@ -1,0 +1,35 @@
+# Henk configuration — non-secret settings only. Secrets come from the
+# environment (.env, mode-600). See README / design D7.
+
+owner:
+  # Henk's owner identity as the channel reports it (Signal number or UUID).
+  id: "+31600000000"
+
+signal:
+  # Compose-internal address of signal-cli-rest-api (no published ports).
+  bridge_url: "http://signal-cli-rest-api:8080"
+  account: "+31611111111" # Henk's dedicated Signal number
+  safe_length: 2000
+
+agent:
+  model: "claude-sonnet-5"
+  idle_timeout_seconds: 3600
+  approval_timeout_seconds: 300
+
+endpoints:
+  gatus:
+    base_url: "http://rp5:8080"
+    timeout_seconds: 10
+  prometheus:
+    base_url: "http://vps:9090"
+    timeout_seconds: 10
+  taiga:
+    base_url: "http://rp5:8000"
+    timeout_seconds: 10
+  todo:
+    base_url: "http://vps:8089"
+    timeout_seconds: 10
+  ntfy:
+    base_url: "http://vps:2586"
+    topic: "henk"
+    timeout_seconds: 10
