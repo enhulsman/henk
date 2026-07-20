@@ -23,6 +23,9 @@ endpoints:
   prometheus:
     base_url: "http://vps:9090"
     timeout_seconds: 10
+  # taiga_read is deferred to v1.1 (mixed personal/work data needs a scoped
+  # Taiga account). This section is retained but NOT used by the v1 registry;
+  # base_url will point at the Taiga REST API (not the MCP) when wired.
   taiga:
     base_url: "http://rp5:8000"
     timeout_seconds: 10

@@ -75,7 +75,8 @@ def test_production_registry_has_no_mutating_tools():
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     registry = build_production_registry(Config.load(SAMPLE, env={}), client)
     assert registry.has_mutating() is False
-    assert set(registry.names()) == {"homelab_health", "taiga_read", "todo_read", "notify"}
+    # taiga_read is deferred to v1.1 (mixed personal/work Taiga data) — not in v1.
+    assert set(registry.names()) == {"homelab_health", "todo_read", "notify"}
 
 
 # --- Read-only bypass -----------------------------------------------------

@@ -29,7 +29,7 @@
 ## 4. Tools (tests first per tool, from specs/homelab-tools)
 
 - [x] 4.1 `homelab_health`: tests (healthy/degraded/backend-unreachable against recorded Gatus+Prometheus fixtures), then implementation
-- [x] 4.2 `taiga_read`: tests (read allowlist only, write tools absent), then implementation — REST read endpoints (design-D4 fallback; MCP transport is a deploy-time probe, task 1.5)
+- [~] 4.2 `taiga_read`: tool + tests implemented (REST read endpoints, read-allowlist only, write tools absent) BUT **deferred from the v1 production registry**. The rp5 Taiga instance holds mixed personal/work data; wiring it safely needs a dedicated Taiga account scoped to personal projects (server-side) + a client-side project-id allowlist. Split to a v1.1 change ("scoped Taiga account for agents"). ACL PR amended to drop the unused `rp5:8000` grant.
 - [x] 4.3 `todo_read`: tests (GET-only, token used, honest failures), then implementation
 - [x] 4.4 `notify`: tests (`[AI]` prefix mandatory, no topic/server parameter), then ntfy implementation
 
