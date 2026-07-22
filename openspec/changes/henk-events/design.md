@@ -69,7 +69,7 @@ The dispatcher/session layer appends one JSONL record per agent session to `/dat
 
 ### D9 — `henk-pickup` is a poll CLI in claude-config, not a service
 
-A small script in `~/.claude-config/bin` (precedent: `homelab-health`) hits ntfy's poll endpoint (`/henk-handoffs/json?poll=1&since=...`) with the owner's read credential and prints the latest handoff (or all within retention, `--list`). Pull-based, works from any host on the tailnet, zero daemons. The retention limit (target 72h — verified/set in task 1.2; the ntfy default is only 12h) is accepted: handoffs are working notes, the audit log is the record.
+A small script in `~/.claude-config/bin` (precedent: `homelab-health`) hits ntfy's poll endpoint (`/henk-handoffs/json?poll=1&since=...`) with the owner's read credential and prints the latest handoff (or all within retention, `--list`). Pull-based, works from any host on the tailnet, zero daemons. The retention limit (72h, VERIFIED 2026-07-22 — messages and, after a config bump, attachments) is accepted: handoffs are working notes, the audit log is the record.
 
 ### D10 — Replay on reconnect, bounded
 
