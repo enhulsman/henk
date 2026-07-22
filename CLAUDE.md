@@ -4,6 +4,17 @@ Personal homelab agent ("HOmelab agENt Konsult" if anyone asks; really it's just
 the Dutch neighbor who knows where everything is). Reachable via a chat channel,
 built on the **Claude Agent SDK**, wired to existing homelab tools.
 
+## Commit hygiene (repo is publication-bound — history scrubbed 2026-07-22)
+
+This repo is hosted under the owner's public identity (`enhulsman`) and intended to
+go public. Every commit must be publication-safe: NO secrets/tokens (`.env` only),
+NO tailnet IPs (write `vps`/`rp5` hostnames or `VPS-TS-IP`-style placeholders in
+as-built notes), NO real phone numbers or account UUIDs (placeholders like
+`+31600000000` in tests/config), NO `private.dev` references (that domain stays
+non-allowlisted; use `hulsman.dev` in examples). ntfy topic names are fine
+(instance is auth deny-all). When in doubt, redact in the commit and keep the real
+value in the deployed config on rp5.
+
 ## Canonical context (read before designing anything)
 
 - **Project brief:** `~/Coding/homelab-ai-revised.md` — §5-A1 is this project's charter;
