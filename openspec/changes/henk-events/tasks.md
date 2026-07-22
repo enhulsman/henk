@@ -44,3 +44,4 @@
 - [ ] 6.1 README update: event flow diagram, new config keys, triage-arc contract, `henk-pickup` usage, rollback flag
 - [ ] 6.2 `/docs-update`: homelab docs — new topics + grants on vps ntfy, Grafana contact point, Gatus alerting, Henk's proactive role, audit volume in backup list
 - [ ] 6.3 Update memory `henk-long-run-direction` (v1.2 shipped; carry v1.3 items forward)
+- [ ] 6.4 Flip `enhulsman/henk` public (owner decision 2026-07-22: portfolio receipt; history pre-scrubbed via git-filter-repo, hygiene rules in CLAUDE.md). Pre-flip audit of commits added since the scrub: `git log e4ae1b8..HEAD -p | grep -nE '100\.[0-9]+\.[0-9]+\.[0-9]+|private|tk_[A-Za-z0-9]{8}|\+31[0-9]{9}'` must be empty + a gitleaks pass; then `gh repo edit enhulsman/henk --visibility public`. Pair with a portfolio project card on hulsman.dev/projects.
