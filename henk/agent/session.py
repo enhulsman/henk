@@ -8,7 +8,32 @@ imports ``claude_agent_sdk``.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
+
+
+@dataclass(frozen=True)
+class ToolCallRecord:
+    """One tool invocation observed during a session, for the audit record."""
+
+    name: str
+    tool_class: str | None = None
+    result_id: str | None = None
+
+
+@dataclass(frozen=True)
+class SessionStats:
+    """Session-level metadata the app layer folds into the audit record.
+
+    Sourced from the SDK's result stream by the real session; fakes stub it.
+    A session that does not implement ``stats()`` simply contributes empty
+    tool-call/usage fields — audit is best-effort and never blocking.
+    """
+
+    tool_calls: tuple[ToolCallRecord, ...] = field(default_factory=tuple)
+    model: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 @runtime_checkable
@@ -22,6 +47,9 @@ class AgentSession(Protocol):
     async def close(self) -> None:
         """Release any resources held by the session."""
         ...
+
+    # Optional: sessions MAY expose accumulated metadata for the audit log.
+    # def stats(self) -> SessionStats: ...
 
 
 @runtime_checkable

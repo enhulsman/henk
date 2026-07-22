@@ -32,14 +32,16 @@ class AgentConfig:
     system_prompt: str = (
         "You are Henk, the owner's personal homelab assistant, reached over "
         "Signal.\n\n"
-        "Your complete toolset is exactly these three — you have no other tools "
+        "Your complete toolset is exactly these four — you have no other tools "
         "or capabilities (no scheduling, cron, workflows, web, files, or "
         "shell):\n"
         "- homelab_health — report homelab health and status.\n"
         "- todo_read — read the owner's to-do list.\n"
-        "- notify — send the owner a push notification via ntfy.\n\n"
+        "- notify — send the owner a push notification via ntfy.\n"
+        "- publish_handoff — publish a triage handoff document to the owner's "
+        "handoffs topic.\n\n"
         "Use them to give real, current answers — when a request maps to a "
-        "tool, call it. If something falls outside these three, say so plainly; "
+        "tool, call it. If something falls outside these four, say so plainly; "
         "don't describe capabilities you don't have, and only report results "
         "you actually got from a tool (never invent outcomes).\n\n"
         "Reply in plain text suited to Signal — avoid Markdown code blocks and "
@@ -65,6 +67,27 @@ class NtfyConfig:
     base_url: str
     topic: str
     timeout_seconds: float = 10.0
+
+
+@dataclass(frozen=True)
+class EventsConfig:
+    """Event-intake settings (henk-events v1.2). Absent/``enabled: false`` → v1.
+
+    ``enabled`` is the rollback flag (design migration step 5): when false the
+    subscriber never starts and Henk behaves exactly as v1. Topics ride the
+    single ntfy credential (read on events, write on handoffs); cadence values
+    are the design D6 defaults, tunable without code changes.
+    """
+
+    enabled: bool = False
+    events_topic: str = "henk-events"
+    handoffs_topic: str = "henk-handoffs"
+    audit_path: str = "/data/audit/henk-audit.jsonl"
+    debounce_seconds: float = 120.0
+    cooldown_seconds: float = 6 * 3600.0
+    recurrence_window_seconds: float = 24 * 3600.0
+    cap_per_24h: int = 3
+    cooldown_overrides: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -96,6 +119,7 @@ class Config:
     taiga: EndpointConfig
     todo: EndpointConfig
     ntfy: NtfyConfig
+    events: EventsConfig = field(default_factory=EventsConfig)
     secrets: Secrets = field(default_factory=Secrets)
 
     @classmethod
@@ -143,6 +167,31 @@ class Config:
         if not isinstance(ntfy_sec, Mapping):
             raise ConfigError("missing endpoints.ntfy")
 
+        events_sec = raw.get("events", {}) or {}
+        overrides = events_sec.get("cooldown_overrides", []) or []
+        events = EventsConfig(
+            enabled=bool(events_sec.get("enabled", EventsConfig.enabled)),
+            events_topic=events_sec.get("events_topic", EventsConfig.events_topic),
+            handoffs_topic=events_sec.get(
+                "handoffs_topic", EventsConfig.handoffs_topic
+            ),
+            audit_path=events_sec.get("audit_path", EventsConfig.audit_path),
+            debounce_seconds=float(
+                events_sec.get("debounce_seconds", EventsConfig.debounce_seconds)
+            ),
+            cooldown_seconds=float(
+                events_sec.get("cooldown_seconds", EventsConfig.cooldown_seconds)
+            ),
+            recurrence_window_seconds=float(
+                events_sec.get(
+                    "recurrence_window_seconds",
+                    EventsConfig.recurrence_window_seconds,
+                )
+            ),
+            cap_per_24h=int(events_sec.get("cap_per_24h", EventsConfig.cap_per_24h)),
+            cooldown_overrides=tuple(dict(o) for o in overrides),
+        )
+
         return cls(
             owner=OwnerConfig(id=require_nonempty(owner_sec, "id", "owner")),
             agent=AgentConfig(
@@ -171,5 +220,6 @@ class Config:
                 topic=require(ntfy_sec, "topic", "endpoints.ntfy"),
                 timeout_seconds=float(ntfy_sec.get("timeout_seconds", 10.0)),
             ),
+            events=events,
             secrets=Secrets.from_env(env),
         )

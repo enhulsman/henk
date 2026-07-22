@@ -50,23 +50,44 @@ class Dispatcher:
 
 
 class App:
-    """Top-level runner: consumes the channel and pumps the core worker."""
+    """Top-level runner: consumes the channel and pumps the core worker.
+
+    When events are enabled a coordinator task runs alongside, feeding debounced
+    event turns into the same serial core queue (design D5). Both the core worker
+    and the coordinator are cancelled on shutdown, and the open session is
+    flushed to the audit log.
+    """
 
     def __init__(
-        self, adapter: ChannelAdapter, dispatcher: Dispatcher, core: AgentCore
+        self,
+        adapter: ChannelAdapter,
+        dispatcher: Dispatcher,
+        core: AgentCore,
+        *,
+        coordinator: "_Runnable | None" = None,
     ) -> None:
         self._adapter = adapter
         self._dispatcher = dispatcher
         self._core = core
+        self._coordinator = coordinator
 
     async def run(self) -> None:
-        worker = asyncio.create_task(self._core.run())
+        tasks = [asyncio.create_task(self._core.run())]
+        if self._coordinator is not None:
+            tasks.append(asyncio.create_task(self._coordinator.run()))
         try:
             async for message in self._adapter.messages():
                 await self._dispatcher.on_inbound(message)
         finally:
-            worker.cancel()
-            try:
-                await worker
-            except asyncio.CancelledError:
-                pass
+            for task in tasks:
+                task.cancel()
+            for task in tasks:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            await self._core.aclose()
+
+
+class _Runnable:
+    async def run(self) -> None: ...

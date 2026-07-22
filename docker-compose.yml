@@ -42,6 +42,10 @@ services:
       - HENK_CONFIG=/app/config.yaml
     volumes:
       - ./config.yaml:/app/config.yaml:ro
+      # Append-only audit log (henk-events v1.2). Path matches config.events
+      # .audit_path; on its own named volume so it survives container recreation
+      # and joins the rp5 backup allowlist (secure-deployment delta).
+      - henk_audit:/data/audit
     restart: unless-stopped
     # Sized from the 1.5 probe: agent peaked at ~420 MiB per-turn (idle ~180); 768m
     # is ~1.8x that peak so a heavy conversation won't OOM-kill mid-turn.
@@ -62,3 +66,4 @@ services:
 volumes:
   tailscale-state:
   signal-cli-config: # Signal account state — include in the rp5 backup routine
+  henk_audit: # audit log (henk-events) — add to pi5-backup.sh BACKUP_VOLUMES

@@ -36,3 +36,21 @@ endpoints:
     base_url: "http://vps:2586"
     topic: "homie-henk"
     timeout_seconds: 10
+
+# Event intake (henk-events v1.2). `enabled: false` is the rollback flag — the
+# subscriber never starts and Henk behaves exactly as v1. Topics ride the single
+# ntfy credential (NTFY_TOKEN: read on events, write on handoffs + notify).
+# Cadence values are the design D6 defaults; tune from the first week's audit log.
+events:
+  enabled: true
+  events_topic: "henk-events"
+  handoffs_topic: "henk-handoffs"
+  audit_path: "/data/audit/henk-audit.jsonl"
+  debounce_seconds: 120
+  cooldown_seconds: 21600 # 6h
+  recurrence_window_seconds: 86400 # 24h
+  cap_per_24h: 3
+  cooldown_overrides:
+    # Chronic identities carry a longer cooldown so they don't re-alert (D6.2).
+    - pattern: "swap"
+      cooldown_seconds: 86400 # 24h

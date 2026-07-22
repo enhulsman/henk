@@ -35,6 +35,23 @@ def test_secrets_default_empty_when_env_absent():
     assert config.secrets.todo_token == ""
 
 
+def test_loads_events_config_with_overrides():
+    config = Config.load(SAMPLE, env={})
+    assert config.events.enabled is True
+    assert config.events.events_topic == "henk-events"
+    assert config.events.handoffs_topic == "henk-handoffs"
+    assert config.events.cap_per_24h == 3
+    assert config.events.cooldown_overrides[0]["pattern"] == "swap"
+    assert config.events.cooldown_overrides[0]["cooldown_seconds"] == 86400
+
+
+def test_events_section_absent_defaults_to_disabled():
+    # No `events` section → v1 behaviour (subscriber never starts).
+    config = Config.from_dict(_minimal_raw("+31600000000"), env={})
+    assert config.events.enabled is False
+    assert config.events.events_topic == "henk-events"
+
+
 def test_missing_required_section_raises():
     with pytest.raises(ConfigError):
         Config.from_dict({"owner": {"id": "x"}}, env={})

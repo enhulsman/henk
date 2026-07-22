@@ -180,6 +180,41 @@ async def test_send_failure_is_surfaced_not_silently_truncated():
     assert "could not be delivered" in bridge.sends[0][1]  # owner is told
 
 
+# --- Proactive owner-directed sends (channel-adapter delta, task 2.6) ------
+
+# The proactive send is the same owner-directed primitive as a reply: it targets
+# the configured owner with no arbitrary-recipient parameter (spec: "no recipient
+# parameter beyond the configured owner identity"), works with no inbound trigger,
+# and splits long messages in order like any reply.
+
+
+def test_send_exposes_no_arbitrary_recipient():
+    import inspect
+
+    from henk.channel.base import ChannelAdapter
+
+    # Neither the contract nor the Signal adapter accepts a recipient argument.
+    for send in (ChannelAdapter.send, SignalAdapter.send):
+        params = [p for p in inspect.signature(send).parameters if p != "self"]
+        assert params == ["text"]
+
+
+async def test_proactive_send_reaches_owner_without_inbound():
+    bridge = FakeBridge()  # nothing ever received
+    adapter = SignalAdapter(bridge, account="+31611111111", owner=OWNER)
+    await adapter.send("unprompted triage message")
+    assert bridge.sends == [(OWNER, "unprompted triage message")]
+
+
+async def test_long_proactive_message_split_in_order():
+    bridge = FakeBridge()
+    adapter = SignalAdapter(bridge, account="+31611111111", owner=OWNER, safe_length=30)
+    await adapter.send("x" * 20 + "\n\n" + "y" * 20)
+    assert len(bridge.sends) == 2
+    assert "".join(text for _, text in bridge.sends) == "x" * 20 + "\n\n" + "y" * 20
+    assert all(recipient == OWNER for recipient, _ in bridge.sends)
+
+
 # --- Swappable channel-adapter contract (encapsulation) -------------------
 
 # The Signal wire format (message-envelope field names, bridge receive/send

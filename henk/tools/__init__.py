@@ -8,6 +8,7 @@ from henk.config import Config
 from henk.tools.base import Tool, ToolClass, ToolRegistry, ToolResult
 from henk.tools.homelab_health import HomelabHealthTool
 from henk.tools.notify import NotifyTool
+from henk.tools.publish_handoff import PublishHandoffTool
 from henk.tools.taiga_read import TaigaReadTool
 from henk.tools.todo_read import TodoReadTool
 
@@ -20,6 +21,7 @@ __all__ = [
     "TaigaReadTool",
     "TodoReadTool",
     "NotifyTool",
+    "PublishHandoffTool",
     "build_production_registry",
 ]
 
@@ -57,6 +59,18 @@ def build_production_registry(
             client,
             base_url=config.ntfy.base_url,
             topic=config.ntfy.topic,
+            token=config.secrets.ntfy_token,
+            timeout=config.ntfy.timeout_seconds,
+        )
+    )
+    # publish_handoff rides the same single ntfy credential (write on handoffs).
+    # Registered unconditionally so the enumerated toolset matches the registry;
+    # it is only ever exercised by triage, which only runs when events.enabled.
+    registry.register(
+        PublishHandoffTool(
+            client,
+            base_url=config.ntfy.base_url,
+            topic=config.events.handoffs_topic,
             token=config.secrets.ntfy_token,
             timeout=config.ntfy.timeout_seconds,
         )

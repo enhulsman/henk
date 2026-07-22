@@ -6,8 +6,15 @@ todo list?" from your daily messenger; Henk answers using a small, closed
 toolset. It doubles as a testbed for agent patterns (tool scoping, approval
 flows) that transfer to work.
 
-See `openspec/changes/henk-v1/` for the full design; this README is the operator
-runbook.
+As of **v1.2 (henk-events)** Henk is also **event-driven**: homelab sensors
+(Gatus + a curated Prometheus subset via Grafana) publish to a deny-all ntfy
+topic that Henk subscribes to. An incident starts a triage session and an
+*unprompted* Signal conversation ending in a triage arc — diagnosis + confidence,
+suggested fix, pickup path — that the owner can interrogate. Still **zero
+mutations**: every tool is read-only or notify-class.
+
+See `openspec/specs/` (and archived changes under `openspec/changes/archive/`)
+for the full design; this README is the operator runbook.
 
 ## Security posture (inherited, non-negotiable)
 
@@ -50,16 +57,50 @@ conversation) → SDK turn. Tool calls pass through the **default-deny permissio
 callback**; reads/notify run, mutations hit the gate. Only the final text reply
 is sent back.
 
+### Event flow (v1.2)
+
+```mermaid
+flowchart LR
+  sensors[Gatus + Grafana/Prometheus\ncurated subset] -- publish --> topic[(ntfy henk-events\ndeny-all)]
+  topic -- outbound subscribe\ntag:henk, no inbound --> intake[Event intake\nlast-seen-id, since-replay]
+  intake --> pipe[Debounce → cooldown → recurrence → cap]
+  pipe -- triageable --> et[Event turn\nqueued in the SAME serial lane]
+  pipe -- suppressed --> supp[(audit record only)]
+  et --> core2[Agent core\ntriage framing + untrusted-data block]
+  core2 -- announceable --> proactive[Proactive Signal send\nowner-only, split]
+  core2 --> handoff[publish_handoff → ntfy henk-handoffs] --> pickup[[henk-pickup CLI\nany tailnet host]]
+  core2 --> audit[(henk_audit volume\none JSONL record/session)]
+```
+
+Events ride the **existing** `vps:2586` egress — no new port, listener, or
+inbound ACL grant (the zero-inbound posture holds). Event payloads enter the
+prompt only inside a delimited **untrusted-data block** and never change the
+toolset. Three layers keep Signal quiet: a **debounce** window collapses storms
+(and replayed backlogs) into one conversation; a per-identity **cooldown**
+(with per-pattern overrides — chronic identities like swap carry 24h) drops
+re-fires to audit-only; a daily **cap** gates the Signal send only — cap-overflow
+incidents still triage, publish a handoff, and get an audit record, and the next
+announceable message notes how many were suppressed.
+
+**Triage arc (contract):** every unprompted incident message ends with
+(a) a diagnosis + explicit confidence, (b) a suggested fix, (c) a pickup path
+referencing the published handoff. The app layer checks arc compliance after
+each triage turn and records `triage_arc_complete` — a missing component never
+blocks delivery.
+
 ## Repo layout
 
 | Path | What |
 |---|---|
 | `henk/channel/` | Channel-neutral contract, owner allowlist, Signal adapter (the only Signal-aware module) |
 | `henk/gate/` | Approval gate (classification, inline prompt, approve/deny/timeout, fail-closed) |
-| `henk/agent/` | Agent core (session lifecycle, serial queue, reset/idle), permission decision, SDK wrapper |
-| `henk/tools/` | `homelab_health`, `todo_read`, `notify` (+ deferred `taiga_read`) and the production registry |
+| `henk/agent/` | Agent core (typed turns, session lifecycle, serial queue, reset/idle), triage framing + arc check, permission decision, SDK wrapper |
+| `henk/events/` | Event intake (ntfy subscribe, since-replay), per-source identity derivation, debounce/cooldown/cap pipeline, coordinator |
+| `henk/audit/` | Append-only JSONL audit writer + the versioned record **JSON Schema** (the transferable artifact) |
+| `henk/tools/` | `homelab_health`, `todo_read`, `notify`, `publish_handoff` (+ deferred `taiga_read`) and the production registry |
 | `henk/app.py`, `henk/runtime.py`, `henk/__main__.py` | Composition, production wiring, entrypoint |
 | `config.yaml` | Non-secret settings | `.env` | Secrets (git-ignored) |
+| `~/.claude-config/bin/henk-pickup` | Pull-based CLI to fetch handoffs from any tailnet host (lives in the claude-config repo) |
 
 ## Configuration
 
@@ -71,10 +112,17 @@ is sent back.
   `agent.approval_timeout_seconds` (300), `agent.system_prompt`.
 - `endpoints.{gatus,prometheus,todo,ntfy}` base URLs + timeouts; `ntfy.topic`.
   (`endpoints.taiga` is retained but unused in v1.)
+- `events.*` (v1.2) — `enabled` (**rollback flag**: `false` → subscriber never
+  starts, exactly v1), `events_topic`, `handoffs_topic`, `audit_path`,
+  `debounce_seconds`, `cooldown_seconds`, `recurrence_window_seconds`,
+  `cap_per_24h`, and `cooldown_overrides` (per-pattern regex → seconds). The
+  cadence values are informed defaults — tune from the first week's audit log.
 
 **`.env`** (secrets, `chmod 600`, never committed — see `.env.example`):
 `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`), `TS_AUTHKEY`, `NTFY_TOKEN`,
-`TODO_TOKEN` (optional).
+`TODO_TOKEN` (optional). `NTFY_TOKEN` is a **single** credential scoped per-topic
+server-side (design D3): publish on the notify topic, read on `henk-events`,
+publish on `henk-handoffs`.
 
 ## Tools (v1)
 
@@ -83,10 +131,27 @@ is sent back.
 | `homelab_health` | read-only | Gatus API (rp5:8080) + Prometheus HTTP API (vps:9090) over the tailnet — no SSH |
 | `todo_read` | read-only | obsidian-todo-api (vps:8089), GET only |
 | `notify` | notify-only | ntfy (vps:2586), fixed topic, every message prefixed `[AI]`, no destination arg |
+| `publish_handoff` | notify-only | ntfy (vps:2586), fixed `henk-handoffs` topic, `[AI]`-prefixed, no destination arg; returns the message id |
 
 `taiga_read` is implemented and tested but **deferred to v1.1** — the Taiga
 instance holds mixed personal/work data and needs a dedicated project-scoped
 account first.
+
+### Retrieving handoffs — `henk-pickup`
+
+For every triaged incident Henk publishes a full handoff (trigger, evidence,
+diagnosis + confidence, fix, pickup) to the deny-all `henk-handoffs` topic. From
+any tailnet host:
+
+```bash
+henk-pickup            # print the most recent handoff
+henk-pickup --list     # every handoff within ntfy's retention window (72h)
+henk-pickup --json     # raw ntfy JSON
+```
+
+Credential: a read-only `henk-handoffs` token from `$HENK_PICKUP_TOKEN` or
+`~/.config/henk/pickup-token`. Pull-based, no daemon. Handoffs are working notes
+(retention-bounded); the `henk_audit` log is the durable record.
 
 ## Local development
 
@@ -142,8 +207,25 @@ Set `signal.account` in `config.yaml` to `<NUMBER>`.
 - [ ] **Bridge private** — the signal bridge port is unreachable from host/LAN/tailnet.
 - [ ] **ACL scope** — an out-of-scope tailnet port (e.g. `vps:5432`) is blocked;
   `tag:server:8000` (taiga-mcp) is blocked.
-- [ ] **Backup** — the `signal-cli-config` volume is in the rp5 backup routine;
-  Signal state survives `compose down && up`.
+- [ ] **Backup** — the `signal-cli-config` **and `henk_audit`** volumes are in
+  the rp5 backup routine (`pi5-backup.sh` `BACKUP_VOLUMES`); state survives
+  `compose down && up`.
+
+### Deploy-verify checklist (v1.2 events — deploy day)
+
+- [ ] **Gatus → Signal** — a synthetic Gatus failure produces an unprompted
+  message with the full triage arc.
+- [ ] **Grafana → Signal** — a Grafana test-fire does the same.
+- [ ] **Storm → one conversation** — ~10 events within the debounce window yield
+  a single conversation.
+- [ ] **Hostile payload** — an event whose body contains instruction-like text
+  causes **no** out-of-registry tool call (check the transcript/audit).
+- [ ] **Restart mid-stream** — an event published while Henk is down is triaged
+  exactly once on reconnect (`since` replay), not re-storming.
+- [ ] **Deny-all** — anonymous publish to `henk-events` and `henk-handoffs` is
+  rejected.
+- [ ] **henk-pickup** retrieves the handoff from the workstation.
+- [ ] **Zero new exposure** — ACL/ports audit shows no change vs v1.
 
 ## Rollback
 
@@ -152,12 +234,18 @@ docker compose down          # stop the stack
 # revert the ACL PR to remove tag:henk if fully backing out
 ```
 
-Rolling back leaves no residue beyond the two named volumes; the ntfy user and
+**Events-only rollback:** set `events.enabled: false` in `config.yaml` and
+`compose up -d` — the subscriber never starts and Henk behaves exactly as v1
+(no schema/data to unwind; the new topics are inert if unused).
+
+Rolling back leaves no residue beyond the named volumes; the ntfy grants and
 Tailscale node can be removed from their respective admin surfaces.
 
 ## Cost
 
-v1 is interactive-only and light; SDK usage draws from the normal subscription
-limits (the mooted separate credit pool was cancelled 2026-06-15). Watch `/usage`
-the first week; drop `agent.model` to Haiku via `config.yaml` if it crowds the
-allowance.
+v1 was interactive-only; v1.2 adds event-triggered triage sessions. Token spend
+is bounded upstream by the curated sensor list, the debounce window, and per-alert
+cooldown (the cadence cap bounds *message* volume, not tokens). SDK usage draws
+from the normal subscription limits (the mooted separate credit pool was cancelled
+2026-06-15). Watch `/usage` the first week; drop `agent.model` to Haiku via
+`config.yaml` if it crowds the allowance.
