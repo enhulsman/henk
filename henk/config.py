@@ -32,11 +32,10 @@ class AgentConfig:
     system_prompt: str = (
         "You are Henk, the owner's personal homelab assistant, reached over "
         "Signal.\n\n"
-        "Your complete toolset is exactly these four — you have no other tools "
+        "Your complete toolset is exactly these three — you have no other tools "
         "or capabilities (no scheduling, cron, workflows, web, files, or "
         "shell):\n"
         "- homelab_health — report homelab health and status.\n"
-        "- todo_read — read the owner's to-do list.\n"
         "- notify — send the owner a push notification via ntfy.\n"
         "- publish_handoff — publish a triage handoff document to the owner's "
         "handoffs topic.\n\n"

@@ -29,13 +29,24 @@ __all__ = [
 def build_production_registry(
     config: Config, client: httpx.AsyncClient
 ) -> ToolRegistry:
-    """The v1 production toolset: two read tools + notify. Zero mutating tools.
+    """The v1 production toolset: homelab_health (read) + notify, plus
+    publish_handoff for triage. Zero mutating tools.
 
-    ``taiga_read`` is deliberately NOT registered in v1: the Taiga instance holds
-    mixed personal/work data, so wiring it safely needs a dedicated Taiga account
-    scoped to personal projects only (server-side) plus a client-side project-id
-    allowlist. Deferred to v1.1 as its own change to keep the Tier-W posture
-    clean. The ``TaigaReadTool`` class and its tests are kept for that follow-up.
+    ``taiga_read`` and ``todo_read`` are BOTH deliberately NOT registered: each
+    backs onto a store that mixes personal and work/Anamata content, so wiring it
+    safely needs source-side scoping plus a client-side allowlist (Tier-W
+    posture: never surface work data).
+
+    - ``taiga_read``: the Taiga instance holds mixed personal/work projects; needs
+      a dedicated account scoped to personal projects (server-side) + a client-side
+      project-id allowlist.
+    - ``todo_read``: pulled after 5.3 deploy-verify caught it surfacing work/Anamata
+      todos into a triage handoff. It also raw-dumped the whole response — the
+      obsidian-todo-api returns a note-grouped dict the tool never parsed — so a
+      note-path allowlist plus a rewrite of the summariser are both required.
+
+    Both are deferred to a dedicated personal-data-scoping change; their classes
+    and tests are kept for that follow-up.
     """
     registry = ToolRegistry()
     registry.register(
@@ -44,14 +55,6 @@ def build_production_registry(
             gatus_url=config.gatus.base_url,
             prometheus_url=config.prometheus.base_url,
             timeout=config.gatus.timeout_seconds,
-        )
-    )
-    registry.register(
-        TodoReadTool(
-            client,
-            base_url=config.todo.base_url,
-            token=config.secrets.todo_token,
-            timeout=config.todo.timeout_seconds,
         )
     )
     registry.register(
