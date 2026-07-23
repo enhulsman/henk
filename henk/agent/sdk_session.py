@@ -26,7 +26,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+from typing import Any, Mapping
+
 from henk.agent.permission import decide_tool_permission, pretooluse_block_decision
+from henk.agent.session import SessionStats, ToolCallRecord
 from henk.gate.approval import ApprovalGate
 from henk.tools.base import ToolRegistry
 
@@ -220,15 +223,114 @@ class SdkSessionFactory:
             # Only the explicitly-configured in-process MCP server.
             strict_mcp_config=True,
         )
-        return _SdkAgentSession(ClaudeSDKClient(options=options))
+        # name → tool_class so the audit record's tool_calls carry the class the
+        # SDK stream does not report (the model only sees the mcp__henk__ name).
+        tool_classes = {
+            t.name: t.tool_class.value
+            for t in self._registry.tools()
+            if t.tool_class is not None
+        }
+        return _SdkAgentSession(
+            ClaudeSDKClient(options=options), tool_classes=tool_classes
+        )
 
 
-class _SdkAgentSession:  # pragma: no cover - requires the SDK + live credentials
-    """Adapts a stateful claude_agent_sdk client to the AgentSession protocol."""
+def _strip_mcp_prefix(name: str) -> str:
+    """``mcp__henk__publish_handoff`` → ``publish_handoff`` so audit tool names
+    match the registry (and ``core`` can spot ``publish_handoff``)."""
+    prefix = f"mcp__{MCP_SERVER_NAME}__"
+    return name[len(prefix):] if name.startswith(prefix) else name
 
-    def __init__(self, client) -> None:
+
+def _tool_result_text(content: Any) -> str:
+    """Flatten a ToolResultBlock's content (``str | list[dict] | None``) to text.
+    This carries the handoff message id through to ``handoff_message_id``."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    for item in content:
+        if isinstance(item, Mapping):
+            text = item.get("text")
+            if text:
+                parts.append(str(text))
+    return "".join(parts)
+
+
+class _StatsAccumulator:
+    """Folds the SDK message stream into a :class:`SessionStats`.
+
+    Kept free of any ``claude_agent_sdk`` import and duck-typed against the block
+    shapes so it is unit-testable without the live SDK — the fields it fills
+    (``tool_calls`` / ``model`` / token ``usage``) were exactly the ones missing
+    from every production audit record before ``stats()`` existed.
+    """
+
+    def __init__(self, tool_classes: Mapping[str, str] | None = None) -> None:
+        self._tool_classes = dict(tool_classes or {})
+        self._tool_uses: list[tuple[str, str]] = []  # (tool_use_id, bare name)
+        self._results: dict[str, str] = {}  # tool_use_id → result text
+        self._model: str | None = None
+        self._input_tokens: int | None = None
+        self._output_tokens: int | None = None
+
+    def observe(self, message: Any) -> None:
+        for block in getattr(message, "content", None) or []:
+            tool_use_id = getattr(block, "tool_use_id", None)
+            if tool_use_id is not None:  # ToolResultBlock
+                self._results[tool_use_id] = _tool_result_text(
+                    getattr(block, "content", None)
+                )
+                continue
+            name = getattr(block, "name", None)
+            block_id = getattr(block, "id", None)
+            if name is not None and block_id is not None:  # ToolUseBlock
+                self._tool_uses.append((block_id, _strip_mcp_prefix(name)))
+        model = getattr(message, "model", None)
+        if model:
+            self._model = model
+        # Only ResultMessage carries the query-total usage; total_cost_usd is its
+        # distinctive field (AssistantMessage.usage would otherwise double-count).
+        if hasattr(message, "total_cost_usd"):
+            self._add_tokens(getattr(message, "usage", None) or {})
+
+    def _add_tokens(self, usage: Mapping[str, Any]) -> None:
+        for key, attr in (("input_tokens", "_input_tokens"),
+                          ("output_tokens", "_output_tokens")):
+            value = usage.get(key)
+            if value is not None:
+                setattr(self, attr, (getattr(self, attr) or 0) + value)
+
+    def snapshot(self) -> SessionStats:
+        calls = tuple(
+            ToolCallRecord(
+                name=name,
+                tool_class=self._tool_classes.get(name),
+                result_id=self._results.get(tool_use_id) or None,
+            )
+            for tool_use_id, name in self._tool_uses
+        )
+        return SessionStats(
+            tool_calls=calls,
+            model=self._model,
+            input_tokens=self._input_tokens,
+            output_tokens=self._output_tokens,
+        )
+
+
+class _SdkAgentSession:
+    """Adapts a stateful claude_agent_sdk client to the AgentSession protocol.
+
+    ``run_turn``/``close`` need the live client (exercised at deploy), but they
+    contain no SDK import, so the fake-client stats tests cover the wiring that
+    the earlier missing-``stats()`` defect had left untested.
+    """
+
+    def __init__(self, client, *, tool_classes: Mapping[str, str] | None = None) -> None:
         self._client = client
         self._connected = False
+        self._stats = _StatsAccumulator(tool_classes)
 
     async def run_turn(self, text: str) -> str:
         if not self._connected:
@@ -237,13 +339,17 @@ class _SdkAgentSession:  # pragma: no cover - requires the SDK + live credential
         await self._client.query(text)
         parts: list[str] = []
         async for message in self._client.receive_response():
+            self._stats.observe(message)
             for block in getattr(message, "content", None) or []:
                 chunk = getattr(block, "text", None)
                 if chunk:
                     parts.append(chunk)
         return "".join(parts).strip()
 
-    async def close(self) -> None:
+    def stats(self) -> SessionStats:
+        return self._stats.snapshot()
+
+    async def close(self) -> None:  # pragma: no cover - requires the live client
         if self._connected:
             await self._client.disconnect()
             self._connected = False

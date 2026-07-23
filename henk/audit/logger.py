@@ -87,7 +87,10 @@ class AuditLog:
     def write(self, record: Mapping[str, Any]) -> bool:
         """Append one record. Returns True on success, False (logged) on failure."""
         payload = dict(record)
-        payload.setdefault("at", self._clock())
+        # The builders always emit "at": None, so setdefault (key present) would
+        # never stamp — stamp whenever it is missing or None; keep any explicit value.
+        if payload.get("at") is None:
+            payload["at"] = self._clock()
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._path.open("a", encoding="utf-8") as fh:

@@ -108,6 +108,25 @@ def test_write_stamps_at_when_absent(tmp_path: Path):
     assert rec["at"] == 123.0
 
 
+def test_write_stamps_at_when_present_but_none(tmp_path: Path):
+    # The builders always emit "at": None, so setdefault (key present) never
+    # stamps — every production record carried at: null. Stamp on None too.
+    log = AuditLog(tmp_path / "audit.jsonl", clock=lambda: 123.0)
+    log.write(session_record(trigger="owner-message"))
+    log.write(suppression_record(identity_key="k", reason="cooldown"))
+    lines = (tmp_path / "audit.jsonl").read_text().splitlines()
+    assert json.loads(lines[0])["at"] == 123.0
+    assert json.loads(lines[1])["at"] == 123.0
+
+
+def test_write_preserves_explicit_at(tmp_path: Path):
+    # A caller-supplied timestamp must survive (never overwritten by the clock).
+    log = AuditLog(tmp_path / "audit.jsonl", clock=lambda: 123.0)
+    log.write(session_record(trigger="event", at=999.0))
+    rec = json.loads((tmp_path / "audit.jsonl").read_text().splitlines()[0])
+    assert rec["at"] == 999.0
+
+
 def test_write_failure_is_logged_not_raised(tmp_path: Path, caplog):
     # Point the log at a path whose parent is a FILE, so mkdir/open fails.
     blocker = tmp_path / "blocker"
