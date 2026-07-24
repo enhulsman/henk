@@ -154,3 +154,111 @@ def test_suppressed_count_surfaces_on_next_announceable_message():
     later = pipe.evaluate([_event("e", "Gatus: svc/e")], now=25 * HOUR)
     assert later.event_turn.announceable is True
     assert later.event_turn.suppressed_count == 2  # the two cap-suppressed ones
+
+
+# --- Rehydration from the persisted audit log (design D2, D4) --------------
+# A restart must not re-arm cooldowns, reset the daily cap, or lose recurrence
+# refs. State is reconstructed from durable audit records, compared against a
+# wall-clock `now` (monotonic would reset to an arbitrary origin on restart).
+
+EPOCH = 1_700_000_000.0  # realistic wall-clock base, to prove monotonic-independence
+
+
+def _triage_rec(identity: str, at: float, *, announceable=True, handoff=None) -> dict:
+    return {
+        "record_type": "session", "trigger": "event",
+        "event": [{"identity_key": identity}],
+        "announceable": announceable, "handoff_message_id": handoff, "at": at,
+    }
+
+
+def _supp_rec(identity: str, at: float) -> dict:
+    return {"record_type": "suppression", "identity_key": identity,
+            "reason": "cooldown", "at": at}
+
+
+def test_rehydrated_cooldown_holds_across_restart():
+    pipe = EventPipeline(_cfg())
+    # Triaged 1h before the (post-restart) now — still inside the 6h cooldown.
+    pipe.rehydrate([_triage_rec("gatus:svc/api", EPOCH)], now=EPOCH + 1 * HOUR)
+    decision = pipe.evaluate([_event("e2", "Gatus: svc/api")], now=EPOCH + 1 * HOUR)
+    assert decision.event_turn is None                 # cooldown survived the restart
+    assert decision.suppressions[0].reason == "cooldown"
+
+
+def test_rehydration_ignores_suppression_records_for_cooldown():
+    # Cooldown is armed by an actual triage, never by a prior suppression
+    # (a suppressed re-fire does not extend the cooldown in the live pipeline).
+    pipe = EventPipeline(_cfg())
+    pipe.rehydrate([_supp_rec("gatus:svc/api", EPOCH)], now=EPOCH + 1 * HOUR)
+    decision = pipe.evaluate([_event("e2", "Gatus: svc/api")], now=EPOCH + 1 * HOUR)
+    assert decision.event_turn is not None             # not cooled down → triaged
+
+
+def test_rehydrated_cap_holds_across_restart():
+    pipe = EventPipeline(_cfg(cap_per_24h=2))
+    now = EPOCH + 1 * HOUR
+    pipe.rehydrate(
+        [_triage_rec("gatus:a", EPOCH), _triage_rec("gatus:b", EPOCH + 60)],
+        now=now,
+    )
+    # Cap already reached (2/2) within the window → new incident triaged, not announced.
+    decision = pipe.evaluate([_event("c", "Gatus: svc/c")], now=now)
+    assert decision.event_turn is not None
+    assert decision.event_turn.announceable is False   # cap held across restart
+
+
+def test_rehydrated_recurrence_references_prior_handoff():
+    pipe = EventPipeline(_cfg())
+    # Triaged 8h ago: past the 6h cooldown, inside the 24h recurrence window.
+    pipe.rehydrate(
+        [_triage_rec("gatus:svc/api", EPOCH, handoff="hf-old")],
+        now=EPOCH + 8 * HOUR,
+    )
+    decision = pipe.evaluate([_event("e2", "Gatus: svc/api")], now=EPOCH + 8 * HOUR)
+    item = decision.event_turn.items[0]
+    assert item.recurrence is True
+    assert item.prior_handoff_ref == "hf-old"          # recurrence framing survived
+
+
+def test_rehydrated_cap_suppressed_count_surfaces_after_restart():
+    pipe = EventPipeline(_cfg(cap_per_24h=3))
+    now = EPOCH + 1 * HOUR
+    # 1 announced + 2 cap-suppressed since, all within the window, before the restart.
+    pipe.rehydrate(
+        [
+            _triage_rec("gatus:a", EPOCH, announceable=True),
+            _triage_rec("gatus:b", EPOCH + 10, announceable=False),
+            _triage_rec("gatus:c", EPOCH + 20, announceable=False),
+        ],
+        now=now,
+    )
+    decision = pipe.evaluate([_event("d", "Gatus: svc/d")], now=now)
+    assert decision.event_turn.announceable is True     # 1/3 used → room to announce
+    assert decision.event_turn.suppressed_count == 2    # the 2 pre-restart cap drops
+
+
+def test_rehydrated_cooldown_holds_when_override_exceeds_recurrence_window():
+    # A per-pattern cooldown override (48h) longer than the recurrence window (24h):
+    # a triage 30h ago is past recurrence but still inside the override cooldown, so
+    # it must survive a restart and suppress the re-fire. Requires rehydration to
+    # (a) select records up to the widest window INCLUDING override cooldowns, and
+    # (b) arm cooldown regardless of the recurrence window.
+    cfg = _cfg(
+        recurrence_window_seconds=24 * HOUR,
+        cooldown_overrides=[{"pattern": "svc/api", "cooldown_seconds": 48 * HOUR}],
+    )
+    pipe = EventPipeline(cfg)
+    pipe.rehydrate([_triage_rec("gatus:svc/api", EPOCH)], now=EPOCH + 30 * HOUR)
+    decision = pipe.evaluate([_event("e2", "Gatus: svc/api")], now=EPOCH + 30 * HOUR)
+    assert decision.event_turn is None                       # 48h cooldown held
+    assert decision.suppressions[0].reason == "cooldown"
+
+
+def test_rehydration_beyond_windows_is_ignored():
+    pipe = EventPipeline(_cfg())
+    # Triaged 30h ago: outside both cooldown and the 24h recurrence window.
+    pipe.rehydrate([_triage_rec("gatus:svc/api", EPOCH)], now=EPOCH + 30 * HOUR)
+    decision = pipe.evaluate([_event("e2", "Gatus: svc/api")], now=EPOCH + 30 * HOUR)
+    assert decision.event_turn is not None
+    assert decision.event_turn.items[0].recurrence is False  # stale ref not resurrected

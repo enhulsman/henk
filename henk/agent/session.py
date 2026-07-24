@@ -34,6 +34,9 @@ class SessionStats:
     model: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    #: Cache-read input tokens (prompt caching). ``input_tokens`` counts only
+    #: UNCACHED input, so this is additive for true cost accounting (design D7).
+    cache_read_input_tokens: int | None = None
 
 
 @runtime_checkable

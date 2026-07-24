@@ -18,11 +18,18 @@ from typing import Any, Iterable, Mapping, Sequence
 logger = logging.getLogger("henk.audit")
 
 #: Bump on any change to the record structure (audit-log spec: schema is versioned).
-SCHEMA_VERSION = 1
+#: v2: event-triage records are one-per-triage (was one-per-session) and `usage`
+#: gains `cache_read_input_tokens`.
+SCHEMA_VERSION = 2
 
-AUDIT_SCHEMA_PATH = (
-    Path(__file__).resolve().parent / "schema" / "audit-record.v1.schema.json"
-)
+_SCHEMA_DIR = Path(__file__).resolve().parent / "schema"
+
+#: The current schema, matching :data:`SCHEMA_VERSION`. Historical versions stay
+#: committed so records that declare an older version still validate (audit-log
+#: spec: prior schema versions remain readable).
+AUDIT_SCHEMA_PATH = _SCHEMA_DIR / "audit-record.v2.schema.json"
+AUDIT_SCHEMA_V1_PATH = _SCHEMA_DIR / "audit-record.v1.schema.json"
+AUDIT_SCHEMA_V2_PATH = AUDIT_SCHEMA_PATH
 
 
 def suppression_record(
@@ -75,6 +82,34 @@ def session_record(
         "usage": dict(usage) if usage is not None else None,
         "at": at,
     }
+
+
+def read_audit_records(
+    path: str | Path, *, limit: int | None = None
+) -> list[dict[str, Any]]:
+    """Read persisted audit records for cadence rehydration (design D2).
+
+    Returns the parsed JSONL records (optionally only the last ``limit``, a
+    bounded tail read for large logs). Malformed lines are skipped, and a
+    missing/unreadable file yields ``[]`` — rehydration is best-effort and must
+    never crash startup.
+    """
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    if limit is not None:
+        lines = lines[-limit:]
+    records: list[dict[str, Any]] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            logger.warning("skipping malformed audit line during rehydration")
+    return records
 
 
 class AuditLog:

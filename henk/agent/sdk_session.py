@@ -274,6 +274,7 @@ class _StatsAccumulator:
         self._model: str | None = None
         self._input_tokens: int | None = None
         self._output_tokens: int | None = None
+        self._cache_read_input_tokens: int | None = None
 
     def observe(self, message: Any) -> None:
         for block in getattr(message, "content", None) or []:
@@ -296,8 +297,12 @@ class _StatsAccumulator:
             self._add_tokens(getattr(message, "usage", None) or {})
 
     def _add_tokens(self, usage: Mapping[str, Any]) -> None:
+        # input_tokens keeps its meaning (uncached only); cache_read is additive
+        # so a record written before this change (no cache field) stays a valid
+        # reader — an absent key leaves the total None, never 0 (design D7).
         for key, attr in (("input_tokens", "_input_tokens"),
-                          ("output_tokens", "_output_tokens")):
+                          ("output_tokens", "_output_tokens"),
+                          ("cache_read_input_tokens", "_cache_read_input_tokens")):
             value = usage.get(key)
             if value is not None:
                 setattr(self, attr, (getattr(self, attr) or 0) + value)
@@ -316,6 +321,7 @@ class _StatsAccumulator:
             model=self._model,
             input_tokens=self._input_tokens,
             output_tokens=self._output_tokens,
+            cache_read_input_tokens=self._cache_read_input_tokens,
         )
 
 

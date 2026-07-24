@@ -106,6 +106,36 @@ async def test_event_during_disconnection_processed_once():
     assert [e.title for e in events] == ["the-only-event"]
 
 
+async def test_initial_offset_seeds_first_subscribe_since():
+    # A restart seeds intake from the persisted checkpoint so the first
+    # subscribe resumes with since=<offset> (event published while stopped).
+    stream = FakeStream([[_msg("z9", "after-restart")]])
+    intake = EventIntake(stream, initial_offset="a1")
+    events = await _collect(intake, 1)
+    assert events[0].title == "after-restart"
+    assert stream.since_calls[0] == "a1"  # resumed from the persisted checkpoint
+
+
+async def test_no_initial_offset_cold_starts_without_since():
+    # First ever start: no checkpoint → subscribe with no since.
+    stream = FakeStream([[_msg("a1", "first")]])
+    intake = EventIntake(stream)  # no initial_offset
+    await _collect(intake, 1)
+    assert stream.since_calls[0] is None
+
+
+async def test_backlog_after_downtime_replays_from_seeded_offset():
+    # Events published while stopped accumulate; on restart the seeded offset
+    # replays the whole since-gated backlog (debounce collapses it downstream).
+    stream = FakeStream([[
+        _msg("b1", "svc/a"), _msg("b2", "svc/b"), _msg("b3", "svc/c"),
+    ]])
+    intake = EventIntake(stream, initial_offset="a0")
+    events = await _collect(intake, 3)
+    assert [e.title for e in events] == ["svc/a", "svc/b", "svc/c"]
+    assert stream.since_calls[0] == "a0"  # resumed from checkpoint, not cold
+
+
 async def test_persistent_failure_backs_off_without_crashing():
     slept: list[float] = []
 

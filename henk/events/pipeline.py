@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from henk.agent.turns import EventTurn, EventTurnItem
 from henk.events.identity import derive_identity
@@ -108,6 +108,76 @@ class EventPipeline:
         """Record the handoff id a triage produced, for later recurrence framing."""
         if ref:
             self._last_handoff_ref[identity_key] = ref
+
+    def rehydrate(self, records: Iterable[Mapping[str, Any]], now: float) -> None:
+        """Reconstruct cadence state from the persisted audit log (design D2, D4).
+
+        Rebuilds cooldown (`_last_triaged`), the daily-cap window
+        (`_announce_times` + `_cap_suppressed_since_announce`), and recurrence
+        refs (`_last_handoff_ref`) so a restart does not re-arm cooldowns, reset
+        the cap, or lose the prior-handoff reference. All timestamps are the
+        records' wall-clock ``at`` compared against a wall-clock ``now`` —
+        monotonic would reset to an arbitrary origin across the restart.
+
+        Only records within the widest relevant window matter; the caller may
+        pass the whole (bounded) tail. Cooldown/recurrence are armed by actual
+        **triage** (event session) records only — a prior suppression never
+        extends a cooldown, matching the live :meth:`evaluate` semantics.
+        """
+        # The widest window must cover per-pattern cooldown OVERRIDES too — a
+        # chronic identity can carry a cooldown longer than the default/recurrence/
+        # cap, and a triage that old still needs to arm cooldown across a restart.
+        override_cooldowns = [
+            float(o["cooldown_seconds"])
+            for o in self._cfg.cooldown_overrides
+            if o.get("cooldown_seconds") is not None
+        ]
+        widest = max(
+            self._cfg.cooldown_seconds,
+            self._cfg.recurrence_window_seconds,
+            self._cfg.cap_window_seconds,
+            *override_cooldowns,
+        )
+        # Event triage records, oldest → newest, so later writes win the ref/time.
+        triages = sorted(
+            (
+                r
+                for r in records
+                if r.get("record_type") == "session"
+                and r.get("trigger") == "event"
+                and isinstance(r.get("at"), (int, float))
+                and now - float(r["at"]) < widest
+            ),
+            key=lambda r: float(r["at"]),
+        )
+
+        cap_suppressed = 0
+        for rec in triages:
+            at = float(rec["at"])
+            within_recurrence = now - at < self._cfg.recurrence_window_seconds
+            for ev in rec.get("event") or []:
+                key = ev.get("identity_key")
+                if not key:
+                    continue
+                # Arm cooldown for EVERY triage within the widest window (bounded
+                # by the pre-filter above). An entry older than the recurrence
+                # window is inert for recurrence (evaluate's numeric check) but
+                # still holds a longer per-pattern cooldown across a restart.
+                self._last_triaged[key] = at
+                # The handoff ref is a recurrence-window concept; set it only when
+                # present (matching live note_handoff, which never clears).
+                if within_recurrence:
+                    handoff = rec.get("handoff_message_id")
+                    if handoff:
+                        self._last_handoff_ref[key] = handoff
+            if now - at < self._cfg.cap_window_seconds:
+                if rec.get("announceable"):
+                    self._announce_times.append(at)
+                    cap_suppressed = 0  # a fresh announce surfaced the prior drops
+                elif rec.get("announceable") is False:
+                    cap_suppressed += 1
+        self._announce_times.sort()
+        self._cap_suppressed_since_announce = cap_suppressed
 
     def evaluate(self, batch: Sequence[Event], now: float) -> BatchDecision:
         suppressions: list[SuppressionRecord] = []

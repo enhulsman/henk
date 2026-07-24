@@ -42,12 +42,29 @@ class EventTurn:
     (cap-overflow) event turn still runs its full triage session and publishes a
     handoff (incident-triage spec). ``suppressed_count`` is the number of
     cap-suppressed incidents accumulated since the last announceable message,
-    surfaced in this message when it is announceable.
+    surfaced in this message when it is announceable. ``offset`` is the batch's
+    last-seen ntfy message id: the core advances the durable intake checkpoint to
+    it only after this triage's audit record is written (design D1).
     """
 
     items: tuple[EventTurnItem, ...]
     announceable: bool = True
     suppressed_count: int = 0
+    offset: str | None = None
 
 
-Turn = OwnerTurn | EventTurn
+@dataclass(frozen=True)
+class CheckpointMarker:
+    """A suppression-only batch's checkpoint advance, riding the serial queue.
+
+    When a debounced batch produces no triage turn (every event was cooled down),
+    the intake checkpoint still has to advance past those events — but only after
+    any in-flight triage ahead of it in the queue has flushed. Routing the advance
+    through the same FIFO core queue as a marker preserves that ordering (design
+    D1): the offset never advances past an event whose outcome isn't yet durable.
+    """
+
+    offset: str
+
+
+Turn = OwnerTurn | EventTurn | CheckpointMarker

@@ -1,0 +1,100 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/enhulsman/henk/audit-record.v2.schema.json",
+  "title": "Henk audit record",
+  "description": "One record per EVENT TRIAGE (written at triage completion, not session close), per owner session, or per suppressed event. Schema version 2: event-triage record cardinality (was one-per-session) and usage gains cache_read_input_tokens.",
+  "type": "object",
+  "required": ["schema_version", "record_type"],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "record_type": { "enum": ["session", "suppression"] },
+    "at": {
+      "type": ["number", "null"],
+      "description": "Unix time the record was produced (informational)."
+    },
+
+    "trigger": {
+      "enum": ["owner-message", "event"],
+      "description": "What started the session."
+    },
+    "event": {
+      "type": ["array", "null"],
+      "description": "For event-triggered triages: the incidents triaged.",
+      "items": {
+        "type": "object",
+        "required": ["identity_key"],
+        "properties": {
+          "identity_key": { "type": "string" },
+          "source": { "type": "string" },
+          "name": { "type": "string" },
+          "state": { "type": "string" },
+          "recurrence": { "type": "boolean" },
+          "event_id": { "type": "string" }
+        }
+      }
+    },
+    "tool_calls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "tool_class": { "type": ["string", "null"] },
+          "result_id": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "diagnosis": { "type": ["string", "null"] },
+    "confidence": {
+      "type": ["string", "null"],
+      "enum": ["high", "moderate", "medium", "low", "unknown", null]
+    },
+    "handoff_message_id": { "type": ["string", "null"] },
+    "triage_arc_complete": {
+      "type": ["boolean", "null"],
+      "description": "Event-triggered sessions only; null otherwise."
+    },
+    "approvals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["tool", "decision"],
+        "properties": {
+          "tool": { "type": "string" },
+          "decision": { "enum": ["approved", "denied", "timeout"] }
+        }
+      }
+    },
+    "outcome": { "type": "string" },
+    "announceable": { "type": ["boolean", "null"] },
+    "turn_count": { "type": "integer", "minimum": 0 },
+    "model": { "type": ["string", "null"] },
+    "usage": {
+      "type": ["object", "null"],
+      "properties": {
+        "input_tokens": { "type": ["integer", "null"] },
+        "output_tokens": { "type": ["integer", "null"] },
+        "cache_read_input_tokens": {
+          "type": ["integer", "null"],
+          "description": "Cache-read input tokens (prompt caching); additive to the uncached input_tokens."
+        }
+      }
+    },
+
+    "identity_key": { "type": "string" },
+    "reason": { "type": "string" },
+    "event_id": { "type": "string" }
+  },
+
+  "allOf": [
+    {
+      "if": { "properties": { "record_type": { "const": "session" } } },
+      "then": { "required": ["trigger", "outcome", "tool_calls"] }
+    },
+    {
+      "if": { "properties": { "record_type": { "const": "suppression" } } },
+      "then": { "required": ["identity_key", "reason"] }
+    }
+  ]
+}

@@ -16,6 +16,7 @@ import pytest
 
 from henk.audit import (
     AUDIT_SCHEMA_PATH,
+    AUDIT_SCHEMA_V1_PATH,
     SCHEMA_VERSION,
     AuditLog,
     session_record,
@@ -60,6 +61,48 @@ def test_event_session_record_validates_with_arc_flag():
     _validate(rec)
     assert rec["triage_arc_complete"] is True
     assert rec["handoff_message_id"] == "hf-1"
+
+
+# --- Schema v2: per-triage semantics + cache-read usage -------------------
+
+
+def test_schema_version_is_two():
+    assert SCHEMA_VERSION == 2  # bumped for per-triage records + cache-read usage
+
+
+def test_new_records_declare_v2_and_validate():
+    rec = session_record(
+        trigger="event",
+        usage={"input_tokens": 4, "output_tokens": 200, "cache_read_input_tokens": 800},
+    )
+    _validate(rec)  # against the v2 schema (AUDIT_SCHEMA_PATH)
+    assert rec["schema_version"] == 2
+
+
+def test_usage_carries_cache_read_in_v2():
+    rec = session_record(
+        trigger="event",
+        usage={"input_tokens": 4, "output_tokens": 2, "cache_read_input_tokens": 90},
+    )
+    assert rec["usage"]["cache_read_input_tokens"] == 90
+    _validate(rec)
+
+
+def test_old_v1_records_still_validate_against_v1_schema():
+    # Historical records keep declaring version 1 and must validate against the
+    # committed v1 schema (readers stay valid across the bump).
+    v1_schema = json.loads(AUDIT_SCHEMA_V1_PATH.read_text())
+    v1_record = {
+        "schema_version": 1,
+        "record_type": "session",
+        "trigger": "event",
+        "outcome": "completed",
+        "tool_calls": [{"name": "homelab_health", "tool_class": "read-only"}],
+        "usage": {"input_tokens": 100, "output_tokens": 20},
+        "at": 1.0,
+    }
+    jsonschema.validate(v1_record, v1_schema)
+    assert v1_schema["properties"]["schema_version"]["const"] == 1
 
 
 def test_suppression_record_validates():

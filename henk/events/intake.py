@@ -44,6 +44,7 @@ class EventIntake:
         self,
         stream: EventStream,
         *,
+        initial_offset: str | None = None,
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         backoff_base: float = 1.0,
@@ -54,7 +55,10 @@ class EventIntake:
         self._sleep = sleep
         self._backoff_base = backoff_base
         self._max_backoff = max_backoff
-        self._last_id: str | None = None
+        # Seeded from the durable checkpoint on restart so the first subscribe
+        # resumes with since=<offset> and replays events published while stopped
+        # (design D1). None on the first ever start → cold subscribe, no since.
+        self._last_id: str | None = initial_offset
 
     async def events(self) -> AsyncIterator[Event]:
         """Yield events forever, reconnecting with backoff + ``since`` on error."""

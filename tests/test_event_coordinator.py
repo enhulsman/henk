@@ -22,9 +22,13 @@ HOUR = 3600.0
 class RecordingCore:
     def __init__(self) -> None:
         self.turns: list = []
+        self.markers: list = []
 
     async def submit_event(self, turn) -> None:
         self.turns.append(turn)
+
+    async def submit_marker(self, marker) -> None:
+        self.markers.append(marker)
 
 
 def _event(mid: str, title: str, message: str = "") -> Event:
@@ -71,3 +75,76 @@ async def test_cooldown_refire_submits_nothing_and_audits_suppression(tmp_path):
     assert recs[0]["record_type"] == "suppression"
     assert recs[0]["reason"] == "cooldown"
     assert recs[0]["identity_key"] == "gatus:svc/api"
+
+
+# --- Checkpoint offset / marker (design D1: advance only when durable) -----
+
+
+async def test_event_turn_carries_batch_last_seen_offset(tmp_path):
+    coord, core, _ = _coordinator(tmp_path)
+    batch = [_event("e1", "Gatus: svc/a"), _event("e2", "Gatus: svc/b")]
+    await coord.dispatch_batch(batch, now=0.0)
+    # The turn carries the batch's last-seen id so the core can checkpoint it
+    # only after the triage record is durable.
+    assert core.turns[0].offset == "e2"
+    assert core.markers == []
+
+
+async def test_suppression_only_batch_enqueues_checkpoint_marker(tmp_path):
+    coord, core, audit_path = _coordinator(tmp_path)
+    await coord.dispatch_batch([_event("e1", "Gatus: svc/api")], now=0.0)  # triaged
+    core.turns.clear()
+    # Re-fire inside cooldown → suppression only, no turn — but the checkpoint
+    # must still advance, via a marker riding the same FIFO queue.
+    await coord.dispatch_batch([_event("e9", "Gatus: svc/api")], now=1 * HOUR)
+    assert core.turns == []
+    assert len(core.markers) == 1
+    assert core.markers[0].offset == "e9"
+
+
+async def test_suppression_marker_withheld_when_audit_write_fails(tmp_path):
+    # If the suppression record could not be persisted, the checkpoint must NOT
+    # advance past it (gated on the audit write) — the event replays instead.
+    core = RecordingCore()
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x")
+    pipeline = EventPipeline(PipelineConfig(cooldown_seconds=6 * HOUR))
+    coord = EventCoordinator(
+        EventIntake.__new__(EventIntake), pipeline, core,
+        audit=AuditLog(blocker / "a.jsonl"),  # unwritable → write() returns False
+    )
+    await coord.dispatch_batch([_event("e1", "Gatus: svc/api")], now=0.0)  # triaged
+    core.turns.clear()
+    await coord.dispatch_batch([_event("e9", "Gatus: svc/api")], now=1 * HOUR)
+    assert core.markers == []  # suppression write failed → no advance
+
+
+async def test_dispatch_defaults_now_to_wall_clock_not_monotonic(tmp_path):
+    # D4: cadence decisions run on wall-clock. When no explicit now is given the
+    # coordinator must read its wall clock (comparable to persisted `at`), never
+    # the monotonic debounce clock.
+    core = RecordingCore()
+    pipeline = EventPipeline(PipelineConfig(cooldown_seconds=6 * HOUR))
+    coord = EventCoordinator(
+        EventIntake.__new__(EventIntake), pipeline, core,
+        audit=AuditLog(tmp_path / "a.jsonl"),
+        wall_clock=lambda: 1_700_000_000.0,
+        mono_clock=lambda: 42.0,
+    )
+    await coord.dispatch_batch([_event("e1", "Gatus: svc/api")])  # no explicit now
+    await coord.dispatch_batch([_event("e2", "Gatus: svc/api")])  # re-fire, suppressed
+    rec = _records(tmp_path / "a.jsonl")[0]
+    assert rec["at"] == 1_700_000_000.0  # stamped from the wall clock, not 42.0
+
+
+def test_default_clocks_are_wall_and_monotonic():
+    import time
+
+    core = RecordingCore()
+    coord = EventCoordinator(
+        EventIntake.__new__(EventIntake),
+        EventPipeline(PipelineConfig()),
+        core,
+    )
+    assert coord._wall_clock is time.time
+    assert coord._mono_clock is time.monotonic

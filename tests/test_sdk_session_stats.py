@@ -42,6 +42,13 @@ def _result(input_tokens: int, output_tokens: int) -> NS:
               usage={"input_tokens": input_tokens, "output_tokens": output_tokens})
 
 
+def _result_cached(input_tokens: int, output_tokens: int, cache_read: int) -> NS:
+    """ResultMessage whose usage also reports cache-read input tokens."""
+    return NS(content=None, total_cost_usd=0.01,
+              usage={"input_tokens": input_tokens, "output_tokens": output_tokens,
+                     "cache_read_input_tokens": cache_read})
+
+
 class _FakeClient:
     def __init__(self, turns: list[list]) -> None:
         self._turns = list(turns)
@@ -115,7 +122,33 @@ def test_accumulator_ignores_text_and_missing_usage():
     assert stats.tool_calls == ()
     assert stats.input_tokens is None
     assert stats.output_tokens is None
+    assert stats.cache_read_input_tokens is None
     assert stats.model is None
+
+
+def test_accumulator_folds_cache_read_tokens():
+    # Prompt caching: input_tokens counts only UNCACHED input, so full cost
+    # accounting needs the cache-read count alongside it (design D7).
+    acc = _StatsAccumulator()
+    acc.observe(_assistant("m"))
+    acc.observe(_result_cached(4, 200, cache_read=800))
+    stats = acc.snapshot()
+    assert stats.input_tokens == 4            # uncached unchanged
+    assert stats.output_tokens == 200
+    assert stats.cache_read_input_tokens == 800
+
+
+def test_accumulator_cache_read_absent_is_none_not_error():
+    acc = _StatsAccumulator()
+    acc.observe(_result(1000, 200))           # usage has no cache_read key
+    assert acc.snapshot().cache_read_input_tokens is None
+
+
+def test_accumulator_sums_cache_read_across_turns():
+    acc = _StatsAccumulator()
+    acc.observe(_result_cached(4, 10, cache_read=500))
+    acc.observe(_result_cached(4, 10, cache_read=300))
+    assert acc.snapshot().cache_read_input_tokens == 800
 
 
 def test_accumulator_unknown_tool_class_is_none():

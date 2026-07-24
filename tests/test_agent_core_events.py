@@ -63,17 +63,44 @@ async def test_event_turn_when_idle_starts_fresh_session():
 
 
 async def test_owner_turn_has_no_triage_framing_event_turn_does():
+    # D5 (event-pipeline-durability): a new incident displaces the owner
+    # conversation into its own isolated session rather than reusing it.
     channel = FakeChannel()
     factory = EventSessionFactory(reply="ok")
     core = AgentCore(factory, channel, clock=make_clock([0, 0, 1, 1]))
-    await core.process("what's my todo list?")           # owner turn
-    await core.process(_turn(_item("Gatus: svc/api")))    # event turn, same session
-    session = factory.created[0]
-    assert factory.create_count == 1  # reused (not idle)
-    assert UNTRUSTED_BEGIN not in session.contents[0]     # owner turn: no framing
-    assert "Triage this incident" not in session.contents[0]
-    assert UNTRUSTED_BEGIN in session.contents[1]          # event turn: framing
-    assert "Triage this incident" in session.contents[1]
+    await core.process("what's my todo list?")           # owner turn → session A
+    await core.process(_turn(_item("Gatus: svc/api")))    # event turn → fresh session B
+    assert factory.create_count == 2  # incident does NOT inherit the owner session
+    owner_session, event_session = factory.created[0], factory.created[1]
+    assert UNTRUSTED_BEGIN not in owner_session.contents[0]   # owner turn: no framing
+    assert "Triage this incident" not in owner_session.contents[0]
+    assert UNTRUSTED_BEGIN in event_session.contents[0]        # event turn: framing
+    assert "Triage this incident" in event_session.contents[0]
+
+
+async def test_new_incident_does_not_inherit_prior_incident_context():
+    # agent-core delta: a new incident starts fresh even while another incident's
+    # session is still open — no cross-incident context bleed.
+    channel = FakeChannel()
+    factory = EventSessionFactory(reply="ok")
+    core = AgentCore(factory, channel, clock=make_clock([0, 0, 1, 1]))
+    await core.process(_turn(_item("Gatus: svc/a", eid="a")))   # incident A → session 1
+    await core.process(_turn(_item("Gatus: svc/b", eid="b")))   # incident B → session 2
+    assert factory.create_count == 2
+    # B's session saw only B's payload — nothing from A.
+    b_content = factory.created[1].contents[0]
+    assert "svc/b" in b_content
+    assert "svc/a" not in b_content
+
+
+async def test_owner_reply_after_triage_continues_incident_session():
+    channel = FakeChannel()
+    factory = EventSessionFactory(reply="ok")
+    core = AgentCore(factory, channel, clock=make_clock([0, 0, 1, 1]))
+    await core.process(_turn(_item("Gatus: svc/api")))    # incident → session 1
+    await core.process("what does the log say?")          # owner follow-up
+    assert factory.create_count == 1                       # same session (interrogation)
+    assert len(factory.created[0].contents) == 2
 
 
 async def test_announceable_event_output_is_sent_proactively():

@@ -28,7 +28,7 @@ from henk.agent.triage import (
     compose_event_turn_content,
     extract_diagnosis,
 )
-from henk.agent.turns import EventTurn, OwnerTurn, Turn
+from henk.agent.turns import CheckpointMarker, EventTurn, OwnerTurn, Turn
 
 logger = logging.getLogger("henk.agent")
 
@@ -38,6 +38,14 @@ DEFAULT_ERROR_REPLY = (
     "Sorry — I hit an error handling that and couldn't complete it. "
     "Try again in a moment."
 )
+#: One-shot operator alert when the durability latch engages (design D1). Plain
+#: text, Signal-suited. Henk runs unattended, so a frozen checkpoint that only a
+#: restart can clear must not be silent.
+DEGRADED_DURABILITY_NOTICE = (
+    "⚠️ Henk: an audit write failed, so the event checkpoint is frozen. Events "
+    "will replay on the next restart (some may re-notify). A restart is advised "
+    "to clear this."
+)
 
 
 class _Sender:
@@ -46,7 +54,12 @@ class _Sender:
 
 @dataclass
 class _SessionAudit:
-    """Accumulates one session's audit data; flushed as one record on close."""
+    """Accumulates one session's audit data.
+
+    Owner sessions flush one record on close; an event-triage session flushes its
+    record at triage completion (design D3) and sets ``flushed`` so ``close`` does
+    not write a second, conflated record.
+    """
 
     trigger: str
     events: list[dict] = field(default_factory=list)
@@ -57,6 +70,11 @@ class _SessionAudit:
     announceable: bool | None = None
     turn_count: int = 0
     outcome: str = "completed"
+    flushed: bool = False
+    #: Cumulative session stats at this acc's start; when set, the acc's record
+    #: reports only stats accrued SINCE it (delta), so an owner interrogation
+    #: continuing an event session is audited without double-counting the triage.
+    stats_baseline: "SessionStats | None" = None
 
 
 class AgentCore:
@@ -70,6 +88,8 @@ class AgentCore:
         error_reply: str = DEFAULT_ERROR_REPLY,
         audit: Any | None = None,
         model: str | None = None,
+        checkpoint: Any | None = None,
+        handoff_sink: Callable[[str, str], None] | None = None,
     ) -> None:
         self._factory = factory
         self._channel = channel
@@ -78,6 +98,17 @@ class AgentCore:
         self._error_reply = error_reply
         self._audit = audit
         self._model = model
+        # Durable intake-offset store: advanced only after a triage record is
+        # durable (design D1). None outside the event path (reactive owner-only).
+        self._checkpoint = checkpoint
+        # Called with (identity_key, handoff_id) after a triage that published a
+        # handoff, so the pipeline's recurrence framing can reference it next time.
+        self._handoff_sink = handoff_sink
+        # Durability barrier (design D1): once a genuine audit write fails, the
+        # checkpoint freezes for the process lifetime — the cursor must never
+        # advance past a non-durable event, and opaque ntfy ids can't be compared
+        # for a per-offset high-water-mark, so "a gap appeared" latches globally.
+        self._checkpoint_blocked = False
         self._session: AgentSession | None = None
         self._last_activity: float | None = None
         self._acc: _SessionAudit | None = None
@@ -90,6 +121,14 @@ class AgentCore:
     async def submit_event(self, turn: EventTurn) -> None:
         """Enqueue a debounced, triageable event turn for serial processing."""
         await self._queue.put(turn)
+
+    async def submit_marker(self, marker: CheckpointMarker) -> None:
+        """Enqueue a suppression-only batch's checkpoint advance (design D1).
+
+        It rides the same serial queue so it advances the intake offset only
+        after any triage ahead of it has flushed — FIFO durability ordering.
+        """
+        await self._queue.put(marker)
 
     async def run(self) -> None:
         """Process the queue forever, one turn at a time, in arrival order."""
@@ -106,7 +145,14 @@ class AgentCore:
         """Handle a single turn end to end (used directly by tests)."""
         if isinstance(turn, str):
             turn = OwnerTurn(turn)
-        if isinstance(turn, EventTurn):
+        if isinstance(turn, CheckpointMarker):
+            # Suppression-only batch: its suppression records were written by the
+            # coordinator and any prior triage has been processed. Advancing the
+            # cursor here is gated by the durability latch inside
+            # _advance_checkpoint, so a prior FAILED flush blocks this too (the
+            # marker can never leapfrog a non-durable event).
+            self._advance_checkpoint(turn.offset)
+        elif isinstance(turn, EventTurn):
             await self._process_event(turn)
         else:
             await self._process_owner(turn.text)
@@ -139,24 +185,16 @@ class AgentCore:
     # --- Event turns (proactive triage path) ------------------------------
 
     async def _process_event(self, turn: EventTurn) -> None:
-        await self._ensure_session("event")
-        content = compose_event_turn_content(turn)
-        try:
-            reply = await self._session.run_turn(content)  # type: ignore[union-attr]
-        except Exception:
-            logger.exception("triage turn failed")
-            if self._acc is not None:
-                self._acc.outcome = "error"
-            self._last_activity = self._clock()
-            return
-
-        arc = check_triage_arc(reply)
+        # D5: a new incident always starts its own isolated session, displacing
+        # any open session (owner conversation or a prior incident) so no context
+        # bleeds across incidents. The displaced session's record is already
+        # durable (event triages flush per-triage; owner sessions flush on close).
+        await self._start_event_session()
+        # Record which incidents this turn is triaging up front, so even an
+        # errored triage's record names them (the audit is the transferable
+        # artifact — an error must not be an anonymous blank).
         if self._acc is not None:
             self._acc.had_event_turn = True
-            self._acc.turn_count += 1
-            self._acc.triage_arc_complete = arc.complete
-            self._acc.confidence = arc.confidence
-            self._acc.diagnosis = extract_diagnosis(reply)
             self._acc.announceable = turn.announceable
             self._acc.events.extend(
                 {
@@ -169,12 +207,68 @@ class AgentCore:
                 }
                 for it in turn.items
             )
+        content = compose_event_turn_content(turn)
+        try:
+            reply = await self._session.run_turn(content)  # type: ignore[union-attr]
+        except Exception:
+            logger.exception("triage turn failed")
+            if self._acc is not None:
+                self._acc.outcome = "error"
+            self._last_activity = self._clock()
+            # D1/D3: record the errored triage and advance the cursor anyway, so
+            # a poison event is not reprocessed forever.
+            await self._flush_event_triage(turn)
+            return
+
+        arc = check_triage_arc(reply)
+        if self._acc is not None:
+            self._acc.turn_count += 1
+            self._acc.triage_arc_complete = arc.complete
+            self._acc.confidence = arc.confidence
+            self._acc.diagnosis = extract_diagnosis(reply)
         self._last_activity = self._clock()
 
+        # D3: make this triage durable now (session stays open for owner
+        # interrogation), then advance the checkpoint gated on that write.
+        await self._flush_event_triage(turn)
+
         # Proactive send only for announceable incidents; cap-overflow triage
-        # still ran (and will still publish its handoff + audit record).
+        # still ran (and its handoff + audit record are already durable).
         if turn.announceable and reply:
             await self._channel.send(self._with_suppressed_note(reply, turn))
+
+    async def _flush_event_triage(self, turn: EventTurn) -> None:
+        """Write the event triage's record, wire recurrence, advance the cursor.
+
+        The checkpoint advance is gated on the audit write succeeding; a GENUINE
+        write failure (audit configured but the write returned False) latches the
+        durability barrier and sends a one-shot operator notice (design D1). A
+        no-audit flush returns False too (M4) but is a designed no-op — it must
+        not latch or notify, hence the ``self._audit is not None`` gate."""
+        if self._acc is None or self._acc.flushed:
+            return
+        ok, handoff_id = self._write_audit_record(self._session, self._acc)
+        self._acc.flushed = True
+        if self._handoff_sink is not None and handoff_id:
+            for item in turn.items:
+                self._handoff_sink(item.identity.key, handoff_id)
+        genuine_failure = self._audit is not None and not ok
+        if genuine_failure and not self._checkpoint_blocked:
+            # Latch BEFORE the await so a send failure can't leave it unset.
+            self._checkpoint_blocked = True
+            try:
+                await self._channel.send(DEGRADED_DURABILITY_NOTICE)
+            except Exception:  # pragma: no cover - best effort; must not crash triage
+                logger.warning("failed to send degraded-durability notice", exc_info=True)
+        if ok and turn.offset:
+            self._advance_checkpoint(turn.offset)
+
+    def _advance_checkpoint(self, offset: str | None) -> None:
+        # Frozen once any genuine flush failed: the cursor must never advance past
+        # a non-durable event (via this triage's offset OR a later marker/triage).
+        if self._checkpoint_blocked or self._checkpoint is None or not offset:
+            return
+        self._checkpoint.write(offset)
 
     @staticmethod
     def _with_suppressed_note(reply: str, turn: EventTurn) -> str:
@@ -200,6 +294,23 @@ class AgentCore:
             self._session = self._factory.create()
             self._last_activity = now
             self._acc = _SessionAudit(trigger=trigger)
+        elif self._acc is not None and self._acc.flushed:
+            # Reusing a session whose event-triage record already flushed (D3): the
+            # owner is now interrogating that incident. Start a fresh continuation
+            # acc, baselined at the current cumulative session stats, so the
+            # interrogation is audited as its own record with delta stats — not
+            # lost, and not conflated with (or double-counting) the triage record.
+            self._acc = _SessionAudit(
+                trigger=trigger,
+                stats_baseline=self._session_stats(self._session),
+            )
+
+    async def _start_event_session(self) -> None:
+        """Always open a fresh isolated session for a new incident (D5 displace)."""
+        await self._close_session()
+        self._session = self._factory.create()
+        self._last_activity = self._clock()
+        self._acc = _SessionAudit(trigger="event")
 
     async def _close_session(self) -> None:
         if self._session is None:
@@ -208,7 +319,10 @@ class AgentCore:
         acc = self._acc
         self._session = None
         self._acc = None
-        self._flush_audit(session, acc)
+        # An event-triage record was already flushed at triage completion (D3);
+        # only owner sessions (and any un-flushed acc) write their record here.
+        if acc is not None and not acc.flushed:
+            self._write_audit_record(session, acc)
         try:
             await session.close()
         except Exception:  # pragma: no cover - best effort
@@ -218,12 +332,21 @@ class AgentCore:
         """Flush and close the current session (shutdown / test boundary)."""
         await self._close_session()
 
-    def _flush_audit(self, session: AgentSession, acc: _SessionAudit | None) -> None:
-        if self._audit is None or acc is None:
-            return
-        from henk.audit import session_record
+    def _write_audit_record(
+        self, session: AgentSession, acc: _SessionAudit | None
+    ) -> tuple[bool, str | None]:
+        """Build and append one audit record. Returns ``(write_ok, handoff_id)``.
 
+        ``write_ok`` gates the checkpoint advance (design D1); ``handoff_id`` feeds
+        the recurrence sink. With no audit configured this returns
+        ``(False, handoff_id)`` — no durable record means the checkpoint must NOT
+        advance (M4). The whole record body (including the handoff scan) runs off
+        the EFFECTIVE stats: for a continuation acc that is the delta since its
+        baseline, so an interrogation record never inherits the triage's tool
+        calls, tokens, or handoff id."""
         stats = self._session_stats(session)
+        if acc is not None and acc.stats_baseline is not None:
+            stats = self._stats_since(stats, acc.stats_baseline)
         handoff_id = None
         tool_calls = []
         for call in stats.tool_calls if stats else ():
@@ -233,6 +356,12 @@ class AgentCore:
             )
             if call.name == "publish_handoff" and call.result_id:
                 handoff_id = call.result_id
+        if acc is None:
+            return True, handoff_id  # defensive; callers always pass a live acc
+        if self._audit is None:
+            return False, handoff_id  # no durable record ⇒ no advance (M4)
+        from henk.audit import session_record
+
         record = session_record(
             trigger=acc.trigger,
             event=acc.events if acc.had_event_turn else None,
@@ -249,12 +378,39 @@ class AgentCore:
             model=(stats.model if stats and stats.model else self._model),
             usage=(
                 {"input_tokens": stats.input_tokens,
-                 "output_tokens": stats.output_tokens}
+                 "output_tokens": stats.output_tokens,
+                 "cache_read_input_tokens": stats.cache_read_input_tokens}
                 if stats
                 else None
             ),
         )
-        self._audit.write(record)
+        ok = self._audit.write(record)
+        return ok, handoff_id
+
+    @staticmethod
+    def _stats_since(
+        current: SessionStats | None, baseline: SessionStats
+    ) -> SessionStats | None:
+        """Return stats accrued since ``baseline`` (for a continuation record).
+
+        ``tool_calls`` grows by appending (accumulator invariant), so the delta is
+        the suffix past the baseline length; token counts subtract with a strict
+        None-guard (never ``(cur or 0) - ...``, which could go negative)."""
+        if current is None:
+            return None
+
+        def sub(cur: int | None, base: int | None) -> int | None:
+            return None if cur is None else cur - (base or 0)
+
+        return SessionStats(
+            tool_calls=current.tool_calls[len(baseline.tool_calls):],
+            model=current.model,
+            input_tokens=sub(current.input_tokens, baseline.input_tokens),
+            output_tokens=sub(current.output_tokens, baseline.output_tokens),
+            cache_read_input_tokens=sub(
+                current.cache_read_input_tokens, baseline.cache_read_input_tokens
+            ),
+        )
 
     @staticmethod
     def _session_stats(session: AgentSession) -> SessionStats | None:

@@ -8,20 +8,38 @@ connecting anything.
 
 from __future__ import annotations
 
+import logging
+import time
+from pathlib import Path
+
 import httpx
 
 from henk.agent.core import AgentCore
 from henk.agent.sdk_session import SdkSessionFactory
 from henk.app import App, Dispatcher
-from henk.audit import AuditLog
+from henk.audit import AuditLog, read_audit_records
 from henk.channel.allowlist import AllowlistFilter
 from henk.channel.signal import SignalAdapter, SignalCliRestBridge
 from henk.config import Config
+from henk.events.checkpoint import OffsetCheckpoint
 from henk.events.coordinator import EventCoordinator
 from henk.events.intake import EventIntake, NtfyEventStream
 from henk.events.pipeline import EventPipeline, PipelineConfig
 from henk.gate.approval import ApprovalGate
 from henk.tools import build_production_registry
+
+logger = logging.getLogger("henk.runtime")
+
+#: Bounded tail read for cadence rehydration. Far above any plausible 24h window
+#: at Henk's few-events-per-week cadence, so rehydration stays a bounded startup
+#: cost even without log rotation. (read_text still loads the file; a seek-based
+#: tail is the future optimization if the log ever grows large.)
+_REHYDRATE_LIMIT = 10_000
+
+
+def _checkpoint_path(audit_path: str) -> Path:
+    """The intake-offset cursor lives beside the audit log, on the same volume."""
+    return Path(audit_path).parent / "intake-offset"
 
 
 def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
@@ -54,26 +72,57 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
     )
 
     audit = AuditLog(config.events.audit_path) if config.events.enabled else None
+
+    # Durability wiring (design D1/D2): only when events are enabled. The
+    # checkpoint store + cadence rehydration read the existing audit volume; both
+    # reads are non-fatal if the volume is absent (fresh install / test env).
+    checkpoint = None
+    pipeline = None
+    if config.events.enabled:
+        checkpoint = OffsetCheckpoint(_checkpoint_path(config.events.audit_path))
+        pipeline = _build_pipeline(config)
+        # Reconstruct cooldown/cap/recurrence from the persisted log before the
+        # coordinator consumes any event, so a restart does not re-arm cooldowns
+        # or reset the daily cap. Best-effort: rehydration must never crash
+        # startup, so an unreadable log or an unforeseen record shape logs and
+        # falls back to empty cadence state (worst case: one restart re-alerts).
+        try:
+            pipeline.rehydrate(
+                read_audit_records(
+                    config.events.audit_path, limit=_REHYDRATE_LIMIT
+                ),
+                now=time.time(),
+            )
+        except Exception:
+            logger.warning(
+                "cadence rehydration failed; starting with empty cadence state",
+                exc_info=True,
+            )
+
     core = AgentCore(
         factory,
         adapter,
         idle_timeout_seconds=config.agent.idle_timeout_seconds,
         audit=audit,
         model=config.agent.model,
+        checkpoint=checkpoint,
+        # Wire recurrence framing live: a triage that publishes a handoff records
+        # its id for the next re-fire of that identity (removes dead note_handoff).
+        handoff_sink=pipeline.note_handoff if pipeline is not None else None,
     )
     dispatcher = Dispatcher(AllowlistFilter(config.owner.id), gate, core)
 
-    coordinator = _build_coordinator(config, core, audit) if config.events.enabled else None
+    coordinator = (
+        _build_coordinator(config, core, audit, pipeline, checkpoint)
+        if config.events.enabled
+        else None
+    )
     return App(adapter, dispatcher, core, coordinator=coordinator), client
 
 
-def _build_coordinator(config: Config, core: AgentCore, audit: AuditLog | None):
+def _build_pipeline(config: Config) -> EventPipeline:
     ev = config.events
-    stream = NtfyEventStream(
-        config.ntfy.base_url, ev.events_topic, token=config.secrets.ntfy_token
-    )
-    intake = EventIntake(stream)
-    pipeline = EventPipeline(
+    return EventPipeline(
         PipelineConfig(
             debounce_seconds=ev.debounce_seconds,
             cooldown_seconds=ev.cooldown_seconds,
@@ -82,6 +131,22 @@ def _build_coordinator(config: Config, core: AgentCore, audit: AuditLog | None):
             cooldown_overrides=ev.cooldown_overrides,
         )
     )
+
+
+def _build_coordinator(
+    config: Config,
+    core: AgentCore,
+    audit: AuditLog | None,
+    pipeline: EventPipeline,
+    checkpoint: OffsetCheckpoint,
+):
+    ev = config.events
+    stream = NtfyEventStream(
+        config.ntfy.base_url, ev.events_topic, token=config.secrets.ntfy_token
+    )
+    # Seed intake from the durable checkpoint so the first subscribe resumes with
+    # since=<offset> and replays events published while Henk was stopped (D1).
+    intake = EventIntake(stream, initial_offset=checkpoint.read())
     return EventCoordinator(
         intake, pipeline, core, debounce_seconds=ev.debounce_seconds, audit=audit
     )

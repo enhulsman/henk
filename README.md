@@ -62,14 +62,14 @@ is sent back.
 ```mermaid
 flowchart LR
   sensors[Gatus + Grafana/Prometheus\ncurated subset] -- publish --> topic[(ntfy henk-events\ndeny-all)]
-  topic -- outbound subscribe\ntag:henk, no inbound --> intake[Event intake\nlast-seen-id, since-replay]
+  topic -- outbound subscribe\ntag:henk, no inbound --> intake[Event intake\ndurable last-seen-id\nsince-replay on restart]
   intake --> pipe[Debounce → cooldown → recurrence → cap]
   pipe -- triageable --> et[Event turn\nqueued in the SAME serial lane]
   pipe -- suppressed --> supp[(audit record only)]
   et --> core2[Agent core\ntriage framing + untrusted-data block]
   core2 -- announceable --> proactive[Proactive Signal send\nowner-only, split]
   core2 --> handoff[publish_handoff → ntfy henk-handoffs] --> pickup[[henk-pickup CLI\nany tailnet host]]
-  core2 --> audit[(henk_audit volume\none JSONL record/session)]
+  core2 --> audit[(henk_audit volume\none record per triage / owner session\n+ intake-offset checkpoint)]
 ```
 
 Events ride the **existing** `vps:2586` egress — no new port, listener, or
@@ -87,6 +87,43 @@ announceable message notes how many were suppressed.
 referencing the published handoff. The app layer checks arc compliance after
 each triage turn and records `triage_arc_complete` — a missing component never
 blocks delivery.
+
+**Durability across restarts (event-pipeline-durability).** All event-pipeline
+state survives a restart (rp5 restarts are routine and non-graceful), so a
+restart no longer silently drops incidents, resets the cadence cap, or loses the
+audit trail:
+
+- **Intake offset checkpoint.** The last-seen event id is persisted to a tiny
+  `intake-offset` file on the `henk_audit` volume; on startup the subscription
+  resumes with `since=<offset>`, so events published *while Henk was stopped*
+  (within ntfy's 72h retention) are replayed and collapsed by debounce/cooldown
+  into one catch-up conversation. The checkpoint advances **only after** an
+  event's outcome is durable — the core writes it at the per-triage-flush site
+  gated on the audit write, a suppression-only batch advances it via a marker on
+  the same serial queue, and an errored triage records `outcome="error"` before
+  advancing. The cursor never moves past an event whose outcome isn't on disk. If
+  an audit write genuinely fails, a **durability latch** freezes the cursor for the
+  process lifetime (opaque ntfy ids can't be compared, so a gap latches globally)
+  and Henk sends a **one-shot Signal notice** that a restart is advised — the
+  freeze degrades to a bounded replay-on-restart rather than a silent drop, and it
+  is not silent.
+- **Per-triage audit record.** An event triage writes its audit record at triage
+  completion (not deferred to session close), so it survives a SIGKILL and two
+  incidents never conflate into one record. Owner sessions still write one record
+  on close. This changes record cardinality → the schema is bumped to
+  **`schema_version: 2`** (`audit-record.v2.schema.json`; v1 kept for reading old
+  records), which also adds `usage.cache_read_input_tokens` for true cost
+  accounting under prompt caching.
+- **Cadence rehydration.** On startup the cap window, per-identity cooldowns, and
+  recurrence handoff refs are reconstructed from the persisted audit log (compared
+  on wall-clock time, stable across a restart), so the daily cap and cooldowns
+  hold and recurrence framing keeps referencing the prior handoff.
+- **Graceful shutdown.** `python -m henk` handles SIGTERM/SIGINT (via
+  `loop.add_signal_handler`) so `docker stop`'s grace period flushes the open
+  session cleanly instead of escalating to a `Exited 137` SIGKILL.
+
+No new volume, port, or ACL: the checkpoint lives beside the audit log on the
+existing `henk_audit` volume (already in the rp5 backup allowlist).
 
 ## Repo layout
 
@@ -123,6 +160,9 @@ blocks delivery.
   `debounce_seconds`, `cooldown_seconds`, `recurrence_window_seconds`,
   `cap_per_24h`, and `cooldown_overrides` (per-pattern regex → seconds). The
   cadence values are informed defaults — tune from the first week's audit log.
+  No new keys for durability: the intake-offset checkpoint sits beside
+  `audit_path` on the same `henk_audit` volume, and cadence state rehydrates from
+  the audit log at that path.
 
 **`.env`** (secrets, `chmod 600`, never committed — see `.env.example`):
 `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`), `TS_AUTHKEY`, `NTFY_TOKEN`,
@@ -233,6 +273,28 @@ Set `signal.account` in `config.yaml` to `<NUMBER>`.
 - [ ] **henk-pickup** retrieves the handoff from the workstation.
 - [ ] **Zero new exposure** — ACL/ports audit shows no change vs v1.
 
+### Deploy-verify checklist (durability — deploy day)
+
+- [ ] **Restart mid-stream + audit** — publish an event while Henk is stopped,
+  restart within retention → triaged **exactly once** and its **audit record is
+  present** after restart (this is the defect that motivated the change).
+- [ ] **Cap persists** — reach the daily cap, restart, publish another triageable
+  event → triaged + handed off but **no Signal send** (cap held across restart).
+- [ ] **Cooldown persists** — triage an identity, restart, re-fire within cooldown
+  → suppressed, suppression audit record present.
+- [ ] **Graceful stop** — `docker stop` exits cleanly (no `Exited 137`) and the
+  open session's record is flushed.
+- [ ] **Cache-read usage** — a fresh triage's audit record carries a populated
+  `cache_read_input_tokens`.
+- [ ] **Retention-eviction probe** — probe ntfy's response to a `since` id older
+  than the 72h retention window and **define the fallback** (cold-resubscribe vs
+  error-and-hold) before trusting it. The design is correct either way (persisting
+  conditions re-alert — an accepted non-goal), but ntfy's eviction behaviour is
+  unspecified. The durability latch's restart-advice notice shrinks the window in
+  which a frozen cursor could age out of retention.
+- [ ] **No new surface** — checkpoint file is `intake-offset` on the existing
+  `henk_audit` volume; ACL/ports/volumes audit shows no change vs v1.2.
+
 ## Rollback
 
 ```bash
@@ -242,7 +304,11 @@ docker compose down          # stop the stack
 
 **Events-only rollback:** set `events.enabled: false` in `config.yaml` and
 `compose up -d` — the subscriber never starts and Henk behaves exactly as v1
-(no schema/data to unwind; the new topics are inert if unused).
+(no schema/data to unwind; the new topics are inert if unused). The
+`intake-offset` checkpoint and v2 audit records are inert if unused and
+forward-compatible: reverting to the prior image only over-replays within the
+retention window, which cooldown absorbs, and v1 readers still validate old
+records.
 
 Rolling back leaves no residue beyond the named volumes; the ntfy grants and
 Tailscale node can be removed from their respective admin surfaces.

@@ -30,11 +30,17 @@ Verified facts this design leans on: the `at`/stats fixes (57d5894) work when a 
 
 ## Decisions
 
-### D1 — Intake offset checkpoint on the audit volume; resume with `since`
+### D1 — Intake offset checkpoint on the audit volume; **advance only when the outcome is durable**
 
-`EventIntake` gains an injected checkpoint sink. On each yielded event it writes the last-seen id to a small file on the audit volume (e.g. `/data/audit/intake-offset`); on startup `runtime.py` reads it and seeds `EventIntake`'s starting `_last_id` so the first `subscribe(since=...)` resumes from the checkpoint. Writes are best-effort and non-blocking (same discipline as the audit writer): a checkpoint failure logs at ERROR and never blocks intake. Chosen over persisting into the audit JSONL (the offset is high-churn mechanical state, not an incident record) and over an external store (constraint: no new services). **This is the priority defect** — a dropped incident is silent.
+The last-seen event id is checkpointed to a small file on the audit volume (e.g. `/data/audit/intake-offset`); on startup `runtime.py` reads it and seeds `EventIntake`'s starting `_last_id` so the first `subscribe(since=...)` resumes from the checkpoint. Writes are best-effort and non-blocking (same discipline as the audit writer): a checkpoint failure logs at ERROR and never blocks intake.
 
-Exactly-once is preserved by the existing pipeline: replayed events flow through the same debounce/cooldown/cap path (event-intake's bounded-replay guarantee), so a reconnect after downtime yields at most one catch-up conversation. The checkpoint is an *at-least-once delivery* offset; dedup within a batch and cooldown handle any re-delivery of the boundary event.
+**The checkpoint advances at the point the batch's outcome becomes durable, in delivery order — NOT on intake yield** (converged decision, scrutiny round 3; on-yield would advance past an in-flight event and re-open the silent-drop window this change closes). Concretely:
+
+- **The agent core advances it at the D3 per-triage-flush site**: after an event turn's audit record is written, the core checkpoints the batch's last-seen id — **gated on the audit write returning success** (a failed write leaves the checkpoint, so the event replays).
+- **An errored triage still advances the cursor** after writing an `outcome="error"` record, so a poison event is not reprocessed forever.
+- **A suppression-only batch** (all events cooled down, no triage turn) rides a **coordinator-enqueued `CheckpointMarker`** through the same serial core queue, so its advance is ordered behind any in-flight triage — the offset never advances past an event whose outcome (triage record or suppression record) isn't yet durable.
+
+Invariant: **the offset never advances past any event whose outcome isn't durable, in delivery order.** Exactly-once is preserved by the existing pipeline — replayed events flow through the same debounce/cooldown/cap path (bounded-replay guarantee) — and cooldown, rehydrated from the audit log (D2), absorbs any re-delivery of a boundary event after a crash.
 
 ### D2 — Rehydrate CadenceGate state from the persisted audit log
 

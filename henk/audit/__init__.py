@@ -10,16 +10,22 @@ message handling — availability of triage beats completeness of audit.
 
 from henk.audit.logger import (
     AUDIT_SCHEMA_PATH,
+    AUDIT_SCHEMA_V1_PATH,
+    AUDIT_SCHEMA_V2_PATH,
     SCHEMA_VERSION,
     AuditLog,
+    read_audit_records,
     session_record,
     suppression_record,
 )
 
 __all__ = [
     "AUDIT_SCHEMA_PATH",
+    "AUDIT_SCHEMA_V1_PATH",
+    "AUDIT_SCHEMA_V2_PATH",
     "SCHEMA_VERSION",
     "AuditLog",
+    "read_audit_records",
     "session_record",
     "suppression_record",
 ]
