@@ -24,9 +24,32 @@ from henk.events.types import Event
 
 logger = logging.getLogger("henk.events.intake")
 
+#: ntfy's "replay everything still retained" cursor. Used as the recovery value
+#: when the server rejects our checkpoint (see :class:`EventIntake`), because an
+#: over-replay is absorbed by cooldown/cap whereas a cold subscribe silently
+#: drops every event published while Henk was down.
+RETENTION_REPLAY_SINCE = "all"
+
+#: One-shot operator alert when the persisted checkpoint is unusable. Henk runs
+#: unattended, so a cursor the server refuses must not be a log-only event.
+SINCE_REJECTED_NOTICE = (
+    "⚠️ Henk: the saved event checkpoint was rejected by ntfy, so intake fell "
+    "back to replaying everything still retained. Some incidents may re-notify. "
+    "No events were dropped, but the checkpoint file is worth a look."
+)
+
 
 class EventStreamError(Exception):
-    """Raised by a transport when the ntfy subscription is unreachable or errors."""
+    """Raised by a transport when the ntfy subscription is unreachable or errors.
+
+    ``status`` carries the HTTP status when the failure was an HTTP error
+    response, so the intake loop can tell a rejected *resume point* (400) from an
+    ordinary transport blip and recover instead of retrying the same bad value.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class EventStream(Protocol):
@@ -49,8 +72,10 @@ class EventIntake:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         backoff_base: float = 1.0,
         max_backoff: float = 30.0,
+        on_since_rejected: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._stream = stream
+        self._on_since_rejected = on_since_rejected
         self._clock = clock
         self._sleep = sleep
         self._backoff_base = backoff_base
@@ -73,6 +98,21 @@ class EventIntake:
                     attempt = 0  # a delivered event proves the stream is healthy
                     yield event
             except EventStreamError as exc:
+                if self._is_since_rejection(exc):
+                    # The server refuses our resume point (a malformed checkpoint
+                    # -- ntfy 400s anything that is not a well-formed id). Retrying
+                    # it would wedge intake forever, silently, which is the exact
+                    # failure this change exists to prevent. Fall back to a full
+                    # retention replay: bounded, and cooldown/cap absorb repeats.
+                    logger.error(
+                        "ntfy rejected since=%s (HTTP %s); replaying all retained "
+                        "events instead so intake cannot wedge on a bad checkpoint",
+                        self._last_id,
+                        exc.status,
+                    )
+                    self._last_id = RETENTION_REPLAY_SINCE
+                    await self._notify_since_rejected()
+                    continue  # the sentinel is valid; no need to back off first
                 delay = min(self._backoff_base * (2**attempt), self._max_backoff)
                 attempt += 1
                 logger.warning(
@@ -85,6 +125,27 @@ class EventIntake:
             else:
                 # Clean end of stream (rare for a long poll): brief pause, resume.
                 await self._sleep(self._backoff_base)
+
+    def _is_since_rejection(self, exc: EventStreamError) -> bool:
+        """True when the server rejected the *resume point* specifically.
+
+        Requires a 400 AND a ``since`` we could actually be blamed for: a cold
+        subscribe sends none, and the sentinel is already the fallback, so in
+        both cases there is nothing to recover to and the normal backoff applies.
+        """
+        return (
+            exc.status == 400
+            and self._last_id is not None
+            and self._last_id != RETENTION_REPLAY_SINCE
+        )
+
+    async def _notify_since_rejected(self) -> None:
+        if self._on_since_rejected is None:
+            return
+        try:
+            await self._on_since_rejected()
+        except Exception:  # noqa: BLE001 - best effort; must never kill intake
+            logger.warning("failed to send since-rejected notice", exc_info=True)
 
     def _convert(self, raw: Mapping[str, Any]) -> Optional[Event]:
         """Convert a raw ntfy frame to an ``Event``; skip control frames.
@@ -137,5 +198,11 @@ class NtfyEventStream:  # pragma: no cover - deploy path (needs live ntfy + http
                     async for line in resp.aiter_lines():
                         if line.strip():
                             yield json.loads(line)
+        except httpx.HTTPStatusError as exc:
+            # Keep the status: the intake loop needs it to tell a rejected resume
+            # point (400) from an outage it should simply retry.
+            raise EventStreamError(
+                f"ntfy subscribe failed: {exc}", status=exc.response.status_code
+            ) from exc
         except Exception as exc:  # noqa: BLE001 - normalise every failure
             raise EventStreamError(f"ntfy subscribe failed: {exc}") from exc

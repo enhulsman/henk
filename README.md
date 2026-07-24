@@ -106,7 +106,13 @@ audit trail:
   process lifetime (opaque ntfy ids can't be compared, so a gap latches globally)
   and Henk sends a **one-shot Signal notice** that a restart is advised — the
   freeze degrades to a bounded replay-on-restart rather than a silent drop, and it
-  is not silent.
+  is not silent. If ntfy ever *rejects* the persisted cursor (HTTP 400 — it accepts
+  only a well-formed 12-char id), intake falls back to replaying everything still
+  retained rather than retrying a value it can never resume from, logs at ERROR and
+  notifies the owner; a cold subscribe is deliberately not used, since that would
+  silently discard the downtime events. The fallback self-heals on the next event.
+  Measured 2026-07-24 against the live server: `since=<id>` is **exclusive**, an
+  uncached id returns the full cache rather than an error, and retention is 72h.
 - **Per-triage audit record.** An event triage writes its audit record at triage
   completion (not deferred to session close), so it survives a SIGKILL and two
   incidents never conflate into one record. Owner sessions still write one record

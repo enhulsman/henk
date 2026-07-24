@@ -11,7 +11,12 @@ from __future__ import annotations
 
 from typing import AsyncIterator
 
-from henk.events.intake import EventIntake, EventStream, EventStreamError
+from henk.events.intake import (
+    RETENTION_REPLAY_SINCE,
+    EventIntake,
+    EventStream,
+    EventStreamError,
+)
 
 
 class FakeStream:
@@ -36,6 +41,11 @@ class FakeStream:
             if isinstance(item, Exception):
                 raise item
             yield item
+
+
+async def _no_sleep(_d: float) -> None:
+    """Backoff is not under test here — keep the reconnect path instant."""
+    return None
 
 
 def _msg(mid: str, title: str, message: str = "") -> dict:
@@ -155,3 +165,120 @@ async def test_persistent_failure_backs_off_without_crashing():
         pass
     # Backoff grows and is capped — never a tight spin.
     assert slept[:4] == [1.0, 2.0, 4.0, 8.0]
+
+
+# --- Unresumable-checkpoint recovery (deploy-verify item 5, 2026-07-24) -------
+#
+# Live probe against the vps ntfy established the `since` contract:
+#   * exactly 12 base62 chars  -> parsed as a message id  -> HTTP 200
+#   * an id no longer cached   -> HTTP 200 + the full retained cache (NOT an error)
+#   * anything else            -> HTTP 400
+# So eviction is benign, but a MALFORMED checkpoint is a hard rejection, and the
+# bare backoff loop would retry the same bad `since` forever — silently killing
+# intake, the exact failure class this change exists to eliminate.
+
+
+async def test_since_rejection_falls_back_to_full_retention_replay():
+    # 400 on the seeded offset, then a healthy connection.
+    stream = FakeStream([
+        [EventStreamError("bad since", status=400)],
+        [_msg("n1", "svc/a")],
+    ])
+    intake = EventIntake(stream, initial_offset="bogus-checkpoint")
+    events = await _collect(intake, 1)
+
+    assert [e.title for e in events] == ["svc/a"]
+    # Retried with the replay-all sentinel, NOT the rejected value and NOT a cold
+    # subscribe (which would silently drop everything published while stopped).
+    assert stream.since_calls == ["bogus-checkpoint", RETENTION_REPLAY_SINCE]
+
+
+async def test_since_rejection_notifies_the_owner():
+    notices: list[str] = []
+
+    async def on_rejected() -> None:
+        notices.append("sent")
+
+    stream = FakeStream([
+        [EventStreamError("bad since", status=400)],
+        [_msg("n1", "svc/a")],
+    ])
+    intake = EventIntake(
+        stream, initial_offset="bogus", on_since_rejected=on_rejected
+    )
+    await _collect(intake, 1)
+    # Unattended agent: a wedge that only a human can clear must not be silent.
+    assert notices == ["sent"]
+
+
+async def test_recovers_a_real_offset_after_the_fallback():
+    # Self-healing: once events flow again the sentinel is replaced by a real id,
+    # so a later reconnect resumes normally instead of re-replaying the cache.
+    stream = FakeStream([
+        [EventStreamError("bad since", status=400)],
+        [_msg("n1", "svc/a"), EventStreamError("dropped")],
+        [_msg("n2", "svc/b")],
+    ])
+    intake = EventIntake(stream, initial_offset="bogus", sleep=_no_sleep)
+    events = await _collect(intake, 2)
+
+    assert [e.title for e in events] == ["svc/a", "svc/b"]
+    assert stream.since_calls == ["bogus", RETENTION_REPLAY_SINCE, "n1"]
+
+
+async def test_transient_error_does_not_discard_the_offset():
+    # Regression guard: only a since-REJECTION resets the cursor. An ordinary
+    # transport blip must keep resuming from the last-seen id, or every network
+    # hiccup would trigger a full-cache replay storm.
+    stream = FakeStream([
+        [_msg("n1", "svc/a"), EventStreamError("connection reset")],
+        [_msg("n2", "svc/b")],
+    ])
+    intake = EventIntake(stream, sleep=_no_sleep)
+    events = await _collect(intake, 2)
+
+    assert [e.title for e in events] == ["svc/a", "svc/b"]
+    assert stream.since_calls == [None, "n1"]
+
+
+async def test_rejected_sentinel_does_not_spin():
+    # If even the sentinel is rejected there is nothing left to fall back to:
+    # take the normal backoff path rather than looping with no delay.
+    slept: list[float] = []
+
+    class _StopLoop(Exception):
+        pass
+
+    async def fake_sleep(d: float) -> None:
+        slept.append(d)
+        if len(slept) >= 3:
+            raise _StopLoop()
+
+    stream = FakeStream([[EventStreamError("bad since", status=400)]])
+    intake = EventIntake(
+        stream, initial_offset="bogus", sleep=fake_sleep, backoff_base=1.0
+    )
+    try:
+        await _collect(intake, 1)
+    except _StopLoop:
+        pass
+    assert slept[:3] == [1.0, 2.0, 4.0]
+
+
+async def test_cold_subscribe_rejection_is_not_treated_as_a_bad_checkpoint():
+    # No `since` was sent, so a 400 cannot be about the checkpoint — don't
+    # "recover" by replaying the cache, and don't notify.
+    notices: list[str] = []
+
+    async def on_rejected() -> None:
+        notices.append("sent")
+
+    stream = FakeStream([
+        [EventStreamError("bad request", status=400)],
+        [_msg("n1", "svc/a")],
+    ])
+    intake = EventIntake(stream, on_since_rejected=on_rejected, sleep=_no_sleep)
+    await _collect(intake, 1)
+
+    assert stream.since_calls == [None, None]
+    assert notices == []

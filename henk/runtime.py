@@ -23,7 +23,11 @@ from henk.channel.signal import SignalAdapter, SignalCliRestBridge
 from henk.config import Config
 from henk.events.checkpoint import OffsetCheckpoint
 from henk.events.coordinator import EventCoordinator
-from henk.events.intake import EventIntake, NtfyEventStream
+from henk.events.intake import (
+    SINCE_REJECTED_NOTICE,
+    EventIntake,
+    NtfyEventStream,
+)
 from henk.events.pipeline import EventPipeline, PipelineConfig
 from henk.gate.approval import ApprovalGate
 from henk.tools import build_production_registry
@@ -113,7 +117,7 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
     dispatcher = Dispatcher(AllowlistFilter(config.owner.id), gate, core)
 
     coordinator = (
-        _build_coordinator(config, core, audit, pipeline, checkpoint)
+        _build_coordinator(config, core, audit, pipeline, checkpoint, adapter)
         if config.events.enabled
         else None
     )
@@ -139,14 +143,25 @@ def _build_coordinator(
     audit: AuditLog | None,
     pipeline: EventPipeline,
     checkpoint: OffsetCheckpoint,
+    channel,
 ):
     ev = config.events
     stream = NtfyEventStream(
         config.ntfy.base_url, ev.events_topic, token=config.secrets.ntfy_token
     )
+
+    async def _notify_since_rejected() -> None:
+        await channel.send(SINCE_REJECTED_NOTICE)
+
     # Seed intake from the durable checkpoint so the first subscribe resumes with
-    # since=<offset> and replays events published while Henk was stopped (D1).
-    intake = EventIntake(stream, initial_offset=checkpoint.read())
+    # since=<offset> and replays events published while Henk was stopped (D1). If
+    # the server rejects that cursor, intake replays all retained events rather
+    # than retrying a value it can never resume from — and tells the owner.
+    intake = EventIntake(
+        stream,
+        initial_offset=checkpoint.read(),
+        on_since_rejected=_notify_since_rejected,
+    )
     return EventCoordinator(
         intake, pipeline, core, debounce_seconds=ev.debounce_seconds, audit=audit
     )
