@@ -16,6 +16,7 @@
 - [x] 1.7 Cache-read usage (audit-log): `_StatsAccumulator` folds `cache_read_input_tokens` from a fake `ResultMessage.usage`; `SessionStats` and the audit `usage` object carry it; absent field → 0/None, not an error
 - [x] 1.8 Schema version bump (audit-log): new records declare the new `schema_version` and validate against the new published schema; a record under the previous version validates against the previous schema (both schema files committed)
 - [x] 1.9 Graceful shutdown (secure-deployment): SIGTERM routed to the graceful path triggers `App.run`'s finally → `core.aclose()` (assert the flush happened); SIGINT identical — driven with a fake loop/signal harness so no real signals are raised in the suite
+- [x] 1.10 Unresumable-checkpoint recovery (event-intake, design D8 — added after the 3.2 probe): a 400-class `since` rejection retries with the retention-replay sentinel instead of the rejected value and notifies the owner; an ordinary transport error keeps the offset (no replay storm on a blip); the fallback self-heals to a real id once events flow; a rejected sentinel takes the normal backoff instead of spinning; a cold-subscribe 400 is not misread as a bad checkpoint
 
 ## 2. Implementation (make 1.x pass)
 
@@ -27,19 +28,22 @@
 - [x] 2.6 Audit schema: bump `SCHEMA_VERSION`, add `audit-record.v2.schema.json` (usage field + per-triage record semantics), keep v1 file for historical validation
 - [x] 2.7 `__main__.py`: install SIGTERM/SIGINT handlers via `loop.add_signal_handler` that drive the existing graceful shutdown (`App.run` finally → `aclose()`)
 - [x] 2.8 `runtime.py`: wire the checkpoint store and pipeline rehydration; no new config required (reuse `events.audit_path`'s volume); confirm `events.enabled: false` skips all of it (v1 behavior exactly)
+- [x] 2.9 Unresumable-checkpoint recovery (D8): `EventStreamError` carries the HTTP `status`; `NtfyEventStream` surfaces it from `HTTPStatusError`; `EventIntake` falls back to the `RETENTION_REPLAY_SINCE` sentinel on a 400-class rejection of a real `since`, logs at ERROR, and fires an `on_since_rejected` callback; `runtime.py` wires that callback to a Signal notice
 
 ## 3. Deploy and verify on rp5
 
 > Owner-run constraint (from henk-events): rp5 sudo is restricted — deploy (`compose up -d`) and anything under `/opt` are owner-run. Prepare exact commands and hand them over.
 
-- [ ] 3.1 Deploy the durability build (`compose up -d`); no compose/volume change expected — confirm checkpoint + state files initialize on the existing `henk_audit` volume
-- [ ] 3.2 Deploy-verify (mirrors henk-events 5.3(e), extended):
-  - (a) **restart mid-stream** — publish an event while Henk is stopped, restart within retention → event triaged **exactly once** after restart, and an **audit record for it is present** after restart
-  - (b) **cap persistence** — reach the daily cap, restart, publish another triageable event → triaged + handed off but **no Signal send** (cap held across restart)
-  - (c) **cooldown persistence** — triage an identity, restart, re-fire within cooldown → suppressed, suppression audit record present
-  - (d) **graceful stop** — `docker stop` shows a clean exit (no `Exited 137`) and the open session's record flushed
-  - (e) **cache-read usage** — a fresh triage's audit record shows a `cache_read_input_tokens` field populated
-- [ ] 3.3 Confirm zero new ports/volumes/ACL grants vs the v1.2 stack (secure-deployment: no new infrastructure surface)
+- [x] 3.1 Deploy the durability build (`compose up -d --build`); no compose/volume change. Confirmed 2026-07-24: checkpoint initialized on the existing `henk_audit` volume at `/data/audit/intake-offset`. (`--build` is required — code is `COPY`'d into the image, not bind-mounted.)
+- [x] 3.2 Deploy-verify — run live 2026-07-24 against rp5 with real Gatus-form events on `henk-events`:
+  - [x] (a) **restart mid-stream** — event B (`3i7pyY8kFnG5`) published while stopped; startup logged `?since=ETrzngVQ3F1v`, B triaged **exactly once** (1 handoff, 1 Signal send), audit record present. **The headline fix, proven end-to-end.**
+  - [ ] (b) **cap persistence** — NOT VERIFIED. Reaching the 3/24h cap needs 3 distinct announceable identities plus a restart; deferred to the 4.2 first-week watch, which exercises it on real traffic. Cap rehydration is covered by unit tests (1.3) but has no live evidence.
+  - [x] (c) **cooldown persistence** — `probe-alpha` triaged 18:15, restart 18:36 wiped memory, re-fire suppressed with a `suppression | reason=cooldown` record. Proves `rehydrate()` reconstructed cooldown from the audit log.
+  - [x] (d) **graceful stop** — `docker compose stop henk` returned `exit=0` in **0.72s** (was: 10s hang → `Exited 137`).
+  - [x] (e) **cache-read usage** — fresh record: `input_tokens: 6`, `cache_read_input_tokens: 53287`. The old accounting under-reported input by ~4 orders of magnitude.
+  - [x] (f) **ntfy `since` contract probed** (deploy gate): 12-char id → 200 and **exclusive**; uncached id → 200 + full cache (benign, not an error); anything else → 400. Retention measured at exactly 72h. Exposed the D8 wedge — see 3.4.
+- [x] 3.3 Zero new ports/volumes/ACL grants vs the v1.2 stack — no compose change in this deploy; the checkpoint reuses the existing `henk_audit` volume.
+- [ ] 3.4 **Redeploy for D8** (`compose up -d --build`) and confirm normal startup. The 3.2 run validated the pre-D8 build; D8 touches only the `since`-rejection path, so 3.2's results stand, but D8 itself ships unverified in production until this redeploy.
 
 ## 4. Wrap-up
 

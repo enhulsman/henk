@@ -48,3 +48,18 @@ The intake SHALL persist the last-seen event id to the audit volume such that th
 #### Scenario: Checkpoint write failure is non-fatal
 - **WHEN** the checkpoint cannot be written
 - **THEN** the failure is logged and intake continues processing events
+
+### Requirement: An unresumable checkpoint SHALL NOT wedge intake
+If the server rejects the persisted resume point (an HTTP 400-class rejection of `since`, as ntfy returns for any value that is not a well-formed message id), the intake SHALL NOT retry that value indefinitely. It SHALL fall back to replaying all still-retained events, log the rejection at error level, and notify the owner that a fallback replay occurred. The fallback SHALL be preferred over a cold subscribe, because a cold subscribe would silently discard every event published while Henk was stopped. Once events flow again the intake SHALL resume tracking real message ids, so the fallback is self-healing and does not repeat on the next reconnect. An ordinary transport failure SHALL NOT discard the offset — only a rejection of the resume point itself.
+
+#### Scenario: Persisted checkpoint is rejected by the server
+- **WHEN** the subscription is opened with a persisted `since` the server rejects as malformed
+- **THEN** intake retries with a full-retention replay instead of the rejected value, the owner is notified, and events continue to be processed
+
+#### Scenario: Transport blip keeps the offset
+- **WHEN** the subscription fails for any reason other than a rejected resume point
+- **THEN** the intake reconnects from the last-seen id under the existing backoff, without replaying the retained cache
+
+#### Scenario: Fallback recovers a real offset
+- **WHEN** intake has fallen back to a full-retention replay and events are delivered
+- **THEN** the last-seen id is updated to a real message id and later reconnects resume from it normally
