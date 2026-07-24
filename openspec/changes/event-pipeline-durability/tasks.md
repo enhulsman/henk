@@ -45,10 +45,43 @@
   - [x] (e) **cache-read usage** — fresh record: `input_tokens: 6`, `cache_read_input_tokens: 53287`. The old accounting under-reported input by ~4 orders of magnitude.
   - [x] (f) **ntfy `since` contract probed** (deploy gate): 12-char id → 200 and **exclusive**; uncached id → 200 + full cache (benign, not an error); anything else → 400. Retention measured at exactly 72h. Exposed the D8 wedge — see 3.4.
 - [x] 3.3 Zero new ports/volumes/ACL grants vs the v1.2 stack — no compose change in this deploy; the checkpoint reuses the existing `henk_audit` volume.
-- [ ] 3.4 **Redeploy for D8** (`compose up -d --build`) and confirm normal startup. The 3.2 run validated the pre-D8 build; D8 touches only the `since`-rejection path, so 3.2's results stand, but D8 itself ships unverified in production until this redeploy.
+- [ ] 3.4 **Redeploy for D8 + close 3.2(b) in one pass.** The 3.2 run validated the pre-D8 build; D8 touches only the `since`-rejection path, so 3.2's results stand, but D8 ships unverified in production until this redeploy. The redeploy doubles as the restart the cap test needs, so both close together.
+
+  **Step 1 — stage a publish token (vps, owner sudo).** Deleted after every run by design; there is no WSL-local publish credential.
+  ```
+  ssh admin@vps
+  sudo sh -c 'docker exec ntfy ntfy token list henk-sensors | grep -oE "tk_[A-Za-z0-9]+" | head -1 > /tmp/hs.tok'
+  sudo chown admin:admin /tmp/hs.tok
+  echo "staged bytes: $(wc -c < /tmp/hs.tok)"   # expect ~33
+  ```
+
+  **Step 2 — check how much cap headroom is left (rp5).** `cap_per_24h: 3`; only announceable event records inside the 24h window count.
+  ```
+  docker exec henk-henk-1 python -c "import json,pathlib,time;recs=[json.loads(l) for l in pathlib.Path('/data/audit/henk-audit.jsonl').read_text().splitlines() if l.strip()];now=time.time();print('announced in last 24h:',sum(1 for r in recs if r.get('record_type')=='session' and r.get('trigger')=='event' and r.get('announceable') and now-float(r.get('at') or 0)<86400))"
+  ```
+
+  **Step 3 — publish until the cap is reached, then one past it.** Each event needs ~4.5 min (120s debounce + triage). Use a FRESH identity every time — the 6h cooldown would otherwise suppress it and invalidate the step. Template (vary the endpoint name):
+  ```
+  ssh admin@vps 'T=$(head -1 /tmp/hs.tok); printf "%s" "An alert has been triggered due to having failed 2 time(s) in a row" | curl -s -H "Authorization: Bearer $T" -H "Title: Gatus: durability/probe-charlie" -H "Priority: 3" -H "Tags: rotating_light" --data-binary @- http://localhost:2586/henk-events'
+  ```
+  Publish fresh identities until step 2's count reads 3, then publish **one more**. That last one MUST triage and publish a handoff but send **no Signal message** — cap held pre-restart.
+
+  **Step 4 — redeploy (rp5). This is the D8 deploy AND the cap-test restart.** `--build` is mandatory: code is `COPY`'d into the image, not bind-mounted.
+  ```
+  cd /home/pi/Coding/henk && git pull && docker compose up -d --build henk
+  docker logs henk-henk-1 --tail 5     # expect: GET /henk-events/json?since=<id>
+  ```
+
+  **Step 5 — prove the cap survived.** Publish one more fresh identity. PASS = triaged + handoff + audit record, but **still no Signal send** (`docker logs henk-henk-1 | grep -c v2/send` must not increase). A Signal message here means `_announce_times` did not rehydrate — a real bug, not a flaky test.
+
+  **Step 6 — clean up.** `ssh admin@vps 'rm -f /tmp/hs.tok'`
 
 ## 4. Wrap-up
 
 - [x] 4.1 README: note the intake checkpoint + cadence rehydration behavior, the per-triage audit-record semantics, the `schema_version` bump, and graceful-shutdown behavior
-- [ ] 4.2 Unblock henk-events 5.4 first-week watch (audit now records event triages) and re-tune debounce/cooldown/cap from real audit data
-- [ ] 4.3 `/opsx:sync` + `/opsx:archive` this change
+- [ ] 4.2 Unblock henk-events 5.4 first-week watch (audit now records event triages) and re-tune debounce/cooldown/cap from real audit data. **Time-gated — cannot be closed early.** Read the week's data with:
+  ```
+  docker exec henk-henk-1 python -c "import json,pathlib,collections;recs=[json.loads(l) for l in pathlib.Path('/data/audit/henk-audit.jsonl').read_text().splitlines() if l.strip()];ev=[r for r in recs if r.get('trigger')=='event'];print('triages:',len(ev),'announced:',sum(1 for r in ev if r.get('announceable')));print('suppressions:',collections.Counter(r.get('reason') for r in recs if r.get('record_type')=='suppression'));print('tokens:',sum((r.get('usage') or {}).get('cache_read_input_tokens',0) for r in recs))"
+  ```
+  Tune targets: unprompted messages should stay within "a few per week"; if suppressions are dominated by `cooldown` on the same identities, lengthen their `cooldown_overrides` rather than raising the cap.
+- [ ] 4.3 `/opsx:sync` + `/opsx:archive` this change — **only after henk-events is archived first** (task 0.1). Ordering is not optional: these deltas MODIFY `audit-log`/`event-intake`/`incident-triage`, which enter `openspec/specs/` only when henk-events archives. Confirm with the owner before running either archive.
