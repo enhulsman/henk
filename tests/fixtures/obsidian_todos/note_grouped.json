@@ -1,17 +1,17 @@
 {
   "todos": {
     "Personal/inbox.md": [
-      {"text": "buy cat food", "done": false, "source_note": "Personal/inbox.md"},
-      {"text": "renew passport", "done": true, "source_note": "Personal/inbox.md"}
+      {"description": "buy cat food", "due_date": null, "tags": [], "priority": "normal", "source_note": "Personal/inbox.md", "raw_line": "- [ ] buy cat food", "indent_level": 0},
+      {"description": "renew passport", "due_date": "2026-08-01", "tags": ["admin"], "priority": "high", "source_note": "Personal/inbox.md", "raw_line": "- [x] renew passport !high", "indent_level": 0}
     ],
     "Personal/projects/garden.md": [
-      {"text": "plant tomatoes", "done": false, "source_note": "Personal/projects/garden.md"}
+      {"description": "plant tomatoes", "due_date": null, "tags": [], "priority": "normal", "source_note": "Personal/projects/garden.md", "raw_line": "- [ ] plant tomatoes", "indent_level": 0}
     ],
     "Homelab/backups.md": [
-      {"text": "verify restic snapshot", "done": false, "source_note": "Homelab/backups.md"}
+      {"description": "verify restic snapshot", "due_date": null, "tags": ["ops"], "priority": "normal", "source_note": "Homelab/backups.md", "raw_line": "- [ ] verify restic snapshot", "indent_level": 0}
     ],
     "Work/sprint-planning.md": [
-      {"text": "SYNTHETIC-WORK-SENTINEL finalize the client invoice", "done": false, "source_note": "Work/sprint-planning.md"}
+      {"description": "SYNTHETIC-WORK-SENTINEL finalize the client invoice", "due_date": null, "tags": [], "priority": "high", "source_note": "Work/sprint-planning.md", "raw_line": "- [ ] SYNTHETIC-WORK-SENTINEL finalize the client invoice !high", "indent_level": 0}
     ]
   },
   "total_count": 5,

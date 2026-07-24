@@ -213,6 +213,19 @@ async def test_todos_fetched_note_grouped_shape():
     assert "renew passport" in result.content
 
 
+async def test_description_field_and_done_state_parsed_from_raw_line():
+    # Regression: the real obsidian-todo-api item carries text in `description`
+    # (not `text`), and the checkbox state only in `raw_line` (no done/completed
+    # bool). A wrong field map rendered every todo as "None" in prod.
+    data = _load("note_grouped")
+    tool, _ = _make_tool(_serve(data), note_allowlist=["Personal/"])
+    result = await tool._run()
+    assert result.ok
+    assert "None" not in result.content
+    assert "- [ ] buy cat food" in result.content  # raw_line "- [ ] ..."
+    assert "- [x] renew passport" in result.content  # raw_line "- [x] ..."
+
+
 async def test_requests_api_todos_path():
     # obsidian-todo-api serves todos at /api/todos, not /todos (a /todos GET 404s).
     def handler(request):

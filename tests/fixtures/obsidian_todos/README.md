@@ -20,6 +20,27 @@ Each item carries a `source_note` equal to its group key. The v1 `_summarize`
 assumed `data["todos"]` was a list; because it is a dict, the parser fell through
 to `return str(data)` and dumped the whole vault (work notes included).
 
+### Real item shape (confirmed against the live API, deploy-verify 2026-07-24)
+
+An item is:
+
+```
+{"description": "<todo text>", "due_date": <str|null>, "tags": [<str>…],
+ "priority": "<str>", "source_note": "<note path>",
+ "raw_line": "- [ ] <todo text> …", "indent_level": <int>}
+```
+
+Two fields the first fixture guessed wrong (they rendered every todo as `None`
+in prod until fixed):
+
+- **Text is `description`**, NOT `text`/`title`/`task`.
+- **There is no `done`/`completed` boolean.** The checkbox state lives only in
+  `raw_line` — `- [ ] …` is open, `- [x] …` is done. `_summarize` parses it from
+  there (`renew passport` in the fixture is `- [x]`, everything else `- [ ]`).
+
+Only field *names* and structure were recorded; no live payload text was copied —
+the item text here is invented.
+
 Groups in the fixture:
 
 | Group key | Purpose |

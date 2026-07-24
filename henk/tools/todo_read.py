@@ -11,6 +11,7 @@ only (substring, single-valued, fail-open) — never the security boundary.
 from __future__ import annotations
 
 import logging
+import re
 from typing import NamedTuple, Sequence
 
 import httpx
@@ -18,6 +19,17 @@ import httpx
 from henk.tools.base import Tool, ToolClass, ToolResult
 
 logger = logging.getLogger("henk.tools.todo_read")
+
+# The obsidian-todo-api item has no done/completed boolean; the checkbox state
+# lives only in the raw markdown line (`- [ ] …` open, `- [x] …` done).
+_TASK_LINE = re.compile(r"^\s*[-*+]\s*\[([ xX])\]")
+
+
+def _raw_line_done(raw_line: object) -> bool:
+    if not isinstance(raw_line, str):
+        return False
+    match = _TASK_LINE.match(raw_line)
+    return bool(match and match.group(1).lower() == "x")
 
 
 class _Prefix(NamedTuple):
@@ -173,8 +185,22 @@ class TodoReadTool(Tool):
         # itself leak the existence/volume of work notes).
         lines = [f"{len(survivors)} todo(s)"]
         for item in survivors:
-            text = item.get("text") or item.get("title") or item.get("task")
-            done = item.get("done") or item.get("completed")
-            mark = "x" if done else " "
+            # Real obsidian-todo-api items carry text in `description`; the
+            # text/title/task fallbacks cover the defensive flat-list shape.
+            text = (
+                item.get("description")
+                or item.get("text")
+                or item.get("title")
+                or item.get("task")
+            )
+            mark = "x" if self._item_done(item) else " "
             lines.append(f"- [{mark}] {text}")
         return ToolResult.success("\n".join(lines))
+
+    @staticmethod
+    def _item_done(item: dict) -> bool:
+        # Prefer an explicit boolean if a shape provides one; otherwise derive the
+        # checkbox state from the raw markdown line (the real API's only source).
+        if "done" in item or "completed" in item:
+            return bool(item.get("done") or item.get("completed"))
+        return _raw_line_done(item.get("raw_line"))
