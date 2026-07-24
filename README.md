@@ -112,6 +112,12 @@ blocks delivery.
   `agent.approval_timeout_seconds` (300), `agent.system_prompt`.
 - `endpoints.{gatus,prometheus,todo,ntfy}` base URLs + timeouts; `ntfy.topic`.
   (`endpoints.taiga` is retained but unused in v1.)
+- `personal_data.todo_note_allowlist` — **default-deny** list of note-path prefixes
+  `todo_read` may surface (folder-boundary match on each todo's source note, e.g.
+  `["Personal/"]`). **Empty/unset → the tool surfaces nothing** (fail closed), so a
+  forgotten value can never leak work data. The repo default is empty; the real
+  prefix lives only in the deployed config. `personal_data.taiga_project_allowlist`
+  is pre-shaped for the deferred `taiga_read` fast-follow (unused today).
 - `events.*` (v1.2) — `enabled` (**rollback flag**: `false` → subscriber never
   starts, exactly v1), `events_topic`, `handoffs_topic`, `audit_path`,
   `debounce_seconds`, `cooldown_seconds`, `recurrence_window_seconds`,
@@ -129,7 +135,7 @@ publish on `henk-handoffs`.
 | Tool | Class | Backend |
 |---|---|---|
 | `homelab_health` | read-only | Gatus API (rp5:8080) + Prometheus HTTP API (vps:9090) over the tailnet — no SSH |
-| `todo_read` | read-only | obsidian-todo-api (vps:8089), GET only |
+| `todo_read` | read-only | obsidian-todo-api (vps:8089), GET only; **default-deny note-path allowlist** (`personal_data.todo_note_allowlist`) — surfaces only allowlisted personal notes, drops everything else in-process; empty allowlist → surfaces nothing |
 | `notify` | notify-only | ntfy (vps:2586), fixed topic, every message prefixed `[AI]`, no destination arg |
 | `publish_handoff` | notify-only | ntfy (vps:2586), fixed `henk-handoffs` topic, `[AI]`-prefixed, no destination arg; returns the message id |
 

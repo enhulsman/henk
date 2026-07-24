@@ -103,12 +103,12 @@
 
 ## 4. Owner input + wiring
 
-- [ ] 4.1 **[RESOLVED — owner supplied `Personal/`]** Populate the deployed
+- [x] 4.1 **[RESOLVED — owner supplied `Personal/`]** Populate the deployed
       skip-worktree'd `config.yaml` on rp5 with `personal_data.todo_note_allowlist:
       ["Personal/"]`; the repo `config.yaml` example shows `Personal/` in commented
       guidance but keeps the default empty (fail closed). No longer blocked on owner
       input.
-- [ ] 4.2 **[RESOLVED — fast-follow, deferred]** `taiga_read` stays out of this change.
+- [x] 4.2 **[RESOLVED — fast-follow, deferred]** `taiga_read` stays out of this change.
       Re-enabling later is a scoped fast-follow: add the project-id allowlist filter
       mirroring 3.2, its tests mirroring 2.x, and register it — but only after a
       personal-scoped Taiga read account exists (server-side prerequisite). It MUST NOT
@@ -119,22 +119,22 @@
 > Owner-run constraint (per henk-events 5.x): rp5 deploy is owner-run; prepare exact
 > commands.
 
-- [ ] 5.1 Deploy the re-registered tool (`compose up -d` with the updated image and the
+- [x] 5.1 Deploy the re-registered tool (`compose up -d` with the updated image and the
       populated `config.yaml`).
-- [ ] 5.2 Deploy-verify: invoke `todo_read` via a Signal DM; confirm the reply contains
+- [x] 5.2 Deploy-verify: invoke `todo_read` via a Signal DM; confirm the reply contains
       only allowlisted-note (`Personal/`) todos. Assert **both** directions: every known
       personal todo under the allowlisted area is **present** (catches M1's silent-drop
       failure mode live, not just in tests), and a known work-note todo is **absent**
       from both the reply and the freshly flushed audit record (eyeball the
       diagnosis/handoff-derived fields, since the audit stores those, not raw output).
-- [ ] 5.3 Confirm the empty-allowlist fail-closed behavior once in prod (temporarily
+- [x] 5.3 Confirm the empty-allowlist fail-closed behavior once in prod (temporarily
       empty config or a probe) so the default-deny property is verified live, not only
       in tests.
 
 ## 6. Wrap-up
 
-- [ ] 6.1 README: note `todo_read` is re-enabled behind a default-deny note-path
+- [x] 6.1 README: note `todo_read` is re-enabled behind a default-deny note-path
       allowlist; document the `personal_data.todo_note_allowlist` config key.
-- [ ] 6.2 Update memory `henk-long-run-direction` (todo_read re-enabled + scoped;
+- [x] 6.2 Update memory `henk-long-run-direction` (todo_read re-enabled + scoped;
       carry the `taiga_read` project-id-allowlist fast-follow forward).
-- [ ] 6.3 `/opsx:sync` + `/opsx:archive` this change once 5.x verified.
+- [x] 6.3 `/opsx:sync` + `/opsx:archive` this change once 5.x verified.
