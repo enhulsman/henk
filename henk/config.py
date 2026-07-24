@@ -32,10 +32,11 @@ class AgentConfig:
     system_prompt: str = (
         "You are Henk, the owner's personal homelab assistant, reached over "
         "Signal.\n\n"
-        "Your complete toolset is exactly these three — you have no other tools "
+        "Your complete toolset is exactly these four — you have no other tools "
         "or capabilities (no scheduling, cron, workflows, web, files, or "
         "shell):\n"
         "- homelab_health — report homelab health and status.\n"
+        "- todo_read — read the owner's personal todos (personal notes only).\n"
         "- notify — send the owner a push notification via ntfy.\n"
         "- publish_handoff — publish a triage handoff document to the owner's "
         "handoffs topic.\n\n"
@@ -90,6 +91,21 @@ class EventsConfig:
 
 
 @dataclass(frozen=True)
+class PersonalDataConfig:
+    """Tier-W boundary knobs: default-deny allowlists for tools backed by stores
+    that mix personal and work/Anamata content (design D5).
+
+    Both default to an empty tuple → the corresponding tool surfaces **nothing**
+    (fail closed). A forgotten or fat-fingered config can only make a tool
+    unhelpfully empty, never leaky. ``taiga_project_allowlist`` is pre-shaped for
+    the deferred ``taiga_read`` fast-follow; nothing reads it yet.
+    """
+
+    todo_note_allowlist: tuple[str, ...] = ()
+    taiga_project_allowlist: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Secrets:
     """Credentials pulled from the environment. Values may be empty in tests."""
 
@@ -119,6 +135,7 @@ class Config:
     todo: EndpointConfig
     ntfy: NtfyConfig
     events: EventsConfig = field(default_factory=EventsConfig)
+    personal_data: PersonalDataConfig = field(default_factory=PersonalDataConfig)
     secrets: Secrets = field(default_factory=Secrets)
 
     @classmethod
@@ -191,6 +208,14 @@ class Config:
             cooldown_overrides=tuple(dict(o) for o in overrides),
         )
 
+        pd_sec = raw.get("personal_data", {}) or {}
+        personal_data = PersonalDataConfig(
+            todo_note_allowlist=tuple(pd_sec.get("todo_note_allowlist", []) or []),
+            taiga_project_allowlist=tuple(
+                pd_sec.get("taiga_project_allowlist", []) or []
+            ),
+        )
+
         return cls(
             owner=OwnerConfig(id=require_nonempty(owner_sec, "id", "owner")),
             agent=AgentConfig(
@@ -220,5 +245,6 @@ class Config:
                 timeout_seconds=float(ntfy_sec.get("timeout_seconds", 10.0)),
             ),
             events=events,
+            personal_data=personal_data,
             secrets=Secrets.from_env(env),
         )

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 
 from henk.config import Config
@@ -25,28 +27,28 @@ __all__ = [
     "build_production_registry",
 ]
 
+logger = logging.getLogger("henk.tools")
+
 
 def build_production_registry(
     config: Config, client: httpx.AsyncClient
 ) -> ToolRegistry:
-    """The v1 production toolset: homelab_health (read) + notify, plus
+    """The production toolset: homelab_health + todo_read (read), notify, plus
     publish_handoff for triage. Zero mutating tools.
 
-    ``taiga_read`` and ``todo_read`` are BOTH deliberately NOT registered: each
-    backs onto a store that mixes personal and work/Anamata content, so wiring it
-    safely needs source-side scoping plus a client-side allowlist (Tier-W
-    posture: never surface work data).
+    ``todo_read`` is registered behind a **default-deny note-path allowlist**
+    (personal-data-scoping). The obsidian vault mixes personal and work/Anamata
+    notes, so the tool surfaces only todos whose source note matches an allowlisted
+    folder-boundary prefix and drops everything else; an empty/unset allowlist
+    surfaces nothing (fail closed). Registering with an empty effective allowlist is
+    safe but useless, so a startup WARNING is emitted in that case.
 
-    - ``taiga_read``: the Taiga instance holds mixed personal/work projects; needs
-      a dedicated account scoped to personal projects (server-side) + a client-side
-      project-id allowlist.
-    - ``todo_read``: pulled after 5.3 deploy-verify caught it surfacing work/Anamata
-      todos into a triage handoff. It also raw-dumped the whole response — the
-      obsidian-todo-api returns a note-grouped dict the tool never parsed — so a
-      note-path allowlist plus a rewrite of the summariser are both required.
-
-    Both are deferred to a dedicated personal-data-scoping change; their classes
-    and tests are kept for that follow-up.
+    ``taiga_read`` remains deliberately NOT registered (fast-follow): the Taiga
+    instance holds mixed personal/work projects, so it needs the same default-deny
+    allowlist — keyed on **project id** — plus a server-side prerequisite (a Taiga
+    read account scoped to personal projects) that does not exist yet. It MUST NOT be
+    registered until that project-id filter is implemented. Its class and tests are
+    kept for that follow-up.
     """
     registry = ToolRegistry()
     registry.register(
@@ -57,6 +59,19 @@ def build_production_registry(
             timeout=config.gatus.timeout_seconds,
         )
     )
+    todo_read = TodoReadTool(
+        client,
+        base_url=config.todo.base_url,
+        token=config.secrets.todo_token,
+        timeout=config.todo.timeout_seconds,
+        note_allowlist=config.personal_data.todo_note_allowlist,
+    )
+    if not todo_read.effective_allowlist:
+        logger.warning(
+            "todo_read registered but always empty — no allowlist configured "
+            "(personal_data.todo_note_allowlist); it will surface nothing"
+        )
+    registry.register(todo_read)
     registry.register(
         NotifyTool(
             client,

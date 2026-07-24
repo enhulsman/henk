@@ -1,0 +1,19 @@
+{
+  "todos": {
+    "Personal/inbox.md": [
+      {"text": "buy cat food", "done": false, "source_note": "Personal/inbox.md"},
+      {"text": "renew passport", "done": true, "source_note": "Personal/inbox.md"}
+    ],
+    "Personal/projects/garden.md": [
+      {"text": "plant tomatoes", "done": false, "source_note": "Personal/projects/garden.md"}
+    ],
+    "Homelab/backups.md": [
+      {"text": "verify restic snapshot", "done": false, "source_note": "Homelab/backups.md"}
+    ],
+    "Work/sprint-planning.md": [
+      {"text": "SYNTHETIC-WORK-SENTINEL finalize the client invoice", "done": false, "source_note": "Work/sprint-planning.md"}
+    ]
+  },
+  "total_count": 5,
+  "note_count": 4
+}

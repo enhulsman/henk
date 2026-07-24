@@ -52,6 +52,26 @@ def test_events_section_absent_defaults_to_disabled():
     assert config.events.events_topic == "henk-events"
 
 
+def test_personal_data_allowlist_defaults_empty_fail_closed():
+    # Repo default stays empty → todo_read fails closed. The real prefix lives only
+    # in the deployed rp5 config.
+    config = Config.load(SAMPLE, env={})
+    assert config.personal_data.todo_note_allowlist == ()
+    assert config.personal_data.taiga_project_allowlist == ()
+
+
+def test_personal_data_allowlist_parsed_when_present():
+    raw = _minimal_raw("+31600000000")
+    raw["personal_data"] = {"todo_note_allowlist": ["Personal/", "Homelab/"]}
+    config = Config.from_dict(raw, env={})
+    assert config.personal_data.todo_note_allowlist == ("Personal/", "Homelab/")
+
+
+def test_personal_data_section_absent_defaults_empty():
+    config = Config.from_dict(_minimal_raw("+31600000000"), env={})
+    assert config.personal_data.todo_note_allowlist == ()
+
+
 def test_missing_required_section_raises():
     with pytest.raises(ConfigError):
         Config.from_dict({"owner": {"id": "x"}}, env={})

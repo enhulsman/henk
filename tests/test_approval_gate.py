@@ -75,14 +75,17 @@ def test_production_registry_has_no_mutating_tools():
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     registry = build_production_registry(Config.load(SAMPLE, env={}), client)
     assert registry.has_mutating() is False
-    # taiga_read AND todo_read are both deferred (mixed personal/work data, Tier-W)
-    # — not registered. publish_handoff (henk-events v1.2) is notify-class, so the
-    # registry is still zero mutating.
+    # todo_read is re-registered behind a default-deny note-path allowlist
+    # (personal-data-scoping). taiga_read stays deferred until its project-id filter
+    # exists. publish_handoff (henk-events v1.2) is notify-class, so the registry is
+    # still zero mutating.
     assert set(registry.names()) == {
         "homelab_health",
         "notify",
         "publish_handoff",
+        "todo_read",
     }
+    assert "taiga_read" not in registry.names()
 
 
 # --- Read-only bypass -----------------------------------------------------

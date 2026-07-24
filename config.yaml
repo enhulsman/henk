@@ -37,6 +37,23 @@ endpoints:
     topic: "homie-henk"
     timeout_seconds: 10
 
+# Personal-data scoping (Tier-W boundary). Default-deny allowlists for tools whose
+# backend mixes personal and work/Anamata content. EMPTY = fail closed: the tool
+# surfaces NOTHING. This repo default stays empty on purpose — the real prefix lives
+# only in the deployed rp5 config, so a forgotten value can never leak work data.
+#
+#   todo_read matches each todo's source note against these folder-boundary prefixes.
+#   The owner-supplied value on rp5 is:
+#     todo_note_allowlist: ["Personal/"]
+#   (`Personal/` matches Personal/x.md and Personal/sub/y.md, but NOT Personal-work/…,
+#   PersonalNotes/…, or a root Personal.md.)
+#
+# taiga_project_allowlist pre-shapes the deferred taiga_read fast-follow; nothing
+# reads it yet (taiga_read stays unregistered until its project-id filter exists).
+personal_data:
+  todo_note_allowlist: []
+  taiga_project_allowlist: []
+
 # Event intake (henk-events v1.2). `enabled: false` is the rollback flag — the
 # subscriber never starts and Henk behaves exactly as v1. Topics ride the single
 # ntfy credential (NTFY_TOKEN: read on events, write on handoffs + notify).
