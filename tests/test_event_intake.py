@@ -282,3 +282,131 @@ async def test_cold_subscribe_rejection_is_not_treated_as_a_bad_checkpoint():
 
     assert stream.since_calls == [None, None]
     assert notices == []
+
+
+class RejectingStream:
+    """400s every real id, serves events on the sentinel — a flapping cursor.
+
+    Models the case D8's prose did not consider: not a one-off bad checkpoint,
+    but a resume point that keeps being rejected after each recovery.
+    """
+
+    def __init__(self, per_cycle: int = 1) -> None:
+        self.since_calls: list[str | None] = []
+        self._n = 0
+        self._per_cycle = per_cycle
+
+    async def subscribe(self, since: str | None) -> AsyncIterator[dict]:
+        self.since_calls.append(since)
+        if since != RETENTION_REPLAY_SINCE:
+            raise EventStreamError("bad since", status=400)
+        self._n += 1
+        for i in range(self._per_cycle):
+            yield _msg(f"r{self._n}-{i}", "svc/replayed")
+
+
+async def test_repeated_rejection_notifies_only_once():
+    # The notice is documented as one-shot and must behave like the core's
+    # durability latch: an unattended agent that DMs the owner on every cycle
+    # has inverted the purpose of the alert.
+    notices: list[str] = []
+
+    async def on_rejected() -> None:
+        notices.append("sent")
+
+    stream = RejectingStream()
+    intake = EventIntake(
+        stream, initial_offset="realid000001",
+        on_since_rejected=on_rejected, sleep=_no_sleep,
+    )
+    await _collect(intake, 4)
+    assert notices == ["sent"]
+
+
+async def test_repeated_rejection_backs_off_after_the_first_recovery():
+    # First recovery reconnects immediately (the sentinel is known-valid).
+    # Later ones must be paced, or a flapping cursor re-downloads the whole
+    # 72h cache in a tight loop and rewrites a suppression record per event.
+    # An interleaved trace is the only unambiguous discriminator here: `attempt`
+    # resets on every delivered event, so all delays are backoff_base and a
+    # delay-value assertion cannot distinguish the two paths.
+    trace: list[str] = []
+
+    async def rec_sleep(d: float) -> None:
+        trace.append("sleep")
+
+    class TracingStream(RejectingStream):
+        async def subscribe(self, since: str | None) -> AsyncIterator[dict]:
+            trace.append(f"sub:{since}")
+            async for frame in super().subscribe(since):
+                yield frame
+
+    stream = TracingStream()
+    intake = EventIntake(
+        stream, initial_offset="realid000001", sleep=rec_sleep, backoff_base=1.0
+    )
+    await _collect(intake, 4)
+
+    # First rejection reconnects immediately: nothing between it and the sentinel.
+    assert trace[0] == "sub:realid000001"
+    assert trace[1] == f"sub:{RETENTION_REPLAY_SINCE}"
+    # A later rejection must be paced -- a sleep sits between it and its retry.
+    second = trace.index("sub:r1-0")
+    nxt = trace.index(f"sub:{RETENTION_REPLAY_SINCE}", second)
+    assert "sleep" in trace[second:nxt], f"repeat recovery not paced; {trace}"
+
+
+async def test_first_recovery_reconnects_without_sleeping():
+    # Pins D8's "the sentinel is valid, so no backoff is needed" decision --
+    # deleting the `continue` must fail a test, not just run slower.
+    slept: list[float] = []
+
+    async def rec_sleep(d: float) -> None:
+        slept.append(d)
+
+    stream = FakeStream([
+        [EventStreamError("bad since", status=400)],
+        [_msg("n1", "svc/a")],
+    ])
+    intake = EventIntake(stream, initial_offset="bogus", sleep=rec_sleep)
+    await _collect(intake, 1)
+    assert slept == []
+
+
+async def test_non_400_status_is_not_a_since_rejection():
+    # Pins the predicate itself: only a 400 means "your resume point is bad".
+    # A 500/403 must keep the cursor -- resetting it on a server blip or a
+    # revoked token would trigger a pointless full replay and a false alert.
+    notices: list[str] = []
+
+    async def on_rejected() -> None:
+        notices.append("sent")
+
+    for status in (403, 500, 502):
+        stream = FakeStream([
+            [EventStreamError("server said no", status=status)],
+            [_msg("n1", "svc/a")],
+        ])
+        intake = EventIntake(
+            stream, initial_offset="realid000001",
+            on_since_rejected=on_rejected, sleep=_no_sleep,
+        )
+        await _collect(intake, 1)
+        assert stream.since_calls == ["realid000001", "realid000001"], status
+    assert notices == []
+
+
+async def test_notice_failure_does_not_kill_intake():
+    # The notice is best-effort: a Signal outage must not take intake with it.
+    async def boom() -> None:
+        raise RuntimeError("signal down")
+
+    stream = FakeStream([
+        [EventStreamError("bad since", status=400)],
+        [_msg("n1", "svc/a")],
+    ])
+    intake = EventIntake(
+        stream, initial_offset="bogus", on_since_rejected=boom, sleep=_no_sleep
+    )
+    events = await _collect(intake, 1)
+    assert [e.title for e in events] == ["svc/a"]

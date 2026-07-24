@@ -50,7 +50,7 @@ The intake SHALL persist the last-seen event id to the audit volume such that th
 - **THEN** the failure is logged and intake continues processing events
 
 ### Requirement: An unresumable checkpoint SHALL NOT wedge intake
-If the server rejects the persisted resume point (an HTTP 400-class rejection of `since`, as ntfy returns for any value that is not a well-formed message id), the intake SHALL NOT retry that value indefinitely. It SHALL fall back to replaying all still-retained events, log the rejection at error level, and notify the owner that a fallback replay occurred. The fallback SHALL be preferred over a cold subscribe, because a cold subscribe would silently discard every event published while Henk was stopped. Once events flow again the intake SHALL resume tracking real message ids, so the fallback is self-healing and does not repeat on the next reconnect. An ordinary transport failure SHALL NOT discard the offset — only a rejection of the resume point itself.
+If the server rejects the persisted resume point (an HTTP 400 rejection of `since`, as ntfy returns for any value it cannot parse), the intake SHALL NOT retry that value indefinitely. It SHALL fall back to replaying all still-retained events, log the rejection at error level, and notify the owner that a fallback replay occurred. The fallback SHALL be preferred over a cold subscribe, because a cold subscribe would silently discard every event published while Henk was stopped. Once events flow again the intake SHALL resume tracking real message ids, so the fallback is self-healing and does not repeat on the next reconnect. An ordinary transport failure, and any non-400 status, SHALL NOT discard the offset — only a rejection of the resume point itself. The owner SHALL be notified at most once per process, and only the first recovery SHALL reconnect without backoff, so a resume point that is rejected repeatedly cannot storm the owner's channel or the audit log.
 
 #### Scenario: Persisted checkpoint is rejected by the server
 - **WHEN** the subscription is opened with a persisted `since` the server rejects as malformed
@@ -63,3 +63,7 @@ If the server rejects the persisted resume point (an HTTP 400-class rejection of
 #### Scenario: Fallback recovers a real offset
 - **WHEN** intake has fallen back to a full-retention replay and events are delivered
 - **THEN** the last-seen id is updated to a real message id and later reconnects resume from it normally
+
+#### Scenario: Repeatedly rejected resume point is throttled
+- **WHEN** the resume point is rejected again after a recovery has already occurred in this process
+- **THEN** the owner is not notified again, and the retry is paced by the normal backoff rather than reconnecting immediately

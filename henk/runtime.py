@@ -19,6 +19,7 @@ from henk.agent.sdk_session import SdkSessionFactory
 from henk.app import App, Dispatcher
 from henk.audit import AuditLog, read_audit_records
 from henk.channel.allowlist import AllowlistFilter
+from henk.channel.base import ChannelAdapter
 from henk.channel.signal import SignalAdapter, SignalCliRestBridge
 from henk.config import Config
 from henk.events.checkpoint import OffsetCheckpoint
@@ -143,8 +144,8 @@ def _build_coordinator(
     audit: AuditLog | None,
     pipeline: EventPipeline,
     checkpoint: OffsetCheckpoint,
-    channel,
-):
+    channel: ChannelAdapter,
+) -> EventCoordinator:
     ev = config.events
     stream = NtfyEventStream(
         config.ntfy.base_url, ev.events_topic, token=config.secrets.ntfy_token

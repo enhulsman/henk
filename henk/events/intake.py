@@ -11,6 +11,12 @@ even while intake is failing (event-intake spec: intake failures are non-fatal).
 
 The concrete transport (:class:`NtfyEventStream`) is deployment wiring and is
 exercised at deploy, not in unit tests — tests drive a fake stream.
+
+One deliberate exception to "pure transport adapter": when the server rejects the
+persisted resume point, intake awaits an injected ``on_since_rejected`` callback
+that reaches the owner's channel (design D8). That send briefly blocks the intake
+loop; it is best-effort and bounded by the adapter's own timeouts, and it fires at
+most once per process.
 """
 
 from __future__ import annotations
@@ -76,6 +82,10 @@ class EventIntake:
     ) -> None:
         self._stream = stream
         self._on_since_rejected = on_since_rejected
+        # Bounds the since-rejection recovery: the first is immediate and tells
+        # the owner, later ones are paced and silent (mirrors the core's
+        # durability latch -- an unattended agent must not storm the channel).
+        self._recoveries = 0
         self._clock = clock
         self._sleep = sleep
         self._backoff_base = backoff_base
@@ -95,24 +105,39 @@ class EventIntake:
                     if event is None:
                         continue
                     self._last_id = event.id or self._last_id
-                    attempt = 0  # a delivered event proves the stream is healthy
+                    # A delivered event proves the stream is healthy. Note this is
+                    # the ONLY reset: a since-rejection recovery installs a fresh
+                    # cursor but inherits the existing backoff penalty, because
+                    # `attempt` tracks transport health, not cursor validity.
+                    attempt = 0
                     yield event
             except EventStreamError as exc:
                 if self._is_since_rejection(exc):
                     # The server refuses our resume point (a malformed checkpoint
-                    # -- ntfy 400s anything that is not a well-formed id). Retrying
-                    # it would wedge intake forever, silently, which is the exact
-                    # failure this change exists to prevent. Fall back to a full
-                    # retention replay: bounded, and cooldown/cap absorb repeats.
+                    # -- ntfy 400s anything it cannot parse). Retrying it would
+                    # wedge intake forever, silently, which is the exact failure
+                    # this change exists to prevent. Fall back to a full retention
+                    # replay: bounded, and cooldown/cap absorb the repeats.
+                    self._recoveries += 1
                     logger.error(
                         "ntfy rejected since=%s (HTTP %s); replaying all retained "
-                        "events instead so intake cannot wedge on a bad checkpoint",
+                        "events instead so intake cannot wedge on a bad checkpoint "
+                        "(recovery #%d)",
                         self._last_id,
                         exc.status,
+                        self._recoveries,
                     )
                     self._last_id = RETENTION_REPLAY_SINCE
-                    await self._notify_since_rejected()
-                    continue  # the sentinel is valid; no need to back off first
+                    if self._recoveries == 1:
+                        # The expected case: one bad checkpoint, one notice, and
+                        # an immediate reconnect since the sentinel is known-valid.
+                        await self._notify_since_rejected()
+                        continue
+                    # A cursor that keeps being rejected would otherwise re-download
+                    # the whole retention window in a tight loop -- DM-storming the
+                    # owner and rewriting a suppression record per replayed event
+                    # into the unrotated audit log. Notify once, then pace it by
+                    # falling through to the normal backoff.
                 delay = min(self._backoff_base * (2**attempt), self._max_backoff)
                 attempt += 1
                 logger.warning(
