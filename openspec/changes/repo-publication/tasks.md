@@ -36,21 +36,22 @@
   documented placeholders, confined to `CLAUDE.md`, `config.yaml` and four test files.
   **No real hits — the gate is met.**
 - [x] 3.3 Re-ran 3.1/3.2 before the flip — and the re-run **found a real problem the first
-  pass missed**, which is the whole reason this task exists. The literal identity string was
-  still present at HEAD in two files, and more importantly the *narrative* around it
-  appeared in **23
-  commits plus 2 commit messages**. Redacting a value but publishing prose explaining that a
-  value is being hidden is worse than either alone: it flags the association as interesting
-  and invites exactly the search it was meant to prevent. A pattern audit that greps for
-  *values* cannot catch this — future audits must also read for **framing**.
+  pass missed**, which is the whole reason this task exists. A value that should not ship was
+  still present at HEAD in two files, and more importantly the *explanatory prose around it*
+  appeared in 23 commits plus 2 commit messages.
 
-  Remediation (2026-08-02): all identity-revealing prose genericized at HEAD; the
-  operator-specific rule moved out of the published repo into an untracked
-  `.githooks/local-checks.sh` (master copy in the private claude-config repo) loaded as an
-  optional third hook layer; history rewritten with `git-filter-repo` to purge both the
-  literal and the framing, including commit messages. Post-rewrite verification: 0 matches
-  across all trees and all diffs, 41 commits preserved, gitleaks clean, 233 tests green,
-  `openspec validate --all` 11/11.
+  **The transferable lesson: redacting a value while publishing prose that explains a value
+  is being withheld is worse than either alone.** The prose marks the omission as
+  interesting and invites the very search the redaction was meant to prevent. A pattern
+  audit greps for **values**; this class of leak lives in **framing**, so it passes a clean
+  grep. Future audits must read the wording, not just match patterns.
+
+  Remediation (2026-08-02): prose genericized at HEAD; the operator-specific rule moved out
+  of the published repo into an untracked `.githooks/local-checks.sh` (master copy in the
+  private claude-config repo) loaded as an optional third hook layer; history rewritten with
+  `git-filter-repo` to purge both the value and the framing, including commit messages.
+  Post-rewrite verification: 0 matches across all trees and all diffs, commit count
+  preserved, gitleaks clean, 233 tests green, `openspec validate --all` 11/11.
 
 ## 4. The flip (owner-executed)
 
