@@ -10,11 +10,9 @@ This repo is hosted under the owner's public identity (`enhulsman`) and intended
 go public. Every commit must be publication-safe: NO secrets/tokens (`.env` only),
 NO tailnet IPs (write `vps`/`rp5` hostnames or `VPS-TS-IP`-style placeholders in
 as-built notes), NO real phone numbers or account UUIDs (placeholders like
-`+31600000000` in tests/config), NO references to a non-allowlisted domain (it stays non-allowlisted from this repo — it is outside the allowlist; the
-pre-commit gate enforces an allowlist instead. Use `hulsman.dev` in examples).
-ntfy topic names are fine
-(instance is auth deny-all). When in doubt, redact in the commit and keep the real
-value in the deployed config on rp5.
+`+31600000000` in tests/config). Reference `hulsman.dev` in examples. ntfy topic
+names are fine (instance is auth deny-all). When in doubt, redact in the commit
+and keep the real value in the deployed config on rp5.
 
 **These rules are enforced by a pre-commit hook, not just by attention.** Turn it on
 once per clone:

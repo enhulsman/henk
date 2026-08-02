@@ -8,9 +8,11 @@ gate rather than author discipline. The gate SHALL be version-controlled inside 
 repository (not only in a local `.git/hooks/` directory) so that it survives a fresh clone,
 and SHALL run two independent layers: a secret scanner over the staged content, and
 repo-specific pattern checks for the shapes the scanner has no rule for — tailnet addresses
-in the carrier-grade NAT range Tailscale allocates from, the non-allowlisted domain that
-must not appear in this repository, service-token-shaped strings, and phone numbers other
-than the documented test placeholders.
+in the carrier-grade NAT range Tailscale allocates from, non-allowlisted domains,
+service-token-shaped strings, and phone numbers other than the documented test
+placeholders. The gate SHALL also load an optional untracked local check file when
+present, so operator-specific rules can be enforced without being published, and SHALL
+report its absence rather than passing over it silently.
 
 The gate SHALL examine only lines being **added**, so that removing an offending value is
 never itself blocked. A deliberate bypass SHALL remain possible for false positives.

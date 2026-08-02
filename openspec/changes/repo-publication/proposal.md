@@ -33,9 +33,10 @@ one gets missed.
 - **Add an automated publication-hygiene gate** — a version-controlled `.githooks/pre-commit`
   running two independent layers: `gitleaks` over the staged content (catches unknown-shaped
   secrets) and repo-specific pattern checks (catch the four shapes gitleaks has no rule for:
-  tailnet addresses in the CGNAT range, the non-allowlisted domain, service tokens, and
-  non-placeholder phone numbers). Checked into the repo rather than left in `.git/hooks/`, so
-  the control survives a fresh clone.
+  tailnet addresses in the CGNAT range, non-allowlisted domains, service tokens, and
+  non-placeholder phone numbers), plus an optional untracked local check file for
+  operator-specific rules. Checked into the repo rather than left in `.git/hooks/`, so the
+  control survives a fresh clone.
 - **Keep the pre-flip audit**, but as a documented one-time step whose benign-match classes
   are known in advance, so a future operator can tell signal from noise.
 - **Perform the flip**, owner-executed, paired with the portfolio card.

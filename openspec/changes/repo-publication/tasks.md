@@ -8,8 +8,10 @@
 
 ## 2. Automated hygiene gate
 
-- [x] 2.1 `.githooks/pre-commit` — two layers (secret scanner over staged content +
-  repo-specific pattern checks), added-lines-only, hard-fail when the scanner is missing,
+- [x] 2.1 `.githooks/pre-commit` — three layers: secret scanner over staged content,
+  repo-specific pattern checks, and an optional untracked `local-checks.sh` for
+  operator-specific rules that must not be published. Added-lines-only, hard-fail when the
+  scanner is missing, absent local checks reported rather than silently skipped,
   `--no-verify` bypass documented in the hook header. DONE 2026-08-02
 - [x] 2.2 Enable via `git config core.hooksPath .githooks` and document it in `CLAUDE.md`
   so a fresh clone turns it on. DONE 2026-08-02
@@ -29,13 +31,26 @@
   `.env`; confirmed not tracked, and history is clean.
 - [x] 3.2 Pattern audit of commits since the scrub (`e4ae1b8..HEAD`, 18 commits) — DONE
   2026-08-02. **Zero tailnet addresses, zero token-shaped strings.** Three
-  non-allowlisted-domain matches, all of them the 6.4 task text quoting its own search
+  domain-pattern matches, all of them the 6.4 task text quoting its own search
   pattern (self-reference, removed by task 1.1). Five phone-number matches, all the two
   documented placeholders, confined to `CLAUDE.md`, `config.yaml` and four test files.
   **No real hits — the gate is met.**
-- [ ] 3.3 Re-run 3.1 and 3.2 immediately before the flip if further commits land after
-  2026-08-02. The pre-commit hook makes this a formality rather than a real risk, but the
-  flip is irreversible and the scan is cheap.
+- [x] 3.3 Re-ran 3.1/3.2 before the flip — and the re-run **found a real problem the first
+  pass missed**, which is the whole reason this task exists. The literal identity string was
+  still present at HEAD in two files, and more importantly the *narrative* around it
+  appeared in **23
+  commits plus 2 commit messages**. Redacting a value but publishing prose explaining that a
+  value is being hidden is worse than either alone: it flags the association as interesting
+  and invites exactly the search it was meant to prevent. A pattern audit that greps for
+  *values* cannot catch this — future audits must also read for **framing**.
+
+  Remediation (2026-08-02): all identity-revealing prose genericized at HEAD; the
+  operator-specific rule moved out of the published repo into an untracked
+  `.githooks/local-checks.sh` (master copy in the private claude-config repo) loaded as an
+  optional third hook layer; history rewritten with `git-filter-repo` to purge both the
+  literal and the framing, including commit messages. Post-rewrite verification: 0 matches
+  across all trees and all diffs, 41 commits preserved, gitleaks clean, 233 tests green,
+  `openspec validate --all` 11/11.
 
 ## 4. The flip (owner-executed)
 

@@ -52,17 +52,14 @@ if [ -n "$added" ]; then
     fail=1
   fi
 
-  # Domains. Deliberately written as an ALLOWLIST (any .dev host that is
-  # not hulsman.dev) rather than a denylist:
-  # this repo is public, so an allowlist needs no denylist entries. As a bonus, an allowlist
-  # also catches hosts nobody has thought to enumerate.
+  # Domains: allowlist rather than denylist, so an unfamiliar host is flagged by
+  # default instead of needing to be enumerated in advance.
   if hits=$(printf '%s\n' "$added" | grep -oE '\b[a-z0-9][a-z0-9-]*\.dev\b' \
               | grep -vxE 'hulsman\.dev|go\.dev|web\.dev' | sort -u); then
-    red "pre-commit: non-allowlisted .dev domain in added lines — use hulsman.dev in examples."
+    red "pre-commit: non-allowlisted domain in added lines — use hulsman.dev in examples."
     printf '  %s\n' "$hits"
     fail=1
   fi
-
   # ntfy / service tokens.
   if hits=$(printf '%s\n' "$added" | grep -nE 'tk_[A-Za-z0-9]{8}'); then
     red "pre-commit: token-shaped string in added lines — secrets belong in .env only."
@@ -76,6 +73,17 @@ if [ -n "$added" ]; then
     printf '%s\n' "$hits" | sort -u
     fail=1
   fi
+fi
+
+# --- Layer 3: optional project-local checks ---------------------------------
+# Untracked by design, so operator- or machine-specific rules stay out of the
+# published repo without weakening what ships here. Absence is reported rather
+# than passed over silently, for the same reason a missing scanner is fatal.
+LOCAL="$(git rev-parse --show-toplevel)/.githooks/local-checks.sh"
+if [ -f "$LOCAL" ]; then
+  bash "$LOCAL" "$added" || fail=1
+else
+  warn "pre-commit: no .githooks/local-checks.sh — project-local checks not run."
 fi
 
 if [ "$fail" -ne 0 ]; then
