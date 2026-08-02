@@ -2,7 +2,7 @@
 
 ## 0. Prerequisite
 
-- [ ] 0.1 Sync + archive henk-events (`/opsx:sync` + `/opsx:archive`) so its specs (`event-intake`, `incident-triage`, `audit-log`, and the v1.2 `agent-core`/`secure-deployment` deltas) are the baseline in `openspec/specs/` and this change's deltas apply against them. Blocked on henk-events 6.2/6.4.
+- [ ] 0.1 Sync + archive henk-events (`/opsx:sync` + `/opsx:archive`) so its specs (`event-intake`, `incident-triage`, `audit-log`, and the v1.2 `agent-core`/`secure-deployment` deltas) are the baseline in `openspec/specs/` and this change's deltas apply against them. **Gate cleared 2026-08-02** — 6.2 is done, and 6.4 was moved out to the standalone `repo-publication` change (a publication milestone was blocking a spec-lifecycle step). henk-events has no open tasks left, so this is now purely an ordering step: archive henk-events, then this change. Confirm with the owner before running either archive.
 - [x] 0.2 D5 session-scoping decision confirmed by owner (2026-07-24): **displace** — a new incident starts its own isolated session, displacing any open session (its triage record is already durable via D3). Context isolation is a firm SHALL; the collision scheduling is displace.
 
 ## 1. Tests first (from the delta spec scenarios; backends faked, clock injected)
