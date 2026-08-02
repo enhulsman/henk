@@ -15,6 +15,23 @@ non-allowlisted; use `hulsman.dev` in examples). ntfy topic names are fine
 (instance is auth deny-all). When in doubt, redact in the commit and keep the real
 value in the deployed config on rp5.
 
+**These rules are enforced by a pre-commit hook, not just by attention.** Turn it on
+once per clone:
+
+```bash
+git config core.hooksPath .githooks
+GOBIN=$HOME/.local/bin go install github.com/zricethezav/gitleaks/v8@latest  # or: sudo apt install gitleaks
+```
+
+`.githooks/pre-commit` runs gitleaks over the staged content plus pattern checks for
+the four repo-specific shapes above. It inspects **added lines only**, so deleting an
+offending value is never blocked, and it hard-fails when gitleaks is missing rather
+than skipping the scan silently. If it flags something you believe is a false
+positive, prefer **rewording over `--no-verify`** — the hook caught a literal address
+inside its own comment on first run, and the right fix was to describe the pattern
+instead of embedding it. Governance and the public-flip milestone live in
+`openspec/changes/repo-publication/`.
+
 ## Canonical context (read before designing anything)
 
 - **Project brief:** `~/Coding/homelab-ai-revised.md` — §5-A1 is this project's charter;

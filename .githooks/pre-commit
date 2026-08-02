@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Publication-safety gate. This repo is public (or bound to become public), so a
+# commit is a publication event: once pushed, redacting later does not unpublish.
+# These checks turn the CLAUDE.md hygiene rules from author discipline into a gate.
+#
+# Enable (once per clone):  git config core.hooksPath .githooks
+# Bypass (deliberate only): git commit --no-verify
+#
+# Two independent layers, because they fail differently:
+#   1. gitleaks  — catches unknown-shaped secrets (entropy + rule based)
+#   2. patterns  — catches the four repo-specific shapes gitleaks has no rule for
+set -uo pipefail
+
+fail=0
+red()  { printf '\033[0;31m%s\033[0m\n' "$*"; }
+warn() { printf '\033[0;33m%s\033[0m\n' "$*"; }
+
+# --- Layer 1: gitleaks over the staged content ------------------------------
+# Resolved from PATH first so a system install wins, then the usual go install
+# location. Missing gitleaks is a HARD failure, not a skip: a silently-skipped
+# secret scanner is worse than none, because it reads as "checked and clean".
+GITLEAKS="$(command -v gitleaks || true)"
+[ -z "$GITLEAKS" ] && [ -x "$HOME/.local/bin/gitleaks" ] && GITLEAKS="$HOME/.local/bin/gitleaks"
+
+if [ -z "$GITLEAKS" ]; then
+  red "pre-commit: gitleaks not found — cannot verify this commit is publication-safe."
+  echo "  install:  GOBIN=\$HOME/.local/bin go install github.com/zricethezav/gitleaks/v8@latest"
+  echo "  or:       sudo apt install gitleaks"
+  echo "  bypass:   git commit --no-verify   (only if you have checked the diff yourself)"
+  exit 1
+fi
+
+if ! "$GITLEAKS" git --staged --redact --no-banner --exit-code 1 . >/tmp/gitleaks.$$ 2>&1; then
+  red "pre-commit: gitleaks found a secret in the staged changes."
+  cat /tmp/gitleaks.$$
+  fail=1
+fi
+rm -f /tmp/gitleaks.$$
+
+# --- Layer 2: repo-specific patterns ----------------------------------------
+# Only ADDED lines are checked (^+), so pre-existing content and context lines
+# never trip the gate. Deletions of a bad value should pass, not block.
+added="$(git diff --cached --unified=0 --diff-filter=ACMR | grep -E '^\+' | grep -v '^+++' || true)"
+
+if [ -n "$added" ]; then
+  # Tailnet IPs. Tailscale's CGNAT range is 100.64/10, so this is scoped to the
+  # second octet 64-127 rather than all of 100.x — a public address outside that
+  # range is not a leak, and a noisy gate is a bypassed gate.
+  if hits=$(printf '%s\n' "$added" | grep -nE '100\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])\.[0-9]{1,3}\.[0-9]{1,3}'); then
+    red "pre-commit: tailnet IP in added lines — use a hostname (vps/rp5/rp2) or a placeholder."
+    printf '%s\n' "$hits"
+    fail=1
+  fi
+
+  # The non-allowlisted domain. Examples must use hulsman.dev.
+  if hits=$(printf '%s\n' "$added" | grep -nE 'private\.dev|registry\.private'); then
+    red "pre-commit: non-allowlisted domain in added lines — use hulsman.dev in examples."
+    printf '%s\n' "$hits"
+    fail=1
+  fi
+
+  # ntfy / service tokens.
+  if hits=$(printf '%s\n' "$added" | grep -nE 'tk_[A-Za-z0-9]{8}'); then
+    red "pre-commit: token-shaped string in added lines — secrets belong in .env only."
+    printf '%s\n' "$hits"
+    fail=1
+  fi
+
+  # Phone numbers, minus the two documented test placeholders.
+  if hits=$(printf '%s\n' "$added" | grep -oE '\+31[0-9]{9}' | grep -vE '^\+31(600000000|611111111)$'); then
+    red "pre-commit: real-looking phone number in added lines — use +31600000000."
+    printf '%s\n' "$hits" | sort -u
+    fail=1
+  fi
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo
+  warn "Commit blocked. Fix the above, or bypass with --no-verify if it is a false positive."
+  warn "If it is a false positive worth keeping quiet, prefer rewording over bypassing —"
+  warn "e.g. describe a pattern instead of embedding a literal that trips the gate."
+  exit 1
+fi
+
+exit 0
