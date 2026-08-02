@@ -52,10 +52,14 @@ if [ -n "$added" ]; then
     fail=1
   fi
 
-  # The non-allowlisted domain. Examples must use hulsman.dev.
-  if hits=$(printf '%s\n' "$added" | grep -nE 'private\.dev|registry\.private'); then
-    red "pre-commit: non-allowlisted domain in added lines — use hulsman.dev in examples."
-    printf '%s\n' "$hits"
+  # Domains. Deliberately written as an ALLOWLIST (any .dev host that is
+  # not hulsman.dev) rather than a denylist:
+  # this repo is public, so an allowlist needs no denylist entries. As a bonus, an allowlist
+  # also catches hosts nobody has thought to enumerate.
+  if hits=$(printf '%s\n' "$added" | grep -oE '\b[a-z0-9][a-z0-9-]*\.dev\b' \
+              | grep -vxE 'hulsman\.dev|go\.dev|web\.dev' | sort -u); then
+    red "pre-commit: non-allowlisted .dev domain in added lines — use hulsman.dev in examples."
+    printf '  %s\n' "$hits"
     fail=1
   fi
 
