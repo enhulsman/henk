@@ -1,5 +1,10 @@
 # audit-log (delta)
 
+## RENAMED Requirements
+
+- FROM: `### Requirement: One append-only record per agent session`
+- TO: `### Requirement: One append-only record per triage or owner session`
+
 ## MODIFIED Requirements
 
 ### Requirement: One append-only record per triage or owner session
