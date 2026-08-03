@@ -15,6 +15,13 @@ from typing import Any, Mapping
 import yaml
 
 
+#: The liveness deadline must be at least this whole multiple of the server's
+#: recorded keepalive interval — three consecutive missed keepalives. Stated as a
+#: predicate rather than implied: a bare `deadline > interval` check would admit
+#: 60 against 45 (1.33x), where a single late keepalive trips the watchdog.
+LIVENESS_DEADLINE_KEEPALIVE_MULTIPLE = 3
+
+
 class ConfigError(ValueError):
     """Raised when configuration is missing a required value."""
 
@@ -66,7 +73,16 @@ class EndpointConfig:
 class NtfyConfig:
     base_url: str
     topic: str
+    #: Request timeout for the notify tool's one-shot POSTs. NOT the event-stream
+    #: read timeout — it is 13x smaller than the liveness deadline, and reusing it
+    #: for the stream would silently invert the ordering below.
     timeout_seconds: float = 10.0
+    #: The server's `keepalive-interval` as measured on the instance Henk reads
+    #: (vps `/opt/ntfy/config/server.yml`). A recorded property of the SERVER, not
+    #: a Henk policy knob — which is why it lives here and the deadline lives in
+    #: `events`. ntfy pushes a keepalive frame on this cadence regardless of
+    #: message traffic, which is what decouples liveness from event volume.
+    keepalive_interval_seconds: float = 45.0
 
 
 @dataclass(frozen=True)
@@ -88,6 +104,18 @@ class EventsConfig:
     recurrence_window_seconds: float = 24 * 3600.0
     cap_per_24h: int = 3
     cooldown_overrides: tuple[Mapping[str, Any], ...] = ()
+    #: Henk's POLICY: how long intake tolerates a subscription delivering no
+    #: proof-of-life frame before abandoning it. 3x the measured 45s server
+    #: keepalive interval = three consecutive missed keepalives, so a quiet
+    #: homelab cannot trip it. Taken by decision, not measurement: no jitter data
+    #: for ntfy keepalive precision under load exists, and the risk is asymmetric
+    #: (too low flaps the watchdog; too high detects in 135s instead of 90s).
+    liveness_deadline_seconds: float = 135.0
+    #: How often the healthy-stream liveness line is emitted. Coarse on purpose: a
+    #: line per frame would be ~1,920 a day. Hourly gives a handful, and each line
+    #: carries the frame count since the previous one so the delivery cadence is
+    #: still readable from the lines alone.
+    liveness_report_interval_seconds: float = 3600.0
 
 
 @dataclass(frozen=True)
@@ -206,6 +234,18 @@ class Config:
             ),
             cap_per_24h=int(events_sec.get("cap_per_24h", EventsConfig.cap_per_24h)),
             cooldown_overrides=tuple(dict(o) for o in overrides),
+            liveness_deadline_seconds=float(
+                events_sec.get(
+                    "liveness_deadline_seconds",
+                    EventsConfig.liveness_deadline_seconds,
+                )
+            ),
+            liveness_report_interval_seconds=float(
+                events_sec.get(
+                    "liveness_report_interval_seconds",
+                    EventsConfig.liveness_report_interval_seconds,
+                )
+            ),
         )
 
         pd_sec = raw.get("personal_data", {}) or {}
@@ -216,7 +256,7 @@ class Config:
             ),
         )
 
-        return cls(
+        config = cls(
             owner=OwnerConfig(id=require_nonempty(owner_sec, "id", "owner")),
             agent=AgentConfig(
                 model=agent_sec.get("model", AgentConfig.model),
@@ -243,8 +283,47 @@ class Config:
                 base_url=require(ntfy_sec, "base_url", "endpoints.ntfy"),
                 topic=require(ntfy_sec, "topic", "endpoints.ntfy"),
                 timeout_seconds=float(ntfy_sec.get("timeout_seconds", 10.0)),
+                keepalive_interval_seconds=float(
+                    ntfy_sec.get(
+                        "keepalive_interval_seconds",
+                        NtfyConfig.keepalive_interval_seconds,
+                    )
+                ),
             ),
             events=events,
             personal_data=personal_data,
             secrets=Secrets.from_env(env),
+        )
+        # Post-assembly on purpose: the two values it relates deliberately live in
+        # different sections (the interval describes the server, the deadline
+        # describes Henk), so neither section's builder can see both.
+        _validate_liveness_ordering(config)
+        return config
+
+
+def _validate_liveness_ordering(config: "Config") -> None:
+    """Refuse a liveness deadline that a healthy keepalive cadence would trip.
+
+    Honest limit: this compares Henk's deadline against Henk's *recorded copy* of
+    the server interval, so raising `keepalive-interval` on the vps without
+    updating Henk's config passes validation and flaps the watchdog. What it does
+    catch is the other mistake — someone lowering Henk's deadline. The real drift
+    is addressed by a cross-reference on the vps side and in the homelab docs.
+    """
+    interval = config.ntfy.keepalive_interval_seconds
+    deadline = config.events.liveness_deadline_seconds
+    if interval <= 0 or deadline <= 0:
+        raise ConfigError(
+            "endpoints.ntfy.keepalive_interval_seconds and "
+            "events.liveness_deadline_seconds must both be positive; got "
+            f"{interval} and {deadline} (a zero interval would satisfy any "
+            "deadline, disabling the ordering check entirely)"
+        )
+    minimum = LIVENESS_DEADLINE_KEEPALIVE_MULTIPLE * interval
+    if deadline < minimum:
+        raise ConfigError(
+            f"events.liveness_deadline_seconds ({deadline}) must be at least "
+            f"{LIVENESS_DEADLINE_KEEPALIVE_MULTIPLE}x "
+            f"endpoints.ntfy.keepalive_interval_seconds ({interval}) = {minimum}, "
+            "or a healthy but event-free subscription trips the watchdog"
         )

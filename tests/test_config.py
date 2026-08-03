@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from henk.config import Config, ConfigError
+from henk.config import (
+    LIVENESS_DEADLINE_KEEPALIVE_MULTIPLE,
+    Config,
+    ConfigError,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SAMPLE = REPO_ROOT / "config.yaml"
@@ -70,6 +74,60 @@ def test_personal_data_allowlist_parsed_when_present():
 def test_personal_data_section_absent_defaults_empty():
     config = Config.from_dict(_minimal_raw("+31600000000"), env={})
     assert config.personal_data.todo_note_allowlist == ()
+
+
+# --- Liveness deadline vs. the recorded server keepalive interval -------------
+#
+# The deadline is Henk's policy (`events`), the interval is a recorded property of
+# the ntfy server (`endpoints.ntfy`) -- two sections, which is why the ordering is
+# validated after assembly rather than inside either builder. The predicate is
+# `deadline >= k * interval` with k a whole multiple greater than one; a bare `>`
+# would admit 1.33x, where one late keepalive trips the watchdog.
+
+
+def test_sample_config_liveness_deadline_is_a_permitted_multiple():
+    config = Config.load(SAMPLE, env={})
+    interval = config.ntfy.keepalive_interval_seconds
+    assert interval == 45.0  # the measured vps value (D2)
+    assert (
+        config.events.liveness_deadline_seconds
+        >= LIVENESS_DEADLINE_KEEPALIVE_MULTIPLE * interval
+    )
+
+
+def test_deadline_exactly_the_required_multiple_is_accepted():
+    # `>=`, not `>`: 3 x 45 = 135 is the intended production value.
+    config = Config.from_dict(_raw_with_liveness(deadline=135, interval=45), env={})
+    assert config.events.liveness_deadline_seconds == 135.0
+
+
+def test_deadline_below_the_required_multiple_is_refused():
+    # 60 > 45 but 60 < 135 -- the case a bare `>` check would wrongly admit.
+    with pytest.raises(ConfigError) as excinfo:
+        Config.from_dict(_raw_with_liveness(deadline=60, interval=45), env={})
+    message = str(excinfo.value)
+    assert "60" in message and "45" in message  # names both values
+
+
+def test_deadline_below_the_interval_is_refused():
+    with pytest.raises(ConfigError):
+        Config.from_dict(_raw_with_liveness(deadline=30, interval=45), env={})
+
+
+def test_non_positive_keepalive_interval_is_refused():
+    # A zero interval would silently satisfy any deadline, disabling the one guard
+    # this validator exists to provide.
+    with pytest.raises(ConfigError):
+        Config.from_dict(_raw_with_liveness(deadline=135, interval=0), env={})
+
+
+def _raw_with_liveness(*, deadline, interval):
+    """A loadable mapping carrying both values, so the validator is exercised
+    against configuration rather than only against constructor defaults."""
+    raw = _minimal_raw("+31600000000")
+    raw["endpoints"]["ntfy"]["keepalive_interval_seconds"] = interval
+    raw["events"] = {"enabled": True, "liveness_deadline_seconds": deadline}
+    return raw
 
 
 def test_missing_required_section_raises():

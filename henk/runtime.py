@@ -41,6 +41,13 @@ logger = logging.getLogger("henk.runtime")
 #: tail is the future optimization if the log ever grows large.)
 _REHYDRATE_LIMIT = 10_000
 
+#: The transport read timeout is a redundant FLOOR under intake's own per-frame
+#: liveness budget, not a replacement for it: httpx's read timeout resets on any
+#: received bytes, so a peer dribbling newlines defeats it. Set above the deadline
+#: so intake's watchdog is always what fires first, leaving this as the backstop
+#: that turns a broken hand-rolled watchdog into a bounded reconnect.
+_READ_TIMEOUT_MULTIPLE = 2
+
 
 def _checkpoint_path(audit_path: str) -> Path:
     """The intake-offset cursor lives beside the audit log, on the same volume."""
@@ -148,7 +155,10 @@ def _build_coordinator(
 ) -> EventCoordinator:
     ev = config.events
     stream = NtfyEventStream(
-        config.ntfy.base_url, ev.events_topic, token=config.secrets.ntfy_token
+        config.ntfy.base_url,
+        ev.events_topic,
+        token=config.secrets.ntfy_token,
+        read_timeout=ev.liveness_deadline_seconds * _READ_TIMEOUT_MULTIPLE,
     )
 
     async def _notify_since_rejected() -> None:
@@ -158,10 +168,18 @@ def _build_coordinator(
     # since=<offset> and replays events published while Henk was stopped (D1). If
     # the server rejects that cursor, intake replays all retained events rather
     # than retrying a value it can never resume from — and tells the owner.
+    #
+    # The liveness watchdog: intake abandons a subscription that delivers no
+    # proof-of-life frame within the deadline, so a half-open socket stops being
+    # observationally identical to a healthy quiet tailnet. Config-driven, and the
+    # deadline's ordering against the server's keepalive interval is validated at
+    # load time.
     intake = EventIntake(
         stream,
         initial_offset=checkpoint.read(),
         on_since_rejected=_notify_since_rejected,
+        liveness_deadline=ev.liveness_deadline_seconds,
+        liveness_report_interval=ev.liveness_report_interval_seconds,
     )
     return EventCoordinator(
         intake, pipeline, core, debounce_seconds=ev.debounce_seconds, audit=audit

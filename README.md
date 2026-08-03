@@ -173,6 +173,18 @@ existing `henk_audit` volume (already in the rp5 backup allowlist).
   No new keys for durability: the intake-offset checkpoint sits beside
   `audit_path` on the same `henk_audit` volume, and cadence state rehydrates from
   the audit log at that path.
+- `events.liveness_deadline_seconds` (135) and
+  `endpoints.ntfy.keepalive_interval_seconds` (45) — the intake liveness watchdog.
+  The interval records a property of the **ntfy server**; the deadline is
+  **Henk's policy** and must be at least 3× it (three consecutive missed
+  keepalives), which is validated at load time against Henk's *recorded copy* of
+  the interval. **They are coupled:** raising `keepalive-interval` on the ntfy
+  server without raising both values here passes validation and then flaps the
+  watchdog — reconnect churn and log noise, never lost events. Note
+  `endpoints.ntfy.timeout_seconds` (10) is the `notify` tool's POST timeout, not
+  the stream read timeout. `events.liveness_report_interval_seconds` (3600) paces
+  the healthy-stream log line; lower it temporarily if you want a faster
+  post-deploy confirmation than one hour.
 
 **`.env`** (secrets, `chmod 600`, never committed — see `.env.example`):
 `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`), `TS_AUTHKEY`, `NTFY_TOKEN`,

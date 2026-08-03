@@ -130,7 +130,22 @@ class EventCoordinator:
                 await producer
             except asyncio.CancelledError:
                 pass
+            except Exception:
+                # `await` on an already-FAILED task re-raises its stored exception
+                # rather than reporting the cancellation, so a producer that died on
+                # its own would surface here and replace the real shutdown reason.
+                # Intake normalises its own failures, so this is a backstop.
+                logger.exception("event intake producer failed")
 
     async def _pump(self, queue: "asyncio.Queue[Event]") -> None:  # pragma: no cover
-        async for event in self._intake.events():
-            await queue.put(event)
+        # Hold the generator instead of consuming it inline: cancelling this task
+        # leaves an `async for`'s generator SUSPENDED, not closed — finalised only
+        # if the loop ever reaches shutdown_asyncgens(). Without this, intake's own
+        # cleanup of the live ntfy connection is decorative on the one production
+        # path that has one open.
+        agen = self._intake.events()
+        try:
+            async for event in agen:
+                await queue.put(event)
+        finally:
+            await agen.aclose()

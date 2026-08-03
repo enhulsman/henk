@@ -35,7 +35,15 @@ endpoints:
   ntfy:
     base_url: "http://vps:2586"
     topic: "homie-henk"
+    # One-shot POST timeout for the notify tool. NOT the event-stream read
+    # timeout — see events.liveness_deadline_seconds below.
     timeout_seconds: 10
+    # The ntfy server's `keepalive-interval`, recorded here so the liveness
+    # deadline can be validated against it. COUPLED to the server: if
+    # keepalive-interval changes on the vps, change this value too — validation
+    # compares Henk's deadline against this recorded copy, so a raised server
+    # interval passes validation and then flaps the watchdog.
+    keepalive_interval_seconds: 45
 
 # Personal-data scoping (Tier-W boundary). Default-deny allowlists for tools whose
 # backend mixes personal and work/Anamata content. EMPTY = fail closed: the tool
@@ -71,3 +79,14 @@ events:
     # Chronic identities carry a longer cooldown so they don't re-alert (D6.2).
     - pattern: "swap"
       cooldown_seconds: 86400 # 24h
+  # Intake liveness watchdog. Without a read deadline a half-open socket produces
+  # exactly the same observable as a healthy quiet tailnet — nothing — so any
+  # conclusion drawn from an absence of events would rest on an assumption.
+  # 135 = 3 x the recorded 45s server keepalive interval (three consecutive missed
+  # keepalives), so a quiet homelab cannot trip it. Startup refuses a deadline
+  # below that multiple.
+  liveness_deadline_seconds: 135
+  # How often the healthy-stream liveness line is logged. Hourly: a line per frame
+  # would be ~1,920 a day. Each line carries the frame count since the previous
+  # one, so the ~45s delivery cadence stays readable from the lines alone.
+  liveness_report_interval_seconds: 3600

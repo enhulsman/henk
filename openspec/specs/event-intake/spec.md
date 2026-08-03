@@ -1,7 +1,12 @@
 # event-intake Specification
 
 ## Purpose
-TBD - created by archiving change henk-events. Update Purpose after archive.
+Define how Henk receives homelab events: an outbound-only streaming subscription to the ntfy
+events topic that opens no listening socket, resumes exactly-once from a durable cursor across
+restarts and outages, self-heals a resume point the server refuses, and treats a subscription
+that stops delivering as failed rather than idle — so that an absence of events is evidence of
+quiet rather than an assumption about liveness. Intake failures are always non-fatal: the
+reactive owner-DM path runs in a different loop and stays functional while intake is failing.
 ## Requirements
 ### Requirement: Outbound-only subscription to the events topic
 Henk SHALL receive events by opening an outbound streaming subscription (ntfy JSON stream or WebSocket) to the configured events topic on vps:2586 using his scoped ntfy credential. Event intake SHALL NOT open any listening socket, published port, or inbound tailnet path.
