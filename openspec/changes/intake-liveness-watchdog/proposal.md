@@ -41,14 +41,19 @@ watchdog's own trips invisible.
 - **Observable silence.** A named `liveness_state()` accessor reports last proof-of-life, last
   reconnect, and current penalty, plus a healthy-path emission the owner can actually read at
   deploy time. This is what makes any later quiet window interpretable.
-- **A trip baseline.** After a bounded window, the trip count and inter-trip intervals are
-  extracted and handed forward, so the owner-notification predicate that was deliberately
-  split out of this change can be built from measurement rather than guesswork.
+- **A stably identifiable trip line.** Trips are logged so their count and spacing can be
+  recovered later by matching a stable identifier rather than incidental message wording. That is
+  the input the deferred owner-notification predicate needs; extracting and counting it belongs to
+  that change, not this one.
 
 Not in scope: no sensor routing changes, no Alertmanager, no new monitoring, no mutating
-tools, no owner-notification predicate, and no change to how triage or the approval gate
-behave. This change builds the instrument; it does not widen the aperture and it moves no
-existing signal.
+tools, no owner-notification predicate, no trip-baseline extraction, and no change to how triage
+or the approval gate behave. This change builds the instrument; it does not widen the aperture and
+it moves no existing signal.
+
+**What "liveness" does and does not cover.** This makes the *subscription* checkable. A pipeline
+wedged downstream of intake would still leave liveness reporting perfect health, so the guarantee
+is "frames are arriving," not "events are being handled." Stated so it is not over-read later.
 
 ## Capabilities
 
@@ -71,12 +76,15 @@ benefit.
 
 ## Impact
 
-- **Code, four files rather than one:** `henk/events/intake.py` (the deadline scoped to frame
-  retrieval, proof-of-life accounting, the unified termination rule, the accessor);
-  `henk/config.py` (new liveness fields — none exist today — plus a post-assembly
-  cross-section ordering validator); `henk/runtime.py` at the `NtfyEventStream` and
-  `EventIntake` construction sites; and `tests/test_event_intake.py` alongside the existing 19
-  cases.
+- **Code, five files:** `henk/events/intake.py` (the proof-of-life budget scoped to frame
+  retrieval, two injected seams, the desugared loop, accounting, the unified termination rule, the
+  emissions); `henk/events/coordinator.py` (`_pump` must hold and close the intake generator, or the
+  cleanup is decorative on the one production path with a live connection open); `henk/config.py`
+  (new liveness fields — none exist today — plus a post-assembly cross-section ordering validator);
+  `henk/runtime.py` at the two construction sites; and `tests/test_event_intake.py`, which needs a
+  harness extension before its new cases can assert anything, alongside the existing 19.
+- **Deployed config:** `config.yaml` gains the new fields. It is a **read-only bind mount from the
+  checkout** on rp5, so the values ship with the image rather than as a host-side edit.
 - **A behaviour change to a path the code calls clean.** Applying a penalty to a clean stream
   end is the most surprising thing here, which is why it carries its own decision record: a
   future reader who found it unexplained would read it as a bug and revert it, silently

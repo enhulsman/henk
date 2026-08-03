@@ -1,134 +1,234 @@
-Every task below maps to a spec scenario or a design decision, and every scenario maps to at
-least one task. The mapping is stated per task so a future edit cannot orphan either side.
+Every task maps to a spec scenario or a design decision, and every scenario maps to at least one
+task. The mapping is stated per task so a future edit cannot orphan either side.
 
-## 0. Resolve the open questions before writing code
+**Read `design.md` D1 before starting section 2.** Tasks 2.1–2.8 are **one coupled edit** to the
+same region of `EventIntake.events()`. They are numbered for reference, not for sequencing into
+separate commits: writing one location in one task and a second location in another is the drift
+this change exists to prevent.
 
-- [ ] 0.1 **(D3)** Read *every* backoff-progression case in `tests/test_event_intake.py` and
-  decide D3 (reset the penalty on any proof-of-life frame, not only on a delivered event). Two
-  are already verified landable: `test_persistent_failure_backs_off_without_crashing` (stream
-  raises immediately, no proof-of-life frame, so `[1,2,4,8]` is unaffected) and
-  `test_first_recovery_reconnects_without_sleeping` (stops collecting before the clean-end
-  branch, so `slept == []` holds). Check the rest. If any test deliberately pins backoff
-  surviving a frame-only reconnect, that intent wins and D3 is dropped — record which way it
-  went and why, in this task. Note D3 is load-bearing for D4's termination rule, so dropping it
-  is not a local edit.
-- [ ] 0.2 **(D2, open question 1)** Confirm the liveness deadline multiple. Observe actual
-  keepalive arrival jitter against the measured `keepalive-interval: "45s"` on the vps instance
-  before fixing the deadline in config; 3× (135s) is the conservative default, 2× (90s) only if
-  jitter is tight.
-- [ ] 0.3 **(D1)** Confirm how a timeout expiry reaches the failure path. The bare
-  `except Exception` at `intake.py:232` — **not** the `httpx.HTTPStatusError` clause above it —
-  is what catches `httpx.ReadTimeout`. Verify the `asyncio.timeout` path normalises with
-  `status=None` so `_is_since_rejection` cannot misread it. Do **not** widen that clause to
-  `except BaseException`: `CancelledError` must escape it or the watchdog is silently disabled.
+## 0. Settle before writing code
+
+- [ ] 0.1 **(D3)** D3 is **decided: it lands.** Verified by reading every case that reaches the
+  clean-end branch or asserts on delays: `:101` (delivers a message then errors), `:167` (stream
+  raises immediately, no frame ever arrives), `:265` (every connection 400s), `:326` and `:308`
+  (both `RejectingStream(per_cycle=1)`, which yields one message then returns — so both reach the
+  clean-end branch), and `:373` (stops collecting before the clean-end branch). Decisive:
+  `keepalive` appears in exactly one test (`:77`), which also sends a `message`, so **no test pins
+  backoff surviving a frame-only reconnect.** Confirm the trace still holds and record it. Note D3
+  is load-bearing for D4's termination rule — dropping it is not a local edit.
+- [ ] 0.2 **(D1)** Build the `TimeoutError` normalisation; do not merely verify it. `except
+  EventStreamError` at `intake.py:114` does **not** catch `TimeoutError` (`EventStreamError` is a
+  plain `Exception`, `:48`), and the stream's `except Exception` at `:232` is one frame below where
+  the deadline now fires. Convert at the point it fires, with `status=None` so
+  `_is_since_rejection` (`:154-165`, which tests `exc.status == 400`) can never misread it and
+  `_recoveries` is untouched. Do **not** widen `:232` to `except BaseException`: `CancelledError`
+  must escape it or the watchdog is silently disabled.
 
 ## 1. Tests first, from the spec scenarios
 
-- [ ] 1.1 **(scenario: silent stream is abandoned)** A fake stream that yields nothing past the
-  deadline causes a reconnect that resumes from the last-seen id.
-- [ ] 1.2 **(scenario: keepalive frames alone keep a quiet subscription healthy)** A stream
-  yielding only `keepalive` frames well past the deadline triggers no reconnect **and**
-  accumulates no backoff penalty. This is the test that proves liveness is decoupled from event
-  volume (D2) and that keepalive counts as proof of life (D4).
-- [ ] 1.3 **(scenario: a connection that opens and then ends without delivering escalates)** The
-  open-then-EOF case asserts the delay sequence `[1, 2, 4, 8, …]`, **not** repeated `1.0`. This
-  is the assertion that makes D4's collision unreintroducible: treating `open` as proof of life
-  fails here instead of shipping a silent 1/s spin. Cover open-then-silence (deadline trip) as
-  well as open-then-EOF (clean end) — D4's table lists both.
-- [ ] 1.4 **(scenario: a clean end after a healthy period costs only the base delay)** A stream
-  that delivers proof-of-life frames and then ends cleanly waits exactly `backoff_base`,
-  pinning the "bit-identical to today" claim so a future reader cannot mistake D4's termination
-  rule for a penalty on healthy streams.
-- [ ] 1.5 **(scenario: deadline exceeds the server keepalive interval)** The configured deadline
-  is asserted to be a multiple greater than one of the recorded server interval, so a future
-  config edit that would make the watchdog flap fails the suite instead of production.
-- [ ] 1.6 **(scenario: a deadline below the keepalive interval is refused)** Config loading with
-  a deadline at or below the recorded interval raises `ConfigError` naming both values. Include
-  the equal case — "greater than one" excludes 1×.
-- [ ] 1.7 **(scenario: quiet period is verifiable)** `liveness_state()` reports last
-  proof-of-life, last reconnect, and current penalty, and they advance on keepalive frames and
-  remain readable after an event-free interval.
-- [ ] 1.8 **(scenario: a healthy stream is readable at deploy time)** The one-shot first-frame
-  emission fires exactly once per process, and the periodic emission fires on its interval
-  rather than per frame.
-- [ ] 1.9 **(R1 SHALL: "cannot lose events")** A liveness trip preserves the checkpoint: it must
-  not discard or rewind the cursor, and must not be mistaken for a since-rejection. Guards the
-  interaction between the new path and the durability work.
-- [ ] 1.10 Confirm all new tests fail for the right reason before implementing.
+- [ ] 1.1 **(harness, prerequisite for 1.2–1.5)** Extend the test harness so the deadline is
+  driven, not elapsed. `asyncio.timeout` reads the event loop clock and is unreachable from
+  `EventIntake`'s injected `clock`/`sleep`, and `FakeStream` (`:37-45`) yields every scripted frame
+  back-to-back with no awaits — so any test phrased as "well past the deadline" passes in
+  microseconds while proving nothing. The fake `timeout_ctx` **must raise `TimeoutError`** (not
+  `CancelledError`, or 0.2's handler is never exercised) and **must raise whenever the budget it
+  receives is `<= 0`**, which makes 1.4's stale-budget case deterministic. Record every budget
+  passed, so assertions can target the arithmetic rather than which context manager ran.
+- [ ] 1.2 **(scenario: silent stream is abandoned)** A stream that yields nothing until the budget
+  is exhausted causes a reconnect that resumes from the last-seen id. Cannot use `_collect` — the
+  stream yields no events, so `_collect` never returns; use the driver pattern from
+  `test_persistent_failure_backs_off_without_crashing`.
+- [ ] 1.3 **(scenario: keepalive frames alone keep a quiet subscription healthy)** A stream
+  yielding only `keepalive` frames across several driven budget windows triggers no reconnect
+  **and** accumulates no backoff penalty. This is the sole spec-level bound on the top risk
+  (D2's flap), so it must assert the absence of a trip across gaps the test explicitly caused —
+  not merely that nothing happened.
+- [ ] 1.4 **(scenario: a stream delivering only open frames still trips; D4)** Two shapes, and the
+  first is the one that fails under a per-frame budget: an `open` **flood** (repeated `open`, never
+  another frame) still exhausts the budget; and open-then-silence trips within approximately one
+  deadline of the last proof-of-life frame. Assert the trip *timing relative to the budget*, not
+  merely that a trip eventually happens — a trip-eventually assertion cannot distinguish a correct
+  implementation from one keyed on any frame. Run across **at least two connections**, so a budget
+  established once outside the reconnect loop fails here.
+- [ ] 1.5 **(scenario: a connection that opens and then ends without delivering escalates)** The
+  open-then-EOF case asserts the delay sequence `[1, 2, 4, 8, …]`, **not** repeated `1.0`, and
+  asserts the last-proof-of-life timestamp goes stale. This is what makes D4's collision
+  unreintroducible.
+- [ ] 1.6 **(scenario: a clean end after a healthy period costs only the base delay; D4)** A stream
+  delivering proof-of-life frames then ending cleanly waits exactly `backoff_base`. Add the
+  follow-on case — healthy clean end, then an immediate error — asserting `[1.0, 2.0]` **as
+  intended**, since the penalty counter now advances where today it does not.
+- [ ] 1.7 **(scenario: a liveness trip does not kill intake)** After a trip, intake yields a
+  subsequent event. Distinct from 1.2: that asserts the reconnect happens, this asserts intake did
+  not terminate. Without it, the failure is a permanently hung consumer with no log line.
+- [ ] 1.8 **(scenario: a control frame's id is never used as a resume point)** A connection
+  delivering `open` and `keepalive` frames that **carry `id` values**, then dropping before any
+  message, must reconnect with `since` equal to the last message id — or cold if there has been
+  none. No existing test guards this: `test_control_frames_skipped` asserts only that no events are
+  yielded, never that the cursor is unchanged.
+- [ ] 1.9 **(scenario: consumer latency does not trip the watchdog)** A stream on a healthy cadence
+  whose consumer takes longer than the deadline to return causes no trip. This is the deliberately
+  slow consumer, and it pins two things at once: that the timeout scope excludes the consumer, and
+  that consumer time is not charged against the budget (D1). Under the wrong scope it raises
+  `CancelledError` into the consumer; under the wrong anchor placement it trips.
+- [ ] 1.10 **(D1, M1)** Repeated trips leak no generator or file descriptor. Must **explicitly
+  `aclose()`** the intake generator (or force collection) rather than only `break`ing out of it —
+  the broad `finally` fires when the *outer* generator is closed, so a test that merely abandons
+  measures `shutdown_asyncgens` timing instead of the code.
+- [ ] 1.11 **(scenario: deadline is a permitted multiple / a deadline below it is refused)** The
+  validator's predicate is asserted exactly: `deadline >= k · interval` with `k` the stated whole
+  multiple greater than one. Include the cases that a bare `>` check would wrongly admit — a
+  deadline greater than the interval but below `k ×` it must be **refused**. Assert on values
+  **loaded from a mapping**, not only on constructor defaults, or the validator is never exercised
+  against anything but its own defaults.
+- [ ] 1.12 **(scenario: a healthy stream is readable at deploy time / trips are countable)** The
+  one-shot first-frame line fires exactly once per process; the periodic line fires on its
+  configured interval rather than per frame; the trip line carries its stable identifier.
+- [ ] 1.13 Confirm all new tests fail for the right reason before implementing.
 
-## 2. Implementation — four files, not one
+## 2. Implementation — one coupled edit across five files
 
-- [ ] 2.1 **(D1)** `henk/events/intake.py`: the deadline as an `asyncio.timeout` in
-  `EventIntake` **scoped to frame retrieval only**, normalised to the existing failure path with
-  `status=None`. **Not** a transport-side `httpx.Timeout` on `NtfyEventStream` — that class is
-  `# pragma: no cover` by design, so a deadline there would be the one mechanism in this change
-  no test can drive. Scope placement is load-bearing: too wide and `CancelledError` reaches the
-  consumer. Reuse or rename the **dead** `open_timeout` parameter (`intake.py:207`, assigned and
-  never read; `timeout=None` at `:218` ignores it) rather than adding a second parameter beside
-  it.
-- [ ] 2.2 **(D4)** Proof-of-life accounting in `EventIntake`, keyed on the single definition —
-  any frame whose `event` is not `open` — with all four consumers wired to it: the deadline,
-  D3's penalty reset, the timestamp, and the termination rule. Record the definition in code
-  where the classification happens, not at each call site.
-- [ ] 2.3 **(D4)** The unified termination rule: the clean-end branch takes the backoff path
-  unconditionally; a proof-of-life frame resets the penalty. No per-connection "did this
-  connection deliver?" flag — if the implementation needs one, the rule has been misread.
-- [ ] 2.4 **(D4)** Rename `last_frame_at` → `last_proof_of_life_at`, seeded to process start,
-  so the field name carries the definition it enforces.
-- [ ] 2.5 **(D4, R3)** `liveness_state()` accessor returning last proof-of-life, last reconnect,
-  and current penalty; plus the one-shot first-frame line and the coarse periodic line.
-- [ ] 2.6 **(D2, R2)** `henk/config.py`: new liveness fields — **none exist today** — carrying
-  both the deadline and the recorded server keepalive interval, plus the ordering validator.
-  The validator spans two config sections and `config.py` builds sections independently, so it
-  goes in a **post-assembly** validation step, not inside either section's builder. Name the
-  fields distinctly from the pre-existing `endpoints.ntfy.timeout_seconds` (`config.py:245`,
-  default 10.0), which sits in the same section as the stream `base_url` and must **not** be
-  reused as the read timeout.
-- [ ] 2.7 **(D1)** `henk/runtime.py`: wire the new config through at the `NtfyEventStream`
-  construction site (~`:149`) and the `EventIntake` construction site (~`:161`).
-- [ ] 2.8 **(D3)** Apply or drop D3 per the 0.1 decision.
-- [ ] 2.9 **(D3)** Fix the now-stale comment at `tests/test_event_intake.py:330-332`. It states
-  "`attempt` resets on every delivered event" and uses that to justify why an interleaved trace
-  is the only unambiguous discriminator in that test. The reasoning survives; the unit becomes
-  "every proof-of-life frame." Left unfixed it is a comment asserting the old reset unit beside
-  code implementing the new one — the exact name-versus-meaning gap D4 exists to prevent.
-- [ ] 2.10 Full suite green (233 existing plus the new cases), `openspec validate --all` clean.
-  Do **not** refactor `coordinator._pump` to `wait_for` while here: it reintroduces D1's
-  wrong-scope trap one level up.
+- [ ] 2.1 **(D1, M2)** Desugar the retrieval loop. `async for raw in self._stream.subscribe(...)`
+  (`intake.py:103`) has **no syntactic place** for a retrieval-scoped timeout, so it becomes an
+  explicit `agen = self._stream.subscribe(...)` / `await agen.__anext__()` loop. Catch
+  `StopAsyncIteration` **inside** `events()` as the clean-end signal — `events()` is itself an async
+  generator, so a `StopAsyncIteration` escaping its body becomes
+  `RuntimeError: async generator raised StopAsyncIteration`. The existing `try/except/else` no
+  longer routes clean end to `else:`.
+- [ ] 2.2 **(D1, M1)** Cleanup: a **broad** `try/finally: await agen.aclose()` around the retrieval
+  loop. Measured: `await` inside a `finally` spanning a `yield` is **legal** — it is `yield` there
+  that raises `RuntimeError: async generator ignored GeneratorExit`. The narrow alternative
+  (`aclose()` on the timeout and error paths only) **leaks** on consumer abandonment, which is the
+  most-travelled path: all 19 existing tests `break` out of `events()`, and it is the only path
+  where `aclose()` has real work to do since every other path has already closed the generator by
+  exception. See `~/.claude-config/provisioning/henk-probes/probe_aclose_legality.py` and
+  `probe_genexit_boundary.py`.
+- [ ] 2.3 **(D1)** Add the `mono_clock` seam to `EventIntake.__init__`, mirroring
+  `EventCoordinator` (`coordinator.py:43`, `:51-55`) and its comment. Budget arithmetic must be
+  monotonic or an NTP step trips or stalls the watchdog; the displayed timestamp stays wall-clock.
+  `mono_clock` and `timeout_ctx` are substituted **as a pair** — a fake clock with a real
+  `asyncio.timeout` is incoherent.
+- [ ] 2.4 **(D1, 1.1)** Add the `timeout_ctx` seam:
+  `timeout_ctx: Callable[[float], AbstractAsyncContextManager] = asyncio.timeout`, taking a
+  **remaining budget** in seconds. Not `asyncio.timeout_at` — an absolute loop time cannot be
+  expressed through a relative seam, and it would force the arithmetic out of reach of the tests.
+- [ ] 2.5 **(D1)** Restructure the `except EventStreamError` block into a shared backoff helper
+  taking a **reason**, so the clean-end path can reach it without an exception to log. Clean end
+  logs at INFO with a distinct message; an error end keeps WARNING. Without this, the naive
+  implementation emits `"event stream failed"` on every healthy clean end — contradicting the
+  handful-of-lines constraint and seeding exactly the misreading D4 exists to prevent. The helper
+  must preserve a **stable trip identifier** (a distinct reason or structured field) — change D's
+  baseline is extracted by matching it, so an incidental message-wording change would erase it.
+- [ ] 2.6 **(0.2)** Normalise a budget expiry into the backoff path with `status=None`, per 0.2.
+- [ ] 2.7 **(D4)** The budget, keyed on proof of life. Compute the remaining window as
+  `deadline - (mono_clock() - last_proof_of_life_mono)` and pass it to `timeout_ctx`. **The wrong
+  implementation is `timeout_ctx(deadline)`** — a full window every retrieval, which restarts on
+  `open` frames and never fires under an `open` flood (measured: 40 `open` frames, no trip). Two
+  placement rules, both load-bearing:
+  - **Re-establish the budget immediately before each subscribe call, *after* the backoff sleep.**
+    Established once outside the reconnect loop, every post-trip connection inherits an expired
+    budget and dies before its first frame — permanently, silently, capped at max backoff
+    (measured: zero events delivered after the first trip). Anchored *before* the sleep, a 30s
+    backoff silently consumes 30s of a 135s window.
+  - **Advance the anchor for a delivered event *after* its `yield` returns**, so consumer latency
+    is not charged against liveness — liveness measures the stream, not Henk's processing speed. A
+    non-positive budget trips instantly and silently (measured: `-5.0`, `-0.001` and `0.0` all
+    raise at 0.000s — no `ValueError`, no clamp, no log), so charging consumer time would make
+    1.9 fail for the wrong reason and tempt widening the scope. Keepalives are not yielded, so they
+    advance the anchor at classification; state both points in the code.
+- [ ] 2.8 **(D4, M13)** Proof-of-life classification and the penalty reset at the **classification**
+  point — is this frame's `event` not `open`? — and **before** the `_convert`/`continue` guard
+  (`:105-106`), never inside it. Today's reset sits at `:112`, after that guard, so control frames
+  never reach it. Accounting reads `raw["event"]` **only** and must **not** write `_last_id`: ntfy
+  control frames carry an `id`, and writing one into the cursor either gets 400ed (→ retention
+  replay + owner DM) or is accepted and **silently skips messages**.
+- [ ] 2.9 **(D4)** **Add** `last_proof_of_life_at`, seeded to process start. (Not a rename —
+  `last_frame_at` has never existed in `henk/` or `tests/`; it appears only in this change's
+  documents.) Hold it twice: monotonic for the budget arithmetic, wall-clock for display.
+- [ ] 2.10 **(R3)** `liveness_state()` accessor returning last proof-of-life, last reconnect and
+  current penalty, plus the one-shot first-frame line, the coarse periodic line, and the trip line
+  with its stable identifier. The **emissions are the owner-facing surface**; the accessor is a
+  test seam and a hook for any future in-process reader.
+- [ ] 2.11 **(D2, R2)** `henk/config.py`: add `events.liveness_deadline_seconds` (Henk's policy)
+  and `endpoints.ntfy.keepalive_interval_seconds` (the recorded server value) — **no liveness
+  fields exist today** — plus the ordering validator. Deliberately two sections: the interval
+  describes the server, the deadline describes Henk, which is why validation runs **post-assembly**
+  rather than inside either builder. Name them distinctly from the pre-existing
+  `endpoints.ntfy.timeout_seconds` (`:245`, default 10.0), which sits in the same section and must
+  **not** be reused as the read timeout. Also add the periodic-emission interval, which otherwise
+  has no home despite being tested by 1.12.
+- [ ] 2.12 **(D1)** Adopt the redundant transport read floor: `httpx.Timeout(None, read=…)` at a
+  multiple of the liveness deadline, on `NtfyEventStream`. One line, normalises through the existing
+  `except Exception` at `:232`, needs no cancellation of a live generator, and downgrades a broken
+  hand-rolled watchdog from a permanent hang to a bounded reconnect. It **masks** budget-arithmetic
+  defects at deploy time, so the unit tests stay primary. Decide the dead `open_timeout` (`:207`,
+  assigned and never read; `timeout=None` at `:218` ignores it) in the same edit, since both concern
+  one `httpx.Timeout` object: either delete it or wire it as `connect=`. Record which, and record
+  that `timeout=None` today means there is no connect timeout either.
+- [ ] 2.13 **(M1, N5)** `henk/events/coordinator.py`: `_pump` (`:134-136`) creates the intake
+  generator inline via `async for` and never holds it, so cancelling the producer leaves `events()`
+  **suspended, not closed** — finalised only if the loop reaches `shutdown_asyncgens()`. Hold it
+  (`agen = self._intake.events()`) with `try/finally: await agen.aclose()`, or 2.2's broad cleanup
+  is decorative on the one production path with a live connection open. Note `run()`'s `finally`
+  catches only `CancelledError`, while `await producer` on an already-failed task re-raises its
+  stored exception — check that path too.
+- [ ] 2.14 **(D1)** `henk/runtime.py`: wire the new config at the `NtfyEventStream` site (~`:149`,
+  the read floor and the `open_timeout` disposition) and the `EventIntake` site (~`:161`, the
+  deadline, the clocks and the emission interval).
+- [ ] 2.15 **(D3)** Fix the comment at `tests/test_event_intake.py:330-332`. It says "`attempt`
+  resets on every delivered event, so all delays are backoff_base and a delay-value assertion
+  cannot distinguish the two paths." After this change the delays in that test become
+  `[1.0, 2.0, 1.0, 2.0, …]` (its `RejectingStream` reaches the clean-end branch), so a delay-value
+  assertion **can** now distinguish them — the interleaved trace is no longer the *only*
+  discriminator. Both halves of the old comment fail; rewrite it rather than adjusting one word.
+- [ ] 2.16 Full suite green (233 existing plus the new cases), `openspec validate --all` clean. Do
+  **not** refactor `coordinator._pump` to `wait_for` while in there — it reintroduces the wide-scope
+  trap one level up.
+- [ ] 2.17 Resolve **every** code identifier these four artifacts name against `henk/` and
+  `tests/`. `last_frame_at` (2.9) was not an unlucky one-off; it was the first one checked.
 
 ## 3. Ship it and verify on rp5
 
 - [ ] 3.1 **Owner-run:** redeploy with `--build` (code is `COPY`'d into the image, so a plain
-  `up -d` runs stale code). Note the container has been up 9 days on pre-change code.
-- [ ] 3.2 **(scenario: a healthy stream is readable at deploy time)** Read `liveness_state()`
-  and the healthy-path emissions from the running container and confirm frames arrive on the
-  ~45s cadence while no events exist. This is the observation that makes every later quiet
-  window interpretable, so it must be recorded, not just seen.
-- [ ] 3.3 **(scenario: silent stream is abandoned)** Provoke a real trip — sever the path to
-  ntfy long enough to exceed the deadline — and confirm intake reconnects, resumes from the
-  correct cursor, and loses nothing. There is no owner notice in this change, so the expected
-  channel behaviour is silence.
-- [ ] 3.4 Record the as-built liveness config. **No token values, and no prose stating that a
-  value was withheld** (`repo-publication` 3.3: the framing is the leak). Record the measured
-  server keepalive interval alongside the deadline that derives from it (D2).
+  `up -d` runs stale code). The container has been up 9 days on pre-change code. Because
+  `config.yaml` is a **read-only bind mount from the checkout**, 2.11's values ship with the image
+  rather than as a host-side edit — commit, redeploy, and keep a revert path.
+- [ ] 3.2 **(scenarios: a healthy stream is readable at deploy time; a quiet period is verifiable
+  after the fact)** Read the startup line and the periodic lines from the running container and
+  confirm frames arrive on the ~45s cadence while no events exist. Record it. The **emissions** are
+  the surface here — `liveness_state()` has no out-of-process reader, so do not plan to call it.
+  Then verify the second scenario is actually satisfied: from the recorded lines alone, and without
+  inspecting the subscription by hand, establish whether intake was continuously alive across that
+  window. If that cannot be done from the lines, the emission content is wrong — not the
+  observation.
+- [ ] 3.3 **(scenario: silent stream is abandoned / a liveness trip does not kill intake)** Provoke
+  a real trip — sever the path to ntfy past the deadline — and confirm intake reconnects, resumes
+  from the correct cursor, loses nothing, **and is still delivering afterwards**. There is no owner
+  notice in this change, so the expected channel behaviour is silence.
+- [ ] 3.4 Record the as-built liveness config. **No token values, and no prose stating that a value
+  was withheld** (`repo-publication` 3.3: the framing is the leak). Record the measured server
+  keepalive interval beside the deadline that derives from it (D2).
+- [ ] 3.5 **(D2, M17)** Add the coupling cross-reference the validator cannot enforce: it compares
+  Henk's deadline against Henk's *recorded copy* of the interval, so raising
+  `keepalive-interval` on the vps without updating Henk's config passes validation and flaps the
+  watchdog. Note the coupling on the vps side and in the homelab ntfy docs page — a `/docs-update`
+  trigger.
+- [ ] 3.6 Copy the probes backing this change's measured claims into
+  `~/.claude-config/provisioning/henk-probes/` and fold them into the existing "re-run on httpx
+  version drift" note (`httpx>=0.27` is an open bound). After the `timeout_ctx` seam, the probes are
+  the **only** executable check on the cancellation path — the faked timeout tests the arithmetic
+  and never the cancellation.
 
-## 4. Produce the baseline the deferred notice needs
+## 4. Close-out
 
-- [ ] 4.1 **(design non-goal: no notification predicate)** After a bounded window, extract the
-  trip count and inter-trip intervals from the trip log lines. This is the measurement the
-  owner-notification change is waiting on, and the reason it was split out: its constants
-  cannot be derived until this instrument ships.
-- [ ] 4.2 **Exit rule, including the likely branch.** If the window yields **zero** trips, that
-  is sufficient rather than inconclusive: it demonstrates the natural trip rate is below any
-  threshold the notice would pick, so the predicate is derived from the deadline arithmetic
-  with a conservative bound and ships anyway. Absence is evidence for a **bound**, not for a
-  **fit** — this is why it does not repeat `henk-events` 5.4, which needed to fit cadence
-  constants to a distribution and could not.
-
-## 5. Close-out
-
-- [ ] 5.1 Update the `event-intake` spec Purpose line, still reading
+- [ ] 4.1 Update the `event-intake` spec Purpose line, still reading
   `TBD - created by archiving change henk-events`.
-- [ ] 5.2 Archive. Check no other in-flight change MODIFIES `event-intake` first — two changes
+- [ ] 4.2 Archive. Check no other in-flight change MODIFIES `event-intake` first — two changes
   modifying one requirement silently stop matching once the first lands, and archive is
   transactional.
+
+**Moved out of this change:** the trip-baseline extraction that was section 4 now belongs to change
+D (the owner notice) as its task zero. D is "deferred until A's baseline exists," so the extraction
+is D's first task, not A's last — otherwise A cannot archive until a multi-day observation with no
+stated N completes, on a measurement whose expected result (zero trips) makes it unnecessary. A's
+obligation is to **emit** the stably-identifiable trip line (2.5); D's is to count them.
