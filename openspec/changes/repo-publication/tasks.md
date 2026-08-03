@@ -62,12 +62,15 @@
   the wrong account. DONE 2026-08-03 — flipped owner-run from the session prompt; the
   active `gh` account had already been switched to the personal one, and gh 2.96 required
   the additional `--accept-visibility-change-consequences` flag.
-- [ ] 4.2 Portfolio project card on `hulsman.dev/projects`. Frame it on what is actually
+- [x] 4.2 Portfolio project card on `hulsman.dev/projects`. Frame it on what is actually
   demonstrated rather than on daily operational value: prompt-injection resistance under a
   real hostile payload, exactly-once replay across restarts, cadence state surviving
   redeploys, and a wedge found by probing an undocumented external contract. The
   first-week watch recorded **zero real events in nine days** (henk-events 5.4), so a
-  claim of routine incident triage would not be honest.
+  claim of routine incident triage would not be honest. DONE 2026-08-03 — live and verified
+  unauthenticated at `hulsman.dev/projects/Henk/` (HTTP 200), listed in the projects index
+  and the homepage showcase. Written to the honesty constraint above: the nine silent days
+  are stated in the case study's own closing paragraph rather than omitted.
 - [x] 4.3 After the flip, confirm the repository is reachable while logged out, and that
   no GitHub Actions secrets, deploy keys, or environment settings became visible.
   DONE 2026-08-03, verified unauthenticated: repo page and raw file fetch return 200,
