@@ -268,3 +268,60 @@ exists. That is the finding, not a failure to try hard enough.
 - **D — the owner notice:** deferred until A's baseline exists.
 
 **Do not implement from the committed proposal as written.**
+
+---
+
+## Restructure executed (2026-08-03)
+
+The fix plan above has been applied. This section records what a reader of *this file* needs in
+order to not be misled by it, now that the artifacts beside it have moved on.
+
+**What was done:** `sensor-aperture` → `intake-liveness-watchdog` (`git mv`; `.openspec.yaml`
+holds only `schema`/`created`, so no id to edit). `specs/sensor-routing/spec.md` deleted. The
+notice requirement and its tasks removed to change D. Tasks sections 4/5/6 (routing, watch
+window, tranche 2) and 7.1 deleted. `tasks.md`'s old line 37 — the transport-side
+`httpx.Timeout` deadline that D1 inverts — replaced. `proposal.md`, `design.md`, and
+`specs/event-intake/spec.md` rewritten per the dispositions above.
+
+**Decision numbering changed.** `design.md` now carries D1 (rewritten: deadline in
+`EventIntake`, not the transport), D2, D3 (annotated load-bearing), and a **new D4** holding
+R6-6's proof-of-life decision. Old D4–D8 were deleted with the routing and cadence scope. Any
+reference to **D5–D8 in the sections above refers to the superseded numbering** — in particular
+the D6 and D8 mentioned in R6-3/R6-4 are the old cadence and watch-window decisions, not
+anything in the current `design.md`.
+
+**One ambiguity resolved by judgment.** R6-2 asked for four scenarios on Requirement 1 including
+`:22` (the deadline-versus-interval ordering) *and* separately for "a scenario for the
+ordering-invariant requirement," which would have duplicated `:22`. Resolved by making the
+ordering invariant its **own** requirement — it is a config-validation obligation, distinct from
+the watchdog's runtime behaviour — with the ordering scenario plus a load-time-refusal scenario
+under it. Requirement 1 keeps four scenarios, all behavioural. Every requirement has at least
+one scenario, so the gate holds either way.
+
+### Two corrections found while executing, verified against the code
+
+**R6-1's justification rests on a false claim.** It states the type-based definition also fixes
+a gap because "the test fakes never send `open` at all, so a literal implementation of
+'post-`open`' would reclassify every fake's clean end as a failure."
+`tests/test_event_intake.py:76` **does** send `{"event": "open", ...}`. The claim is false for
+that fake, which also sends a `message` and so is unaffected either way. The **conclusion is
+unchanged** — type-based still beats positional — but the surviving rationale in `design.md` D4
+is the one that actually holds: positional phrasing invites classifying frames by what preceded
+them, which is harder to test and wrong for streams that never send `open`. Recorded because a
+future reader relying on the original wording would be relying on a false premise.
+
+**A consumer the enumeration missed: a test comment.** `tests/test_event_intake.py:330-332`
+asserts in prose that "`attempt` resets on every delivered event, so all delays are
+backoff_base," and uses that to justify why an interleaved trace is the only unambiguous
+discriminator in `test_repeated_rejection_backs_off_after_the_first_recovery`. D3 changes that
+unit to "every proof-of-life frame." The test itself still passes — it sends no keepalives — so
+nothing fails, which is precisely why this would have shipped: a comment asserting the old reset
+unit beside code implementing the new one, invisible to the suite. This is the R6-1 species of
+defect in a location the mechanical identifier table did not cover, because that table enumerated
+tasks, spec headings, and decisions — **not prose inside tests**. Now `tasks.md` 2.9.
+
+**Also verified landable while executing** (D3's risk row, previously "read the tests first" with
+nothing read): `test_persistent_failure_backs_off_without_crashing` drives a stream that raises
+immediately and so delivers no proof-of-life frame — its `[1, 2, 4, 8]` assertion is unaffected.
+`test_first_recovery_reconnects_without_sleeping` stops collecting before the clean-end branch is
+reached, so `slept == []` still holds. The remaining backoff cases are task 0.1.
