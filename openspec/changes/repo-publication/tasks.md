@@ -55,16 +55,23 @@
 
 ## 4. The flip (owner-executed)
 
-- [ ] 4.1 **Owner runs:** `gh repo edit enhulsman/henk --visibility public`. Note the
+- [x] 4.1 **Owner runs:** `gh repo edit enhulsman/henk --visibility public`. Note the
   `github.com-work` SSH alias handles pushes for `enhulsman/*` via the gitconfig
   `insteadOf` mapping, but the active `gh` account is the **work** account — verify
   `gh auth status` targets the right identity first, or the command will fail or act on
-  the wrong account.
+  the wrong account. DONE 2026-08-03 — flipped owner-run from the session prompt; the
+  active `gh` account had already been switched to the personal one, and gh 2.96 required
+  the additional `--accept-visibility-change-consequences` flag.
 - [ ] 4.2 Portfolio project card on `hulsman.dev/projects`. Frame it on what is actually
   demonstrated rather than on daily operational value: prompt-injection resistance under a
   real hostile payload, exactly-once replay across restarts, cadence state surviving
   redeploys, and a wedge found by probing an undocumented external contract. The
   first-week watch recorded **zero real events in nine days** (henk-events 5.4), so a
   claim of routine incident triage would not be honest.
-- [ ] 4.3 After the flip, confirm the repository is reachable while logged out, and that
+- [x] 4.3 After the flip, confirm the repository is reachable while logged out, and that
   no GitHub Actions secrets, deploy keys, or environment settings became visible.
+  DONE 2026-08-03, verified unauthenticated: repo page and raw file fetch return 200,
+  `.env` returns 404. Actions secrets, Dependabot secrets, deploy keys, environments,
+  releases: all zero; no Pages site. Remote carries exactly two refs (`HEAD`,
+  `refs/heads/main`), both at the post-rewrite `e099959` — no stray branches or tags
+  carrying pre-rewrite history.
