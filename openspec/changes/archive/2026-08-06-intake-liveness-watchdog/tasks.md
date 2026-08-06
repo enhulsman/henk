@@ -201,7 +201,7 @@ this change exists to prevent.
   inspecting the subscription by hand, establish whether intake was continuously alive across that
   window. If that cannot be done from the lines, the emission content is wrong — not the
   observation.
-- [ ] 3.3 **(scenario: silent stream is abandoned / a liveness trip does not kill intake)** Provoke
+- [x] 3.3 **(scenario: silent stream is abandoned / a liveness trip does not kill intake)** Provoke
   a real trip — sever the path to ntfy past the deadline — and confirm intake reconnects, resumes
   from the correct cursor, loses nothing, **and is still delivering afterwards**. There is no owner
   notice in this change, so the expected channel behaviour is silence.
@@ -223,7 +223,7 @@ this change exists to prevent.
 
 - [x] 4.1 Update the `event-intake` spec Purpose line, still reading
   `TBD - created by archiving change henk-events`.
-- [ ] 4.2 Archive. Check no other in-flight change MODIFIES `event-intake` first — two changes
+- [x] 4.2 Archive. Check no other in-flight change MODIFIES `event-intake` first — two changes
   modifying one requirement silently stop matching once the first lands, and archive is
   transactional.
 
@@ -349,3 +349,47 @@ connection. A quiet homelab is now *evidence* of quiet: before this change the s
 of silence would have been indistinguishable from a dead socket. The emission content is
 therefore right — the check the task demanded (can continuity be established without
 inspecting the subscription by hand?) passes.
+
+### 3.3 closed — a real trip, provoked and survived (2026-08-06)
+
+Silence induced by freezing Henk's tailscale sidecar for 170s (no RST, so the socket goes
+half-open — the exact failure class this change exists to detect, and the one that was
+previously indistinguishable from a healthy quiet tailnet).
+
+```
+11:07:46  last proof-of-life frame
+11:10:01  WARNING intake-liveness-trip: nothing delivered in the remaining 135s of the
+          135s liveness deadline [last proof-of-life 11:07:46 (135s ago), penalty 0];
+          reconnecting from since=xRHc8Ro4KCuq in 1.0s
+11:10:32  WARNING ntfy subscribe failed; reconnecting from since=xRHc8Ro4KCuq in 2.0s
+11:11:04  WARNING ntfy subscribe failed; reconnecting from since=xRHc8Ro4KCuq in 4.0s
+11:11:08  GET /henk-events/json?since=xRHc8Ro4KCuq "HTTP/1.1 200 OK"
+```
+
+Every claim in R1 is visible in five lines: the trip fired at **exactly** the deadline
+(11:10:01 − 11:07:46 = 135s, and the message reports the full window as remaining, so the
+anchor sat on the last proof-of-life frame as specified); the stable marker is present; the
+backoff escalated 1.0 → 2.0 → 4.0; the resume cursor was **preserved unchanged across every
+attempt** and accepted by the server; and no owner DM was sent, which is the correct
+behaviour since this change ships no owner notice.
+
+**Still delivering afterwards, proven by the watchdog itself.** Had the reconnect not been
+receiving frames, a second trip would have fired 135s after 11:11:08 (≈11:13:23). At 11:14:39
+the trip count was still exactly **1** with no failures after the reconnect. That is the
+change's whole thesis in one observation: silence is now self-reporting, so the *absence* of
+a line is evidence rather than an assumption.
+
+**Unplanned production confirmation of decision 2.12.** The two failed reconnects each took
+exactly 30s (11:10:02→11:10:32, 11:10:34→11:11:04) — the former dead `open_timeout`, now
+wired as `connect=`, firing. Under the previous `timeout=None` there was no connect timeout
+at all, so those attempts had no bound. Wiring it rather than deleting it was the right call,
+and this is the evidence.
+
+**Scope limit, stated rather than glossed:** no probe event was published during the outage,
+so "loses nothing" is established by the cursor being preserved and accepted (visible above)
+plus the unit tests, not by an end-to-end replay observation.
+
+**One papercut, pre-existing and not from this change:** the transport normalisation logs
+`ntfy subscribe failed: ` with an empty message when the underlying exception stringifies to
+nothing (`intake.py`'s `except Exception` uses `{exc}`). Worth `{exc!r}` or a type name — a
+connect failure should not be anonymous. Not fixed here; this change is closed.
