@@ -90,7 +90,7 @@
       `{{ $labels.x }}` is a Go template Grafana renders — shell expansion there would be the bug)
 - [x] 2.16 `[claude-config]` **Offline test harness** — `mock_grafana.py` serves the 1.4 fixture
       over HTTP; `test-offline.sh` exercises the planner against it with no credentials, no vps and
-      no network. Five cases, 18 assertions, all passing: baseline diffs to zero; target creates the
+      no network. Six cases, 26 assertions, all passing: baseline diffs to zero; target creates the
       two new rules without touching the reducer; the template migration trips the drift guard;
       `ACCEPT_DRIFT` releases it; an undeclared rule is reported and never pruned. This is what
       caught the `queryType` omission — without it, 2.10's "expect all unchanged" gate would have
@@ -139,12 +139,17 @@
       carries no meaning, but the positional comparison reported drift on every run. Fixed by
       sorting both sides before diffing, with regression test T6. Also: dry-runs no longer write a
       rollback backup (they mutate nothing, so those were pure litter in `/root`).
-      Running tally of API quirks the declaration must absorb: absent `continue`, returned
-      `queryType`, sorted `object_matchers`, server-managed `id`/`updated`
+      Running tally of API quirks the declaration must absorb: absent `continue`, `group_by: null`
+      meaning inherit, returned `queryType`, sorted `object_matchers`, server-managed
+      `id`/`updated`. **`design.md` D4 was corrected to match** — it had described the first as
+      `continue: null`, contradicting this task and inviting a `null`-specific test that misses it
+- [x] 2.19 `[claude-config]` T5 now asserts the applier **refuses `--apply`** while an undeclared
+      rule exists, not merely that it reports one. The refusal is the actual guarantee; the report
+      was the only thing under test
 - [x] 2.17 `[claude-config]` Applier switched from a reducer knob to a **threshold knob**
       (`LEGACY_THRESHOLD=0|-1`); new rules always `-1`. Invariant (e) added: the two new rules must
       carry `-1`, the four legacy rules must match the requested stage. Offline suite updated and
-      re-run — 18 assertions, all passing. shellcheck clean
+      re-run — 26 assertions across 6 cases, all passing. shellcheck clean
 
 ## 3. New rules, dual delivery, template migration
 
@@ -196,7 +201,13 @@
       folder `henk` (the 7 DNS criticals, `HighMemory`, `AuditShipStale`).
       Original text: Test-fire an **unlabelled** temporary `vector(1)` rule → still reaches Discord.
       Proves the policy edit did not break delivery for everything outside folder `henk`
-- [ ] 4.3 **[owner]** Stop a node exporter for >2m — **pi2 or pi5 only**. Never
+- [ ] 4.3 **[owner]** Stop a node exporter for >2m — **pi2 ONLY**. (Corrected 2026-08-06 after
+      measuring which exporter carries which textfile metric: `health_etl_*` is on
+      **node-exporter-vps** only, `homelab_backup_last_success_timestamp` is on **both vps and
+      pi5**, and every `obsidian_backup_*` series is on **pi5 only**. So stopping pi5 blinds all
+      three obsidian arms of `HenkBackupFreshness` — milder than stopping vps, but still the
+      change's own failure mode injected into its verification. pi2 carries only disk/swap series,
+      whose other two hosts survive and which are nowhere near threshold.) Never
       `node-exporter-vps`: it carries the `health_etl_*` and `homelab_backup_*` textfile metrics, so
       stopping it drives `HenkHealthEtl`/`HenkBackupFreshness` to noData → `noDataState: OK` →
       "healthy", injecting this change's headline failure mode into its own verification.

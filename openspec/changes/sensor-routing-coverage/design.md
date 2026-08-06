@@ -16,7 +16,7 @@ State measured 2026-08-06 — Prometheus via its HTTP API, Grafana via an owner-
                         │ Grafana (vps)                        │
                         │ default: Discord-Grafana             │
                         │ group_by: [grafana_folder, alertname]│
-                        │  └─ route=henk-events, continue:null │
+                        │  └─ route=henk-events, continue absent│
                         └───┬──────────────────────────────┬───┘
                             │ 4 rules (folder henk)        │ 9 rules
                      ┌──────▼───────┐              ┌───────▼────────┐
@@ -114,13 +114,40 @@ All six rules gain `severity`. The tree becomes:
 ```
 default receiver: Discord-Grafana   group_by: [grafana_folder, alertname]
 routes:
-  1. [route = henk-events]                          → henk-events      continue: true   ← flipped
-  2. [severity = critical AND route = henk-events]  → Discord-Grafana  continue: false  ← new
+  1. [severity=critical AND route=henk-events]  → Discord-Grafana  continue: TRUE
+  2. [identity_scope=~"instance|name"
+      AND route=henk-events]                    → henk-events      continue: false
+                                                  group_by: [alertname, instance, name]
+  3. [route=henk-events]                        → henk-events      continue: false
 ```
+
+Ordering is load-bearing, and this shape was arrived at by tracing rather than by first instinct.
+An earlier draft put the Henk route first with `continue: true` and Discord second; that breaks
+`HenkInstanceDown`, which would match the Henk route, continue to the critical route, and **stop
+before ever reaching its per-instance grouping route** — silently losing the D9 scoping the whole
+identity change depends on. Putting the dumb Discord path first is also fail-safe: a critical
+reaches the non-agent receiver before anything cleverer can go wrong.
+
+| alert | r1 | r2 | r3 | lands |
+|---|---|---|---|---|
+| `HenkInstanceDown` (critical, scope=instance) | ✓ Discord, continue | ✓ Henk, per-instance, stop | — | **both** |
+| `HenkContainerRestarting` (warning, scope=name) | ✗ | ✓ Henk, per-instance, stop | — | Henk only |
+| the four pre-existing (warning, no scope) | ✗ | ✗ | ✓ Henk, root grouping | Henk only, unchanged |
+| a DNS critical (`severity=critical`, no route label) | ✗ | ✗ | ✗ | parent → Discord, unchanged |
+
+Route 2 exists because without per-instance grouping the root `group_by: [grafana_folder,
+alertname]` collapses several down targets into **one** notification, from which Henk derives one
+identity — defeating D9 entirely. It is kept off the catch-all so the four pre-existing rules keep
+root grouping: per-instance grouping there would take Disk/Swap from one notification to three,
+each still collapsing to a single unscoped identity, which is the identity bug made worse.
 
 Keying route 2 on `severity` rather than an invented label makes the requirement **enforceable**: any future critical is covered automatically, and D5's invariants can police it. The second matcher (`route = henk-events`) is load-bearing and now empirically justified: the measured state shows the four DNS critical rules carry `severity=critical` with **no** route label, so severity-alone matching would pull all four out of the parent and into route 2. Same receiver, so it would look harmless — but a child route carries its own grouping and timing, and the DNS path's behaviour would silently become dependent on route 2's config.
 
-Flipping route 1 to `continue: true` is behaviour-preserving for the existing four: they match route 1, deliver, continue to route 2, fail its severity matcher, and stop — the parent stays unreachable because a child matched. Load-bearing enough to verify rather than reason about (task 4.1).
+The four pre-existing rules are untouched by this: carrying neither `severity=critical` nor an
+`identity_scope`, they fall past routes 1 and 2 to the catch-all and deliver exactly as before.
+**Verified rather than reasoned (task 4.1, 2026-08-06):** a temporary `severity=warning` rule
+labelled `route=henk-events` arrived on ntfy and did *not* appear in Discord, while an unlabelled
+rule still reached Discord via the parent.
 
 **Severity assignment.** `HenkInstanceDown` critical; the other five warning. `HenkBackupFreshness` combines seven natives of which `ObsidianBackupVerifyFailed` is critical, so a combined-OR rule **cannot carry an honest per-arm severity**; `warning` is the conservative choice (it changes no current behaviour) and the imprecision is further evidence for the deferred split.
 
@@ -134,7 +161,7 @@ Rewrite as a convergent applier over a declared-state table (uid → title, expr
 - **Drift is a hard stop.** If a live rule's expression, condition pipeline, threshold or `for` differs from the declaration, abort naming the rule and printing the diff. Escape hatch: `ACCEPT_DRIFT=<uid>[,<uid>]`.
 - **PUT-by-uid**, not POST, so re-runs converge instead of 409-ing.
 - **The policy tree is rebuilt from the declaration**, matched on route identity, replacing the `jq` prepend that duplicated the henk route every run.
-- **Normalise before diffing.** Measured: the API reads back `continue: null` where the script wrote `false`, and `group_by: null` on the child route (meaning "inherit"). Without normalising `null ↔ false` and `null ↔ inherited`, every dry-run reports false drift on route 1 and the drift guard becomes noise the operator learns to bypass — which would defeat the control entirely.
+- **Normalise before diffing.** Four representational differences, each found by running the thing, never by inspection. The API **omits** `continue` entirely on an unchanged child route (`has("continue")` is false — normalise with `(.continue // false)`, which covers absent and null alike; testing for `null` specifically misses it); returns `group_by: null` meaning "inherit"; returns `queryType: ""` on every data node, which the old script never sent; and **sorts a route's `object_matchers` alphabetically by label**, so a declared `[severity, route]` reads back `[route, severity]`. Matchers are a conjunction, so sorting both sides before comparison is safe. `id` and `updated` are server-managed and excluded. Without all five normalisations every dry-run reports false drift, and an operator who learns to bypass the drift guard does not have one.
 
 This, not credentialed reads, is what prevents a repeat of the swap incident. The retune was a **staleness** failure, not an access failure: the script carried a wrong expression and applied it without looking. A drift-refusing planner would have printed `HenkSwapPressure: expr changing from <pressure> → <fullness>` and stopped. Reading the API would not have.
 
