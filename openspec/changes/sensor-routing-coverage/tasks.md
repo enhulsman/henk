@@ -180,12 +180,21 @@
 
 ## 4. Deploy verification — each item is a distinct failure mode; do not collapse them
 
-- [ ] 4.1 **[owner]** Test-fire an **existing** henk rule → arrives on `henk-events` and **not** in
+- [x] 4.1 **[owner]** **PASSED 2026-08-06.** Temporary `vector(1)` rule `VerifyHenkRoute`
+      (`route=henk-events, severity=warning`) arrived on ntfy as
+      `[FIRING:1] VerifyHenkRoute henk (henk-events warning)` and **did not** appear in Discord —
+      Discord's digest read `1 firing · 0 resolved` naming only `VerifyDiscordRoute`. This is the
+      `continue: true` regression check: D3 reasoned that a child route consumes the alert so the
+      parent stays unreachable, and that is now measured rather than argued.
+      Original text: Test-fire an **existing** henk rule → arrives on `henk-events` and **not** in
       Discord. The `continue: true` regression check. Method: a temporary `vector(1)` rule in folder
       `henk` labelled `route=henk-events`, deleted after (precedent: `henk-prov-smoke`). Do **not**
       use `POST /api/alertmanager/grafana/config/api/v1/receivers/test` — it tests the contact point
       directly and **bypasses the notification policy**, so it cannot discharge this check or 4.2
-- [ ] 4.2 **[owner]** Test-fire an **unlabelled** temporary `vector(1)` rule → still reaches Discord.
+- [x] 4.2 **[owner]** **PASSED 2026-08-06.** Unlabelled `VerifyDiscordRoute` reached Discord via
+      the parent route, proving the policy edit did not break delivery for everything outside
+      folder `henk` (the 7 DNS criticals, `HighMemory`, `AuditShipStale`).
+      Original text: Test-fire an **unlabelled** temporary `vector(1)` rule → still reaches Discord.
       Proves the policy edit did not break delivery for everything outside folder `henk`
 - [ ] 4.3 **[owner]** Stop a node exporter for >2m — **pi2 or pi5 only**. Never
       `node-exporter-vps`: it carries the `health_etl_*` and `homelab_backup_*` textfile metrics, so
