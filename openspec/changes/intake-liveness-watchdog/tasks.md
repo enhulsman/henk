@@ -189,11 +189,11 @@ this change exists to prevent.
 
 ## 3. Ship it and verify on rp5
 
-- [ ] 3.1 **Owner-run:** redeploy with `--build` (code is `COPY`'d into the image, so a plain
+- [x] 3.1 **Owner-run:** redeploy with `--build` (code is `COPY`'d into the image, so a plain
   `up -d` runs stale code). The container has been up 9 days on pre-change code. Because
   `config.yaml` is a **read-only bind mount from the checkout**, 2.11's values ship with the image
   rather than as a host-side edit — commit, redeploy, and keep a revert path.
-- [ ] 3.2 **(scenarios: a healthy stream is readable at deploy time; a quiet period is verifiable
+- [x] 3.2 **(scenarios: a healthy stream is readable at deploy time; a quiet period is verifiable
   after the fact)** Read the startup line and the periodic lines from the running container and
   confirm frames arrive on the ~45s cadence while no events exist. Record it. The **emissions** are
   the surface here — `liveness_state()` has no out-of-process reader, so do not plan to call it.
@@ -205,7 +205,7 @@ this change exists to prevent.
   a real trip — sever the path to ntfy past the deadline — and confirm intake reconnects, resumes
   from the correct cursor, loses nothing, **and is still delivering afterwards**. There is no owner
   notice in this change, so the expected channel behaviour is silence.
-- [ ] 3.4 Record the as-built liveness config. **No token values, and no prose stating that a value
+- [x] 3.4 Record the as-built liveness config. **No token values, and no prose stating that a value
   was withheld** (`repo-publication` 3.3: the framing is the leak). Record the measured server
   keepalive interval beside the deadline that derives from it (D2).
 - [x] 3.5 **(D2, M17)** Add the coupling cross-reference the validator cannot enforce: it compares
@@ -297,3 +297,55 @@ coupled to Henk's deadline and that Henk validates against its own *recorded cop
 server interval passes validation and then flaps. The Henk side
 (`services/applications.md`) replaces the "latent risk — a half-open socket would hang undetected"
 bullet with what closed it, plus how to read liveness from `docker logs` without `docker exec`.
+
+## As-built (rp5, 2026-08-03)
+
+| Value | Setting |
+|---|---|
+| `events.liveness_deadline_seconds` | 135 |
+| `endpoints.ntfy.keepalive_interval_seconds` (recorded server value) | 45 |
+| `events.liveness_report_interval_seconds` | 3600 |
+| transport read floor (`2 x` deadline, `runtime.py`) | 270 |
+| connect timeout (the former dead `open_timeout`, now wired) | 30 |
+
+Deployed by `docker compose -p henk -f /home/pi/Coding/henk/docker-compose.yml up -d
+--build henk`. Startup was clean: config accepted (so the >= 3x ordering validator passed
+against the recorded interval), subscription resumed from the persisted checkpoint with
+HTTP 200 — no cold subscribe, no since-rejection — and zero errors or warnings.
+
+**The 45s interval is now confirmed in production, not just read from the server config.**
+Container start 16:57:49, first proof-of-life frame 16:58:34 — a 45s gap, and with no
+message traffic that frame can only have been a keepalive. That is the measurement the
+135s deadline derives from, observed at the point of use.
+
+Log surface after startup is three lines total, matching D5's handful-of-lines intent:
+
+```
+INFO henk starting henk with config=/app/config.yaml
+INFO httpx HTTP Request: GET http://vps:2586/henk-events/json?since=<id> "HTTP/1.1 200 OK"
+INFO henk.events.intake intake liveness: first proof-of-life frame; last proof-of-life
+     2026-08-03T16:58:34 (0s ago), last reconnect never, penalty 0
+```
+
+**Deploy-path defects found on the way, both now recorded as memories rather than only
+here.** rp5's `config.yaml` is a permanently uncommitted local modification (it carries
+values the repo keeps as placeholders) which makes `git pull`/`reset` fail there while
+`git status` reports clean; and running compose from a `henk.old` directory silently
+creates a separate `henkold` project on empty volumes, whose symptom is a wall of DNS
+resolution failures. Neither is a defect in this change, but both are deploy hazards for
+the next one, and the first came within one command of bringing Henk up with an owner id
+that would have dropped every DM at the allowlist.
+
+### 3.2 closed — 66 hours of evidence (2026-08-03 → 2026-08-06)
+
+The second scenario ("a quiet period is verifiable after the fact") is satisfied from the
+emitted lines alone, which is the test the task set: **66 consecutive hourly lines**, every
+one reading `80 proof-of-life frames in the last 3600s`, `last reconnect never`, `penalty 0`
+— with **zero** trips, errors or warnings across the whole window.
+
+80 x 45s = 3600s exactly, so the frame count alone pins the delivery cadence to the server's
+keepalive interval, and `last reconnect never` holding for 66 hours establishes one unbroken
+connection. A quiet homelab is now *evidence* of quiet: before this change the same 66 hours
+of silence would have been indistinguishable from a dead socket. The emission content is
+therefore right — the check the task demanded (can continuity be established without
+inspecting the subscription by hand?) passes.
