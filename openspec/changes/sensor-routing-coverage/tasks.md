@@ -22,64 +22,93 @@
       - `HenkSwapPressure` live carries the **pressure retune**; the script is stale. Trap confirmed
       - All four henk rules run `reduce(last) → threshold(gt [0])`, `instant: true` — D2 confirmed
         against deployed state, and `HenkHealthEtl` arm 4 is dead in production
-      - The policy API reads back `continue: null` where the script wrote `false`, and
-        `group_by: null` on the child route → **the applier must normalise** (task 2.6)
+      - The policy API **omits** `continue` entirely on the child route (`has("continue")` is
+        false) where the script wrote `false`; likewise no `group_by` → **the applier must
+        normalise** (task 2.6)
       - **None** of the four rules carries a `severity` label → C3 must add it to all four (2b)
       - New rule discovered: `AuditShipStale` (Grafana-only, no native twin, watches
         `homelab_audit_last_flush_timestamp` on vps; unrelated to Henk's audit log). With
         `HenkSwapPressure` it means the two rule sets are **not** a subset relationship either way
       - Docs place "High memory usage" in the DNS Performance group; it is in another folder and
         carries no labels at all
-- [ ] 1.3 **[owner]** Back up the policy tree to a **dated** file on the vps (not the reboot-volatile
+- [x] 1.3 **[owner]** Back up the policy tree to a **dated** file on the vps (not the reboot-volatile
       `/tmp/grafana-policies.backup.json`, which is 2026-07-22 vintage). This is the rollback point
-- [ ] 1.4 `[claude-config]` Commit a credential-scrubbed copy of 1.1's dump as the applier's
+- [x] 1.4 `[claude-config]` Commit a credential-scrubbed copy of 1.1's dump as the applier's
       offline development fixture — no tokens, no admin user, no tailnet IPs (the contact-point URL
       contains one)
 
 ## 2. Applier rewrite — make it convergent before adding anything to it
 
-- [ ] 2.1 `[claude-config]` Restructure `grafana-henk-events.sh` around a **declared-state table**
+- [x] 2.1 `[claude-config]` Restructure `grafana-henk-events.sh` around a **declared-state table**
       (uid → title, expr, `for`, labels, annotations, `noDataState`, condition pipeline), plus the
       contact point and policy tree, reproducing 1.1's live state **exactly** — including the
       already-deployed swap **pressure** retune and today's `reduce(last)` pipeline. At this point
       the declaration describes the current deployment with zero changes
-- [ ] 2.2 `[claude-config]` Implement the planner: GET live state, compare per object, print a
+- [x] 2.2 `[claude-config]` Implement the planner: GET live state, compare per object, print a
       `create`/`update`/`unchanged` plan with a full diff per change. `--dry-run` is the **default**;
       mutation requires an explicit `--apply`
-- [ ] 2.3 `[claude-config]` Implement the drift guard: abort naming the rule and printing the diff
+- [x] 2.3 `[claude-config]` Implement the drift guard: abort naming the rule and printing the diff
       when a live rule's expr, condition pipeline, threshold or `for` differs from the declaration.
       Escape hatch `ACCEPT_DRIFT=<uid>[,<uid>]`. **Verify it works** by pointing a scratch
       declaration at the stale `>90%` fullness expression and confirming it refuses — this is the
       control that would have caught the swap revert
-- [ ] 2.4 `[claude-config]` Convert writes from POST to **PUT-by-uid** so re-runs converge instead
+- [x] 2.4 `[claude-config]` Convert writes from POST to **PUT-by-uid** so re-runs converge instead
       of 409-ing under `set -euo pipefail`. Preserve `X-Disable-Provenance: true` on every
       provisioning write — without it, PUTs to provisioned rules can 403
-- [ ] 2.5 `[claude-config]` Rebuild the policy tree from the declaration matched on route identity,
+- [x] 2.5 `[claude-config]` Rebuild the policy tree from the declaration matched on route identity,
       replacing the `jq` prepend that duplicated the henk route every run
-- [ ] 2.6 `[claude-config]` **Normalise before diffing**: `continue: null ↔ false`, `group_by: null ↔
-      inherited`, per 1.2's measurement. Without this every dry-run reports false drift on route 1
-      and the operator learns to bypass the guard, defeating it entirely
-- [ ] 2.7 `[claude-config]` Implement declaration invariants, failing the plan rather than warning:
+- [x] 2.6 `[claude-config]` **Normalise before diffing**, per the fixture measured in 1.4. Two
+      distinct classes, both of which would otherwise make every dry-run report drift on unchanged
+      objects — and an operator who learns to bypass the drift guard has no drift guard:
+      - **Absent-vs-false**: the child route **omits** `continue` entirely (`has("continue")` is
+        false) where the old script wrote `false`. Normalise with `(.continue // false)`, which
+        handles absent and null alike; do not test for `null` specifically
+      - **Server-managed fields**: `id` (server-assigned) and `updated` (rewritten on every write)
+        must be excluded from comparison
+      - **Fields the API returns that the old script never sent**: each data node carries
+        `queryType: ""`. Omitting it made all four rules read as `update`. Found by the offline
+        test in 2.16, not by inspection — an earlier draft of this task asserted "the API injects
+        no fields of its own", which was simply wrong. Comparing the full remainder structurally
+        is deliberate: an unexpected live field shows up loudly rather than being normalised away
+      - Shared rule defaults confirmed constant across all four: `orgID: 1`, `isPaused: false`,
+        `keep_firing_for: "0s"`, `notification_settings: null`, `record: null`, `condition: "C"`,
+        `execErrState: "Error"`, `maxDataPoints: 43200`, `intervalMs: 1000`, node A
+        `relativeTimeRange {from:600,to:0}`, nodes B/C `{from:0,to:0}`
+- [x] 2.7 `[claude-config]` Implement declaration invariants, failing the plan rather than warning:
       (a) every rule in folder `henk` carries `severity`; (b) every `severity=critical` rule is
       matched by a declared sibling route to a non-agent receiver; (c) every rule sets
       `instant: true` (the count template is wrong on a range query — it would silently become
       "matched at any point in the window"); (d) no undeclared rule in folder `henk` — **reported
       and blocking, never pruned** (precedent: the old script's `henk-prov-smoke`)
-- [ ] 2.8 `[claude-config]` Post-apply state snapshot: live rules + policy tree to a committed file,
+- [x] 2.8 `[claude-config]` Post-apply state snapshot: live rules + policy tree to a committed file,
       credential-scrubbed
-- [ ] 2.9 `[claude-config]` Correct the script header (it documents its own non-idempotency, obsolete
-      once 2.2–2.6 land); `shellcheck` clean
+- [x] 2.9 `[claude-config]` Script header corrected (it documented its own non-idempotency, obsolete
+      once 2.2–2.6 landed). **shellcheck clean** (0.11.0) across `grafana-henk-events.sh`,
+      `test-offline.sh` and the retired `grafana-henk-swap-retune.sh`; the two suppressions are
+      justified in place (`source=/dev/null` for the configurable env path, `SC2016` because
+      `{{ $labels.x }}` is a Go template Grafana renders — shell expansion there would be the bug)
+- [x] 2.16 `[claude-config]` **Offline test harness** — `mock_grafana.py` serves the 1.4 fixture
+      over HTTP; `test-offline.sh` exercises the planner against it with no credentials, no vps and
+      no network. Five cases, 18 assertions, all passing: baseline diffs to zero; target creates the
+      two new rules without touching the reducer; the template migration trips the drift guard;
+      `ACCEPT_DRIFT` releases it; an undeclared rule is reported and never pruned. This is what
+      caught the `queryType` omission — without it, 2.10's "expect all unchanged" gate would have
+      failed in front of the owner with four spurious updates
 - [ ] 2.10 **[owner]** `--dry-run` against live. **Expected: `unchanged` for every object.** Any
       `update` here means the declaration is wrong, not the deployment — fix the declaration
 
 ### 2b — declared corrections
 
-- [ ] 2.11 `[claude-config]` Add `severity` labels to all four existing rules (all `warning`).
+- [x] 2.11 `[claude-config]` Add `severity` labels to all four existing rules (all `warning`).
       Note in the declaration why `HenkBackupFreshness` is `warning` despite combining a critical
       native (`ObsidianBackupVerifyFailed`) — a combined-OR rule cannot carry an honest per-arm
       severity; evidence for the deferred split
-- [ ] 2.12 `[claude-config]` Template the summary annotations on `{{ $labels.* }}`
-- [ ] 2.13 `[claude-config]` Retire `grafana-henk-swap-retune.sh` into the applier, leaving a pointer
+- [x] 2.12 `[claude-config]` Template the summary annotations on `{{ $labels.* }}` **for the two
+      new rules only** (3.1/3.2), which is what the spec scenarios require ("an event identifying
+      the unreachable target"). The four pre-existing summaries are deliberately left static: they
+      keep root grouping and unscoped identity, so a per-instance summary would add little, and
+      leaving them alone keeps the target diff to exactly one field (severity) per existing rule
+- [x] 2.13 `[claude-config]` Retire `grafana-henk-swap-retune.sh` into the applier, leaving a pointer
       note in its place. **This is a repo action, not a state change** — the retune is already
       deployed and therefore belongs in 2.1's declaration
 - [ ] 2.14 **[owner]** `--dry-run`: shows exactly these updates and nothing else, then `--apply`
@@ -102,22 +131,22 @@
 
 ## 3. New rules, dual delivery, template migration
 
-- [ ] 3.1 `[claude-config]` Declare `HenkInstanceDown`: uid `henk-instancedown`, expr **`up == 0`**
+- [x] 3.1 `[claude-config]` Declare `HenkInstanceDown`: uid `henk-instancedown`, expr **`up == 0`**
       (plain — the count template makes `bool` unnecessary and keeps it byte-identical to its native
       twin), `for: 2m`, `noDataState: OK`, `reduce(count)`, `instant: true`, labels
       `route=henk-events`, `severity=critical`, `identity_scope=instance`; summary templated on
       `{{ $labels.instance }}`
-- [ ] 3.2 `[claude-config]` Declare `HenkContainerRestarting`: uid `henk-container`, expr
+- [x] 3.2 `[claude-config]` Declare `HenkContainerRestarting`: uid `henk-container`, expr
       `changes(container_start_time_seconds{name!=""}[15m]) > 1`, `for: 5m`, `noDataState: OK`,
       `reduce(count)`, `instant: true`, labels `route=henk-events`, `severity=warning`,
       `identity_scope=name`; summary templated on `{{ $labels.name }}`
-- [ ] 3.3 `[claude-config]` Declare the policy tree: route 1 `[route=henk-events]` → `henk-events`,
+- [x] 3.3 `[claude-config]` Declare the policy tree: route 1 `[route=henk-events]` → `henk-events`,
       **`continue: true`**, root grouping retained; route 2 `[severity=critical AND
       route=henk-events]` → `Discord-Grafana`, `continue: false`, **no** group_by override; plus a
       child route carrying instance grouping for the two new rules only. Route 2's second matcher is
       load-bearing — 1.2 measured that the four DNS criticals carry `severity=critical` with no
       route label, so severity-alone matching would pull them out of the parent
-- [ ] 3.4 `[claude-config]` Implement apply ordering: **contact point → policy tree → rules**, with
+- [x] 3.4 `[claude-config]` Implement apply ordering: **contact point → policy tree → rules**, with
       an `ERR` trap restoring the policy backup. Tree-first is safe at every instant; rules-first
       would leave a critical rule live under the old `continue: false` tree with no non-agent path
 - [ ] 3.5 **[owner]** Apply 3.4a — new rules + tree. Dry-run (expect `create` ×2, policy `update`,
