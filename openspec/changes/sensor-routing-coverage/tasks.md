@@ -77,8 +77,9 @@
 - [x] 2.7 `[claude-config]` Implement declaration invariants, failing the plan rather than warning:
       (a) every rule in folder `henk` carries `severity`; (b) every `severity=critical` rule is
       matched by a declared sibling route to a non-agent receiver; (c) every rule sets
-      `instant: true` (the count template is wrong on a range query — it would silently become
-      "matched at any point in the window"); (d) no undeclared rule in folder `henk` — **reported
+      `instant: true` (a range query makes the reduce node meaningful again and shifts what the
+      firing bar applies to); (e) the two new rules carry the `-1` bar and the four legacy rules
+      match the requested stage; (d) no undeclared rule in folder `henk` — **reported
       and blocking, never pruned** (precedent: the old script's `henk-prov-smoke`)
 - [x] 2.8 `[claude-config]` Post-apply state snapshot: live rules + policy tree to a committed file,
       credential-scrubbed
@@ -113,32 +114,41 @@
       deployed and therefore belongs in 2.1's declaration
 - [ ] 2.14 **[owner]** `--dry-run`: shows exactly these updates and nothing else, then `--apply`
 
-### 2c — probe the count template before committing to it
+### 2c — probe the firing-bar remedy before committing to it
 
-- [ ] 2.15 **[owner]** Provision three probe rules in a **scratch folder, unlabelled** (so nothing
-      publishes and 2.7d is not tripped), observed via Grafana's **rule-state API** — not ntfy
-      delivery, which would test template, labels, policy tree and contact point at once and make a
-      failure unattributable:
-      - **positive**: `vector(0) == 0` fires under `reduce(count)`, does **not** fire under
-        `reduce(last)`. Proves the bug and the fix together
-      - **negative**: `vector(1) == 0` (returns no series) does **not** fire under `count` and lands
-        NoData → OK. **This is the half that protects the four working rules**
-      - **multi-series**: `node_memory_SwapFree_bytes * 0 == 0` yields **3 separate alert instances
-        each counting 1**, not one instance counting 3. A global-count bug would pass the positive
-        probe silently while destroying the per-instance labels task 5.1 depends on
-      Delete the scratch rules after. **If any probe fails, take design D2's recorded fallback**
-      (arm-4 reorder + `up == bool 0` + sign probes) and revise 3.1 accordingly
+- [x] 2.15 **[owner]** **DONE 2026-08-06 — probe run, remedy CHANGED.** Executed via Grafana's
+      alerting eval endpoint (`POST /api/v1/eval`, Grafana 12.3.1) rather than provisioned scratch
+      rules: it returns the computed value at every pipeline node, creates nothing, notifies nobody
+      and needs no cleanup. Three findings:
+      - **The defect is confirmed on real data.** The live `HenkHealthEtl` arm-4 expression returns
+        11 frames, all `C=0` — a matching condition that cannot fire. Not an inference any more
+      - **`gt -1` is REJECTED: the reduce node is a no-op on instant queries.** All six
+        reducers returned `B=7` for `vector(7)` where `count` alone should return 1; the same
+        `count` on a *range* query correctly returned `B=601`. `settings.mode` changed nothing.
+        All six rules use `instant: true`, so the reducer migration would have been a no-op that
+        looked like a fix — clean provision, clean diff, zero behaviour change
+      - **`threshold gt -1` is ADOPTED and verified**: value-0 case fires (`C=[1]`), no-series case
+        stays silent (zero rows → NoData → OK), multi-series preserved (`C=[1,1,1]`), ordinary
+        conditions unaffected, and the real arm-4 expression now fires on real data
+      - **Consequence that inverts an earlier decision:** `HenkInstanceDown` must use the filter
+        form `up == 0`, never `up == bool 0`. Under `gt -1` the bool form returns a series for every
+        target (1 down / 0 up) and all of them clear the bar — every target would alert permanently
+- [x] 2.17 `[claude-config]` Applier switched from a reducer knob to a **threshold knob**
+      (`LEGACY_THRESHOLD=0|-1`); new rules always `-1`. Invariant (e) added: the two new rules must
+      carry `-1`, the four legacy rules must match the requested stage. Offline suite updated and
+      re-run — 18 assertions, all passing. shellcheck clean
 
 ## 3. New rules, dual delivery, template migration
 
 - [x] 3.1 `[claude-config]` Declare `HenkInstanceDown`: uid `henk-instancedown`, expr **`up == 0`**
-      (plain — the count template makes `bool` unnecessary and keeps it byte-identical to its native
-      twin), `for: 2m`, `noDataState: OK`, `reduce(count)`, `instant: true`, labels
+      (the **filter** form, never `up == bool 0` — under the `gt -1` bar the bool form returns a
+      series for every target, 1 for down and 0 for up, and all of them clear the bar, so every
+      scrape target would alert permanently. Verified 2026-08-06), `for: 2m`, `noDataState: OK`, `gt -1`, `instant: true`, labels
       `route=henk-events`, `severity=critical`, `identity_scope=instance`; summary templated on
       `{{ $labels.instance }}`
 - [x] 3.2 `[claude-config]` Declare `HenkContainerRestarting`: uid `henk-container`, expr
       `changes(container_start_time_seconds{name!=""}[15m]) > 1`, `for: 5m`, `noDataState: OK`,
-      `reduce(count)`, `instant: true`, labels `route=henk-events`, `severity=warning`,
+      `gt -1`, `instant: true`, labels `route=henk-events`, `severity=warning`,
       `identity_scope=name`; summary templated on `{{ $labels.name }}`
 - [x] 3.3 `[claude-config]` Declare the policy tree: route 1 `[route=henk-events]` → `henk-events`,
       **`continue: true`**, root grouping retained; route 2 `[severity=critical AND
@@ -149,11 +159,14 @@
 - [x] 3.4 `[claude-config]` Implement apply ordering: **contact point → policy tree → rules**, with
       an `ERR` trap restoring the policy backup. Tree-first is safe at every instant; rules-first
       would leave a critical rule live under the old `continue: false` tree with no non-agent path
-- [ ] 3.5 **[owner]** Apply 3.4a — new rules + tree. Dry-run (expect `create` ×2, policy `update`,
-      `unchanged` ×4), review, `--apply`. Commit the snapshot
-- [ ] 3.6 **[owner]** Apply 3.4b — migrate the four existing rules to `reduce(count)` as a
+- [ ] 3.5 **[owner]** `STAGE=target LEGACY_THRESHOLD=0` — new rules + tree, legacy bar untouched.
+      Dry-run (expect `create` ×2, policy `update`, `update` ×4 for severity labels only), review,
+      then `--apply`. Commit the snapshot
+- [ ] 3.6 **[owner]** `STAGE=target` — move the four existing rules to the `gt -1` bar, as a
       **separate** apply with its own dry-run, so a template flaw cannot take out working rules in
-      the operation that adds new ones. Immediately check for **newly-firing** rules: that signal is
+      the operation that adds new ones. The drift guard will refuse until the four uids are named in
+      `ACCEPT_DRIFT` — correct, since a threshold change is the exact shape of the swap-retune
+      revert and should require saying so out loud. Immediately check for **newly-firing** rules: that signal is
       the change's payoff. Arm 4 is not expected to fire on migration —
       `sum(increase(health_etl_rows_total[48h]))` is currently 0, so its `on()` guard holds
 
@@ -223,7 +236,7 @@
       factual basis the deferred D7 decision needs, and which this change had to derive from scratch
 - [ ] 6.4 `[docs-site]` Record the template defect and its fix: Grafana rules fire on the expression's
       **value**, native Prometheus on **series returned**, so transcription is not mechanical;
-      `reduce(count)` restores native semantics. Name `HenkHealthEtl` arm 4 as the live instance this
+      `gt -1` restores native semantics. Name `HenkHealthEtl` arm 4 as the live instance this
       change found and fixed. Record that `HighCPU` stays unrouted by decision (D8)
 - [ ] 6.5 `[docs-site]` Correct the "High memory usage" rule's location (it is not in the DNS
       Performance group) and note that it carries no labels. Note `AuditShipStale`'s existence and
