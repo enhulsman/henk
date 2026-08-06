@@ -78,6 +78,39 @@ def test_grafana_firing_keys_on_alertname():
     assert ident.key == "grafana:HenkProvisionSmoke"
 
 
+def test_real_scoped_grafana_payload_keys_on_instance():
+    """Fixture line 4: the REAL HenkInstanceDown capture (2026-08-06, task 4.3b).
+
+    The D9 scoping tests below are synthesized; this one runs the same code over a
+    verbatim production payload, so it fails if Grafana's ntfy rendering drifts.
+    Note the title contains the literal word "instance" (it is the `identity_scope`
+    label *value*, which the template folds into the title) — a lookup that keyed off
+    the title rather than the `- <label> = ` body line would still pass by accident
+    here, so the assertion pins the resolved *value*, not just the shape.
+    """
+    events = _events_from_fixture()
+    ident = derive_identity(events[3])
+    assert ident.source == "grafana"
+    assert ident.name == "HenkInstanceDown"
+    assert ident.state is EventState.FIRING
+    assert ident.key == "grafana:HenkInstanceDown/cadvisor:8080"
+
+
+def test_real_scoped_grafana_resolve_shares_the_fire_key():
+    """Fixture line 5: the REAL resolve for line 4's incident.
+
+    Recovery makes `up == 0` return no series at all, so Grafana resolves via NoData
+    (`grafana_state_reason = NoData` is present in this capture) rather than by value.
+    The key must still match the fire's exactly — that pairing is what makes cooldown
+    and recurrence track one incident.
+    """
+    events = _events_from_fixture()
+    fire = derive_identity(events[3])
+    resolved = derive_identity(events[4])
+    assert resolved.state is EventState.RESOLVED
+    assert resolved.key == fire.key == "grafana:HenkInstanceDown/cadvisor:8080"
+
+
 # --- Synthesized resolved variants (README: not captured live) ------------
 
 
