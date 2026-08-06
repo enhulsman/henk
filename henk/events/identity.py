@@ -25,6 +25,38 @@ _GRAFANA_ALERTNAME = re.compile(r"alertname\s*=\s*(\S+)")
 _GATUS_PREFIX = "Gatus:"
 _WHITESPACE = re.compile(r"\s+")
 
+# Per-rule identity scoping (sensor-routing-coverage, design D9). A rule opts in by carrying
+# an `identity_scope: <labelname>` label; the value of the named label is appended to the key,
+# so one alert name firing for several subjects yields several identities. Without this,
+# HenkInstanceDown is ONE key for seven scrape targets and the second host to fail inside the
+# cooldown window is silently swallowed.
+#
+# Opt-in, never automatic: all four pre-existing rules' metrics carry an `instance` label, so
+# appending it whenever present would silently re-key every one of them.
+_GRAFANA_SCOPE = re.compile(
+    r"^[ \t]*-[ \t]*identity_scope[ \t]*=[ \t]*(\S+)[ \t]*$", re.MULTILINE
+)
+# Bound on the appended discriminator. Event payloads are untrusted data (design D4), and the
+# key is persisted in cooldown state — an unbounded label value would grow that without limit.
+_SCOPE_VALUE_MAX = 120
+
+
+def _grafana_label(message: str, label: str) -> str | None:
+    """Value of one label from Grafana's rendered ``Labels:`` block, or None.
+
+    Anchored on the ``- <label> = `` line form on purpose: an unanchored search for
+    ``name`` would match inside ``alertname = ...``, silently keying the container rule
+    on its own alert name.
+    """
+    match = re.search(
+        rf"^[ \t]*-[ \t]*{re.escape(label)}[ \t]*=[ \t]*(.*?)[ \t]*$",
+        message,
+        re.MULTILINE,
+    )
+    if match is None:
+        return None
+    return match.group(1) or None
+
 
 def normalized_title(title: str) -> str:
     """Deterministic fallback key body: lowercased, whitespace-collapsed title."""
@@ -66,9 +98,16 @@ def _derive_grafana(event: Event, marker: re.Match[str]) -> AlertIdentity:
         # Skip the "]" / ":n]" remainder of the state marker, then take a token.
         tail = tail.split("]", 1)[-1].strip()
         name = tail.split()[0] if tail.split() else normalized_title(event.title)
-    return AlertIdentity(
-        key=f"grafana:{name}", source="grafana", name=name, state=state
-    )
+    key = f"grafana:{name}"
+    scope = _GRAFANA_SCOPE.search(event.message)
+    if scope is not None:
+        value = _grafana_label(event.message, scope.group(1))
+        if value:
+            # A rule may name a label the payload does not carry (misconfiguration, or a
+            # grouped notification that dropped it). Degrading to the alertname-only key is
+            # today's behaviour — safer than inventing a key or failing the intake.
+            key = f"{key}/{value[:_SCOPE_VALUE_MAX]}"
+    return AlertIdentity(key=key, source="grafana", name=name, state=state)
 
 
 def _derive_pipe(event: Event) -> AlertIdentity | None:

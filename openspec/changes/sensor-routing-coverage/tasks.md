@@ -206,13 +206,24 @@
 
 ## 5. Henk-side follow-through
 
-- [ ] 5.1 `[henk]` **TDD**: extend `_derive_grafana` to honour an `identity_scope: <labelname>` label
-      — append that label's value when present, behave exactly as today when absent. Tests from
-      `tests/fixtures/ntfy_events/henk-events-live.jsonl` asserting: two simultaneously-down targets
-      yield **two distinct keys**; a fire and its resolve for one target share a key; an event with
-      no `identity_scope` derives an unchanged key; and the identity is a stable parsed one, never
-      the normalized-title fallback (a fallback identity makes every fire look new, cooldown never
-      suppresses, and nothing errors — the trap `henk-events` deploy-verify (b) was written to catch)
+- [x] 5.1 `[henk]` **DONE — TDD, 11 new tests, full suite 254 → 265 green.** `_derive_grafana`
+      honours an `identity_scope: <labelname>` label, appending that label's value to the key;
+      absent label → exactly today's key. Covered: two simultaneously-down targets yield two
+      distinct keys; fire and resolve for one target share a key; a resolve for one target does
+      not satisfy another's incident; the scope label may name any label (`name` for containers);
+      a rule with no `identity_scope` is bit-for-bit unchanged; a scope naming an absent or empty
+      label degrades to the alertname key rather than inventing one or failing intake; the
+      identity is never the normalized-title fallback; derivation is deterministic.
+      Two non-obvious guards, each with its own test:
+      - **The label lookup is anchored to the `- <label> = ` line form.** `alertname` ends with
+        `name`, so an unanchored search for the label `name` matches inside
+        `- alertname = HenkContainerRestarting` and keys every container on the rule name —
+        reintroducing the exact collapse this feature removes, via the fix itself
+      - **The appended value is length-bounded (120 chars).** Event payloads are untrusted data
+        (design D4) and the key is persisted in cooldown state, so a hostile label must not grow
+        it without limit
+      Test payloads are synthesized against the real captured Grafana format and use hostnames
+      rather than tailnet addresses; genuine captures land in 5.3 once 4.3/4.6 produce them
 - [ ] 5.2 `[henk]` If 4.3c or 4.7 say so: `cap_per_24h` and/or a cooldown override in `config.yaml`,
       with tests from the existing per-pattern override coverage. rp5's `config.yaml` is locally
       modified and must stay that way — edit in place, never `git checkout`. Note the existing
