@@ -4,7 +4,7 @@
 
 Henk v1 as deployed is reactive-only, and for this owner that's near-redundant: they carry a terminal in their pocket and cover reactive use themselves. The decided long-run identity (2026-07-20 brainstorm, memory `henk-long-run-direction`) is an **event-to-dialogue layer**: Henk notices, does the first 90 seconds of triage, and *starts* a Signal conversation the owner can interrogate. Without this, v1 stays an architecture/security achievement with little daily value.
 
-This is roadmap step v1.2. It must include sensor plumbing, not just subscription: verified 2026-07-19, only `HealthEtl*` Prometheus rules fired in 15 days and all 22 Prom rules are unrouted — a Gatus-only event-Henk would be mute.
+This is roadmap step v1.2. It must include sensor plumbing, not just subscription: verified 2026-07-19, only `HealthEtl*` Prometheus rules fired in 15 days and all 23 Prom rules are unrouted — a Gatus-only event-Henk would be mute. *(Count corrected 22 → 23 on 2026-08-06; see `design.md`.)*
 
 ## What Changes
 

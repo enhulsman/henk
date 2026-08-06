@@ -6,7 +6,7 @@ Henk v1 runs on rp5 as a three-container stack (agent + signal-cli-rest-api + Ta
 
 - vps ntfy: auth default-access deny-all, 72h retention, 5MB attachments; Henk's ntfy user is currently **write-only on `homie-henk`**.
 - vps:2586 is already in `tag:henk`'s egress allowlist → subscribing requires **no ACL change**.
-- Only `HealthEtl*` Prom rules actually fired in 15 days; all 22 Prom rules are unrouted; Grafana (vps) already runs with a Discord contact point; there is no Alertmanager.
+- Only `HealthEtl*` Prom rules actually fired in 15 days; all 23 Prom rules are unrouted; Grafana (vps) already runs with a Discord contact point; there is no Alertmanager. *(Count corrected 22 → 23 on 2026-08-06 by `sensor-routing-coverage`, which recounted from the deployed rule files: 7 DNS + 12 infrastructure + 4 health-pipeline. This change's own `tasks.md:53` already said 23.)*
 - Gatus (rp5) already supports ntfy alerting.
 - Owner cadence constraint: condition-triggered only, a few unprompted messages/week max, no digests. Mutations: none in this change.
 
