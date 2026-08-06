@@ -72,7 +72,12 @@ Rejected because: the measured gap is three rules, two of value — that does no
 ```
 expr `vector(0) == 0`            ->  A=0  B=0  C=0     a matching condition that cannot fire
 expr `(increase(health_etl_rows_total[48h]) == 0)
-      and (max_over_time(...[7d]) > 0)`  ->  11 frames, all C=0     ← the real arm, real data
+      and (max_over_time(...[7d]) > 0)`  ->  11 frames, all C=0     ← arm 4's DETECTION CLAUSE,
+                                                                       real metrics. Arm 4's third
+                                                                       conjunct (the `on()` guard)
+                                                                       is omitted: it is currently
+                                                                       false, which is also why the
+                                                                       migration fires nothing.
 ```
 
 `HenkHealthEtl` arm 4 — the silent-metric detector — has therefore been live, `health=ok`, and structurally unable to report since 2026-07-22. The native `HealthEtlMetricSilent` it was transcribed from is **not** broken: native Prometheus fires on *series returned*, value irrelevant. **The defect is the Grafana template, so transcribing a native expression into a Grafana rule is not mechanical** — an honest cost of D1's choice.
@@ -87,7 +92,7 @@ POSITIVE  gt -1  ->  C=[1]                  value-0 case rescued
 NEGATIVE  gt -1  ->  1 frame, zero rows     still silent with no series
 MULTI     gt -1  ->  C=[1,1,1]              per-series, labels preserved
 CONTROL   gt -1  ->  C=[1]                  ordinary positive conditions unaffected
-REAL-ARM4 gt -1  ->  11 frames, all C=[1]   the live-dead arm, on real data, now firing
+REAL-ARM4 gt -1  ->  11 frames, all C=[1]   same clause, now firing (see caveat above)
 ```
 
 One field per rule, inside a template this deployment already runs, with no reducer semantics to trust.

@@ -95,7 +95,7 @@
       `ACCEPT_DRIFT` releases it; an undeclared rule is reported and never pruned. This is what
       caught the `queryType` omission — without it, 2.10's "expect all unchanged" gate would have
       failed in front of the owner with four spurious updates
-- [ ] 2.10 **[owner]** `--dry-run` against live. **Expected: `unchanged` for every object.** Any
+- [x] 2.10 **[owner]** DONE 2026-08-06 — all objects `unchanged`, 0 changes planned. `--dry-run` against live. **Expected: `unchanged` for every object.** Any
       `update` here means the declaration is wrong, not the deployment — fix the declaration
 
 ### 2b — declared corrections
@@ -112,7 +112,7 @@
 - [x] 2.13 `[claude-config]` Retire `grafana-henk-swap-retune.sh` into the applier, leaving a pointer
       note in its place. **This is a repo action, not a state change** — the retune is already
       deployed and therefore belongs in 2.1's declaration
-- [ ] 2.14 **[owner]** `--dry-run`: shows exactly these updates and nothing else, then `--apply`
+- [x] 2.14 **[owner]** DONE 2026-08-06 — merged into 3.5 (severity labels must land with the tree, since route 1 matches on severity). `--dry-run`: shows exactly these updates and nothing else, then `--apply`
 
 ### 2c — probe the firing-bar remedy before committing to it
 
@@ -133,6 +133,14 @@
       - **Consequence that inverts an earlier decision:** `HenkInstanceDown` must use the filter
         form `up == 0`, never `up == bool 0`. Under `gt -1` the bool form returns a series for every
         target (1 down / 0 up) and all of them clear the bar — every target would alert permanently
+- [x] 2.18 `[claude-config]` **Fourth representational difference, found on the first live apply:**
+      Grafana **sorts a route's `object_matchers` alphabetically by label** on write — declared
+      `[severity, route]` reads back as `[route, severity]`. Matchers are a conjunction, so order
+      carries no meaning, but the positional comparison reported drift on every run. Fixed by
+      sorting both sides before diffing, with regression test T6. Also: dry-runs no longer write a
+      rollback backup (they mutate nothing, so those were pure litter in `/root`).
+      Running tally of API quirks the declaration must absorb: absent `continue`, returned
+      `queryType`, sorted `object_matchers`, server-managed `id`/`updated`
 - [x] 2.17 `[claude-config]` Applier switched from a reducer knob to a **threshold knob**
       (`LEGACY_THRESHOLD=0|-1`); new rules always `-1`. Invariant (e) added: the two new rules must
       carry `-1`, the four legacy rules must match the requested stage. Offline suite updated and
@@ -159,10 +167,10 @@
 - [x] 3.4 `[claude-config]` Implement apply ordering: **contact point → policy tree → rules**, with
       an `ERR` trap restoring the policy backup. Tree-first is safe at every instant; rules-first
       would leave a critical rule live under the old `continue: false` tree with no non-agent path
-- [ ] 3.5 **[owner]** `STAGE=target LEGACY_THRESHOLD=0` — new rules + tree, legacy bar untouched.
+- [x] 3.5 **[owner]** DONE 2026-08-06 — 7 changes applied exactly as the offline harness predicted; the four existing rules diffed on the severity label alone. `STAGE=target LEGACY_THRESHOLD=0` — new rules + tree, legacy bar untouched.
       Dry-run (expect `create` ×2, policy `update`, `update` ×4 for severity labels only), review,
       then `--apply`. Commit the snapshot
-- [ ] 3.6 **[owner]** `STAGE=target` — move the four existing rules to the `gt -1` bar, as a
+- [x] 3.6 **[owner]** DONE 2026-08-06 — drift guard refused the bare run and named all four rules; `ACCEPT_DRIFT` released it; threshold-only diffs applied. Post-apply all six rules `state=inactive health=ok` — nothing woke up, as predicted (arm 4's `on()` guard is currently false). `STAGE=target` — move the four existing rules to the `gt -1` bar, as a
       **separate** apply with its own dry-run, so a template flaw cannot take out working rules in
       the operation that adds new ones. The drift guard will refuse until the four uids are named in
       `ACCEPT_DRIFT` — correct, since a threshold change is the exact shape of the swap-retune
@@ -195,7 +203,7 @@
       `git checkout`
 - [ ] 4.4 **[owner]** Confirm `HenkSwapPressure`'s live expression still reads as the pressure retune
       after every apply, not fullness
-- [ ] 4.5 **[owner]** Re-run `--apply` → plan fully `unchanged`; policy tree holds exactly the
+- [x] 4.5 **[owner]** DONE 2026-08-06 — re-run after each apply printed `0 change(s) planned` across all eight objects, and no undeclared rule was reported in folder `henk`. This is the property the old script could never have: it prepended a duplicate route on every run. Re-run `--apply` → plan fully `unchanged`; policy tree holds exactly the
       declared routes (the old duplicate-prepend bug, now under test); exactly six rules in folder
       `henk` (2.7d)
 - [ ] 4.6 **[owner]** Provoke `HenkContainerRestarting` with **`docker restart` ×2 inside 15m** on a
