@@ -201,7 +201,59 @@
       folder `henk` (the 7 DNS criticals, `HighMemory`, `AuditShipStale`).
       Original text: Test-fire an **unlabelled** temporary `vector(1)` rule → still reaches Discord.
       Proves the policy edit did not break delivery for everything outside folder `henk`
-- [ ] 4.3 **[owner]** Stop a node exporter for >2m — **pi2 ONLY**. (Corrected 2026-08-06 after
+- [x] 4.3 **PASSED 2026-08-06.** pi2's `node_exporter` stopped 18:25:41Z → started 19:12:53Z (47m).
+      Measured arc, timestamps from Prometheus, ntfy's `Server stats` counter and rp5 container logs:
+      - **18:26:30Z** Prometheus `up == 0` for `node-exporter-pi2`; native `InstanceDown` firing
+      - **~18:28:4xZ** Grafana `HenkInstanceDown` fires → ntfy `messages_published` 657→658.
+        Owner confirmed arrival on **both** ntfy **and** Discord — **dual delivery verified**, which
+        is the headline claim of D3 and the whole point of the sibling route
+      - **18:32:17Z** Henk agent spawns, **exactly 120s** after intake resumed → 18:32:23 context
+        gathering (Gatus statuses, memory, disk, load1) → 18:32:38 handoff POST → **18:32:44 Signal
+        `201 Created`**. Full triage arc
+      - **19:12:53Z** exporter restarted → **19:13:0x–19:14:04Z** resolve published to ntfy
+        (counter 661→662). Alert resolved and delivered
+      - Isolation was cleaner than expected: pi2's node exporter is a **Gatus tier-3** endpoint with
+        no `alerts:` block, so `HenkInstanceDown` fired *alone* — no Gatus alert confounded it
+      **Two findings this test produced that were not being looked for:**
+      - **Henk survived container recreation mid-debounce.** The rebuild (18:30:15) killed Henk
+        inside the 120s debounce window for an already-received event. Because the checkpoint cursor
+        advances only *after* a triage record is durable, the event **replayed** from ntfy on restart
+        and was triaged 2m17s later. The durability guarantee held under an unplanned test
+      - **Henk never reports a resolve inside cooldown, by design.** `evaluate()` applies cooldown on
+        `ident.key` with **no exemption for `EventState.RESOLVED`**, and `identity.py` deliberately
+        gives fire and resolve one shared key. The resolve landed ~41m after the fire triage — well
+        inside the 6h cooldown — so it was suppressed with `reason="cooldown"`: audit record, no
+        conversation. Correct per D6, but the consequence is that **the owner learns of a resolve
+        only from the raw ntfy/Discord notification, never from Henk**, since a resolve inside 6h is
+        the common case. Recorded as a UX gap for a follow-up change, not fixed here
+      **Audit-log evidence (read 2026-08-06 from `/data/audit/henk-audit.jsonl`), which upgrades two
+      of the above from inference to artifact:**
+      - **D9 is verified in production.** The triage record's key is
+        `grafana:HenkInstanceDown/RP2-TS-IP:9100` — the `instance` label value appended to the
+        alertname (`RP2-TS-IP` stands in for pi2's tailnet address, which the real key contains
+        verbatim; the placeholder is a publication rule, not the deployed value). Pre-change this
+        rule would have keyed as bare `grafana:HenkInstanceDown`. This is the first live proof that
+        `identity_scope` scopes a real Grafana alert end-to-end.
+        **Operational consequence worth noting:** because `instance` for node exporters is a
+        tailnet `IP:port`, scoped identity keys for those targets embed an address. That is fine for
+        cooldown state, but it means audit records and `cooldown_overrides` patterns are written
+        against addresses rather than hostnames — so a tailnet re-address silently creates new
+        identities and re-arms cooldowns for targets that were already known
+      - **The resolve suppression is recorded**: `record_type: suppression`, `identity_key`
+        identical to the triage's, `reason: cooldown`, at 19:15:56Z — 43.2 min after the 18:32:44Z
+        triage. Fire and resolve provably share one key, and the resolve provably produced no
+        conversation
+      - Henk's diagnosis was correct and appropriately hedged: "Pi2 (node-exporter-pi2) is
+        unreachable — likely powered off, lost Tailscale/network connectivity, or node_exporter
+        crashed on that host (confidence: moderate)". `triage_arc_complete: True`,
+        `announceable: True`, handoff published
+      - **Cadence-cap accounting measured**: exactly 2 announceable conversations in the trailing
+        24h (`grafana:VerifyHenkRoute` 17:53:51Z, `grafana:HenkInstanceDown/…` 18:32:44Z) against
+        `cap_per_24h: 3`. One slot remains until 2026-08-07T17:53:51Z. Noted because it constrains
+        the *scheduling* of 4.3b and 4.6, not their validity: the audit log shows cap-suppressed
+        turns still triage, diagnose and publish a handoff with `announceable: False`, so a capped
+        test is still fully verifiable — only the Signal message is withheld
+      Original text: Stop a node exporter for >2m — **pi2 ONLY**. (Corrected 2026-08-06 after
       measuring which exporter carries which textfile metric: `health_etl_*` is on
       **node-exporter-vps** only, `homelab_backup_last_success_timestamp` is on **both vps and
       pi5**, and every `obsidian_backup_*` series is on **pi5 only**. So stopping pi5 blinds all
@@ -213,24 +265,102 @@
       "healthy", injecting this change's headline failure mode into its own verification.
       Confirm `HenkInstanceDown` reaches **both** `henk-events` and Discord, that Henk triages it
       with a full arc, and that restarting the exporter resolves it
-- [ ] 4.3b **[owner]** Two-target case: two exporters down concurrently → **two distinct identities**,
-      collapsed by debounce into **one** conversation. Verifies D9's scoping end-to-end; 4.3 alone
-      leaves the multi-target path entirely unexercised
+- [x] 4.3b **PASSED 2026-08-06.** Targets chosen to make the test cost nothing: `pushgateway`
+      (holds **only** its own `go_*` runtime metrics — no rule reads it, zero collateral) and
+      `cadvisor-vps` (pi5's cadvisor keeps serving `container_start_time_seconds` for 15 containers,
+      measured during the test, so `HenkContainerRestarting` never lost its input). pi2 was
+      unusable here: its identity was in 6h cooldown from 4.3, so it would have been suppressed and
+      proved nothing.
+      Both stopped ~21:48:55Z, restarted 21:5x. Measured:
+      - **21:51:05Z** ntfy publish #1; **21:52:0xZ** publish #2 (counter 662 → 664). **Two**
+        notifications, one per instance — route 2's `group_by: [alertname, instance, name]` splits
+        them, which is the entire reason route 2 exists. The second lagged the first by ~1 min
+      - **Discord got exactly ONE grouped message** listing both alerts (`2 firing · 0 resolved`),
+        because route 1 keeps root grouping on `[grafana_folder, alertname]` and both alerts share
+        both values. The asymmetry is by design and is now measured: Discord one, ntfy two
+      - **21:52:57Z** agent spawns — 120s after the *first* event, confirming the debounce deadline
+        is fixed at first arrival and not extended by later ones, so event #2 landed inside the
+        window → 21:53:20 handoff → **21:53:27 Signal `201`**
+      - **The audit record is the proof:** one `record_type: session`, `announceable: True`,
+        **`items: 2`** → `grafana:HenkInstanceDown/cadvisor:8080` and
+        `grafana:HenkInstanceDown/pushgateway:9091`. **Two distinct scoped identities, one
+        conversation** — D9 end-to-end. On restart, **two separate** suppression records, one per
+        identity, confirming cooldown is per-identity rather than per-rule
+      - **Bonus production proof of D2**, straight out of the Discord payload's node values:
+        `A=0, B=0, C=1`. The expression's value is **0**, so the original `gt 0` bar would have
+        computed `C=0` and stayed silent; `gt -1` yields `C=1` and fires. The firing-bar defect and
+        its fix are both visible in one real notification — no probe required
+      - The templated summary rendered correctly (`scrape target cadvisor:8080 (cadvisor-vps) is
+        unreachable`), and the Silence link confirms all three labels deployed:
+        `identity_scope=instance`, `route=henk-events`, `severity=critical`
+      - **Cap now full**: this was announceable slot 3 of 3. Next slot frees 2026-08-07T17:53:51Z
 - [ ] 4.3c **[owner]** Host-down case: record **actual arrival timestamps** of the Gatus tier-1 alert
       and of `HenkInstanceDown`, and the resulting conversation count. Expected two conversations
       (~90–150s gap against a 120s debounce). **If confirmed, raise `cap_per_24h` 3 → 5** per design
       — applied by editing rp5's locally-modified `config.yaml` **in place**, never via
       `git checkout`
-- [ ] 4.4 **[owner]** Confirm `HenkSwapPressure`'s live expression still reads as the pressure retune
+- [x] 4.4 **PASSED 2026-08-06 — discharged from the committed artifact, no owner session needed.**
+      `grafana-state-snapshot.json` (captured `20260806T174619Z`, i.e. after **both** applies, with
+      `stage: target`, `legacy_threshold: -1`) records `HenkSwapPressure`'s live expr as the
+      **pressure retune** — `((1 - node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes) * 100
+      > 95) or (rate(node_vmstat_pswpin[5m]) + rate(node_vmstat_pswpout[5m]) > 50)`, `for: 15m`,
+      `gt -1`, `instant: true`, `noDataState: OK` — **not** the stale `>90%` fullness form. The same
+      snapshot confirms `HenkInstanceDown` carries the **filter** form `up == 0`, never
+      `up == bool 0`. Task 2.8's post-apply snapshot is what makes this checkable without
+      credentials; that is the point of having it.
+      Original text: Confirm `HenkSwapPressure`'s live expression still reads as the pressure retune
       after every apply, not fullness
 - [x] 4.5 **[owner]** DONE 2026-08-06 — re-run after each apply printed `0 change(s) planned` across all eight objects, and no undeclared rule was reported in folder `henk`. This is the property the old script could never have: it prepended a duplicate route on every run. Re-run `--apply` → plan fully `unchanged`; policy tree holds exactly the
       declared routes (the old duplicate-prepend bug, now under test); exactly six rules in folder
       `henk` (2.7d)
-- [ ] 4.6 **[owner]** Provoke `HenkContainerRestarting` with **`docker restart` ×2 inside 15m** on a
-      low-stakes container — **not** `compose up -d --build`, which mints a new container ID and a
-      new cadvisor series, so `changes()` restarts at 0 and the rule cannot fire. Confirm the event
-      reaches `henk-events`, Discord receives nothing, Henk triages. Note the derived identity
-- [ ] 4.7 Record whether 4.6's identity warrants a per-pattern cooldown override, and at what value
+- [x] 4.6 **RUN 2026-08-06 — FAILED, and the failure is in the RULE, not the test method.
+      `HenkContainerRestarting` is structurally incapable of firing on this fleet by any mechanism.**
+      Executed exactly as prescribed: `docker restart wordle-web` ×2, 75s apart (22:26:15Z and
+      22:27:30Z), then waited out `for: 5m` + the 120s debounce. Result: **no alert, no ntfy publish,
+      no Henk triage** — `changes()` never left 0.
+      **Root cause, measured three independent ways:**
+      - `container_start_time_seconds{name="wordle-web"}` is a **perfectly flat line** at
+        `2026-05-29 10:20:09Z` across a 25-minute range query spanning both restarts (26 samples,
+        **1 distinct value**), while `docker ps` reported `Up 9 minutes`. The container restarted;
+        the metric did not move
+      - **Cross-check that pins the semantics:** `henk-henk-1`, *recreated* today at 18:30:15Z,
+        reports `container_start_time_seconds = 2026-08-06 18:30:15Z` — exactly its recreation.
+        `wordle-web`, *restarted* twice tonight, still reports its 2-month-old value. So the metric
+        is **container CREATION time**, not last-start time
+      - Therefore both paths yield `changes() == 0`: `docker restart` keeps the container ID so the
+        value is constant, and a recreate mints a new ID → a **new series**, whose `changes()` over
+        any window is 0 because it has no earlier samples to differ from. The 15-day measurement
+        (8 recreations of `henk-henk-1`, counter never reaching 1) was the second path; this test
+        closes the first
+      **This falsifies the design's own mitigation.** design.md states the rule "covers in-place
+      restart loops with a stable container ID — which still includes the case it was chosen for, a
+      crash-looping Henk under its restart policy". A crash loop under Docker's restart policy
+      restarts the **same container ID**, so creation time is unchanged and `changes()` stays 0. The
+      rule cannot fire for a crash loop either — the one case it existed for.
+      **This is the same defect class as `HenkHealthEtl` arm 4**: provisions cleanly, reports
+      `health=ok`, cannot fire. The change created to eliminate that class shipped a new instance of
+      it. `gt -1` did not save it, because the bar is irrelevant when the input never changes.
+      **No metric can fix it in place**: this Prometheus exposes **zero** metrics matching
+      `*restart*`, and cadvisor's only nearby series are `container_start_time_seconds`,
+      `container_last_seen`, `container_health_state`, `container_oom_events_total`,
+      `container_tasks_state` — none a restart counter. A real fix needs a new source, e.g. Docker's
+      `RestartCount` (`docker inspect -f '{{.RestartCount}}'`) published via the node-exporter
+      textfile collector, which *is* a monotonic counter that `increase()` can read. That is a new
+      change, not a patch to this one — it needs a metric pipeline, not a threshold edit
+- [x] 4.7 **ANSWERED 2026-08-06: no cooldown override, keep the 6h default.** Measured over the
+      full 15-day Prometheus retention with
+      `count(changes(container_start_time_seconds{name!=""}[15m]) > 1)`: **zero samples** in which
+      any container satisfied the rule's condition. A per-pattern override exists for *chronic*
+      identities — the precedent is `pattern: "swap"` at 24h, added because swap pressure is
+      persistent by nature. An identity that has not fired once in 15 days is the opposite of
+      chronic, so an override would be tuning against no data.
+      This is answerable without 4.6 because the override question is about firing *frequency*, not
+      about the identity string. The one finding that would reopen it: if 4.6 shows
+      `identity_scope: name` failing to separate containers (several collapsing onto one key), a
+      crash-looping container could then suppress an unrelated one — but that is a scoping bug to
+      fix, not a cooldown to widen. 4.3b already demonstrated per-target separation working on the
+      sibling rule, so this is unlikely.
+      Consequence for **5.2**: 4.7 contributes no config change. 5.2 now hinges on 4.3c alone
 
 ## 5. Henk-side follow-through
 
@@ -256,33 +386,72 @@
       with tests from the existing per-pattern override coverage. rp5's `config.yaml` is locally
       modified and must stay that way — edit in place, never `git checkout`. Note the existing
       `pattern: "swap"` is a case-insensitive regex over the key, and scoped keys are now longer
-- [ ] 5.3 `[henk]` Append a real payload line per new rule to
-      `tests/fixtures/ntfy_events/henk-events-live.jsonl` and extend that directory's README table
+- [x] 5.3 `[henk]` **HALF DONE 2026-08-06 — `HenkInstanceDown` landed; `HenkContainerRestarting`
+      blocked on 4.6.** Appended fixture lines 4 and 5 (real `[FIRING:1]` and `[RESOLVED]` captures
+      for `HenkInstanceDown`, pulled from ntfy retention) and extended the README table.
+      - Used the **`cadvisor:8080`** capture, not the pi2 one, deliberately: pi2's `instance` label
+        is a tailnet address, and redacting it would have broken the README's verbatim promise.
+        `cadvisor:8080` is a Docker-internal name, so the line commits publication-safe as-is
+      - **Closed a gap the README had flagged as uncaptured**: a real Grafana `[RESOLVED]` payload
+        now exists, so the synthesized variant is no longer the only coverage
+      - **Two tests added** (`test_real_scoped_grafana_payload_keys_on_instance`,
+        `test_real_scoped_grafana_resolve_shares_the_fire_key`) asserting the real payload derives
+        `grafana:HenkInstanceDown/cadvisor:8080` and that its resolve shares that key. The D9 tests
+        from 5.1 are synthesized; these run the same code over verbatim production bytes, so they
+        fail if Grafana's ntfy rendering drifts. Suite 265 → 267
+      - **Two payload-format findings recorded in the README:** the title absorbs grouped label
+        *values* (line 4's title contains the bare word `instance`, which is the `identity_scope`
+        value — so a title-based lookup would pass here by accident, which is why derivation reads
+        the `- <label> = ` body lines), and a recovery arrives as **NoData**
+        (`grafana_state_reason = NoData`) rather than a value-based resolve, because `up == 0`
+        returns no series once the target is back
+      - **Closed as complete-as-possible 2026-08-06.** The `HenkContainerRestarting` payload is
+        **not capturable**: 4.6 proved the rule cannot fire, so no such event exists to capture.
+        Recorded in the README as unobtainable with an explicit instruction **not** to synthesize
+        one — a fixture for an impossible event would encode the defect as expected behaviour and
+        give false confidence to exactly the tests meant to catch it
 
 ## 6. Documentation and close-out
 
-- [ ] 6.1 `[docs-site]` Fix `services/monitoring.md:602` — it calls `grafana-henk-events.sh` "the
-      idempotent provisioning script", false when written and only true once section 2 lands.
-      Reword to describe the plan / apply / drift-refusal behaviour
-- [ ] 6.2 `[docs-site]` Expand the henk rule table 4 → 6; document the policy tree including the
-      dual-delivery route and which severities dual-deliver; note `grafana-henk-swap-retune.sh` is
-      retired into the applier
-- [ ] 6.3 `[docs-site]` Add the **redundancy map**: 20 of 23 natives have Grafana twins (7 DNS +
-      `HighMemory` → Discord; 4 `HealthEtl*` + 7 backup + `DiskSpaceLow` → henk-events); 3 natives
-      orphan (`InstanceDown`, `ContainerRestarting`, `HighCPU`); **2 Grafana rules orphan the other
-      way** (`HenkSwapPressure`, `AuditShipStale`). The sets are not a subset relationship in either
-      direction, so consolidating onto Prometheus would require *porting*, not just deleting — the
-      factual basis the deferred D7 decision needs, and which this change had to derive from scratch
-- [ ] 6.4 `[docs-site]` Record the template defect and its fix: Grafana rules fire on the expression's
-      **value**, native Prometheus on **series returned**, so transcription is not mechanical;
-      `gt -1` restores native semantics. Name `HenkHealthEtl` arm 4 as the live instance this
-      change found and fixed. Record that `HighCPU` stays unrouted by decision (D8)
-- [ ] 6.5 `[docs-site]` Correct the "High memory usage" rule's location (it is not in the DNS
-      Performance group) and note that it carries no labels. Note `AuditShipStale`'s existence and
-      that its purpose is unidentified — flagged, not answered
-- [ ] 6.6 `[docs-site]` Note that Henk has no Gatus endpoint, so a permanently dead Henk is
-      unobserved; `HenkContainerRestarting` covers a crash-loop only because ntfy retains the event
-      for replay. Flags it for change D or a future Gatus endpoint
-- [ ] 6.7 `[henk]` Correct `openspec/changes/archive/2026-08-02-henk-events/design.md:9` — it says 22
-      Prometheus rules; the count is 23, which its own `tasks.md:53` already had right
+- [x] 6.1 **DONE 2026-08-06.** `services/monitoring.md` no longer calls it "the idempotent
+      provisioning script"; it now describes declared state, plan-before-write (`--dry-run` default,
+      `--apply` explicit), drift refusal with `ACCEPT_DRIFT`, undeclared-rule blocking without
+      pruning, PUT-by-uid + `X-Disable-Provenance`, apply ordering with the `ERR` rollback trap, and
+      the offline harness. The four API representational quirks are recorded there too, with the
+      instruction to re-probe after a Grafana upgrade
+- [x] 6.2 **DONE 2026-08-06.** New `##### Expanded to six rules` subsection: 6-row table carrying
+      `severity` and `identity_scope` per rule, the three-route policy tree as a table with the
+      consume-not-continue explanation, an explicit statement of *which* severities dual-deliver
+      (`severity=critical` in folder `henk` — today `HenkInstanceDown` alone), why route 1's second
+      matcher is load-bearing for the seven DNS criticals, and why route 2 is kept off the
+      catch-all. The swap-retune blockquote now ends with the tombstone note explaining that two
+      scripts claiming authority over one rule is how the retune got reverted
+- [x] 6.3 **DONE 2026-08-06** — `#### Prometheus ↔ Grafana redundancy map`. Recorded as **22 of 23**
+      natives covered, not 20: the task text was written pre-deploy, and this change *is* what added
+      the `InstanceDown` and `ContainerRestarting` twins, leaving `HighCPU` as the only uncovered
+      native. Both reverse orphans (`HenkSwapPressure`, `AuditShipStale`) are named, with the
+      not-a-subset-either-way consequence for D7 called out in a blockquote
+- [x] 6.4 **DONE 2026-08-06** — `#### The firing-bar defect`. Series-returned vs value semantics,
+      `HenkHealthEtl` arm 4 named as the live rule that was `health=ok` and unable to fire from
+      2026-07-22 to 2026-08-06, the `gt -1` superset argument, plus both probe-only traps: that
+      `reduce(count)` is a **no-op on instant queries** (the fix that would have changed nothing) and
+      that `up == bool 0` under a `-1` bar alerts on every target permanently. `HighCPU`'s
+      deliberate non-routing recorded with its 67.8%-vs-85% evidence
+- [x] 6.5 **DONE 2026-08-06.** Rule table restructured with an explicit `Evaluation group` column;
+      `High memory usage` moved out of DNS Performance and marked **no labels at all**, with the
+      consequence spelled out (no label-based route can ever match it; it reaches Discord only via
+      the root route). `AuditShipStale` added to the table and flagged as purpose-unidentified and
+      unrelated to Henk's audit log, with a warning not to assume it is safe to delete
+- [x] 6.6 **DONE 2026-08-06** — `#### Known blind spot: Henk cannot report its own death`, including
+      the ntfy-retention/replay nuance and this session's live measurement of it, the absence of a
+      Gatus endpoint for Henk, and the `changes()`-resets-on-rebuild finding with the
+      `docker restart` ×2 instruction. **Beyond the listed scope, two `applications.md` corrections
+      this change's verification forced** (both were traps hit for real today): intake logs *nothing*
+      at INFO on arrival so a cooldown-suppressed event is indistinguishable from a lost one, and no
+      log line appears for a full 120s debounce — the page previously implied `docker logs` was a
+      sufficient "did Henk get it" check. The resolve-inside-cooldown UX gap is recorded there too
+- [x] 6.7 **DONE 2026-08-06.** `archive/2026-08-02-henk-events/design.md:9` corrected 22 → 23 with
+      the breakdown (7 DNS + 12 infrastructure + 4 health-pipeline). **The same error was also in
+      that change's `proposal.md:7`**, which the task did not name; fixed as well, since leaving one
+      of two identical wrong counts is worse than fixing neither
 - [ ] 6.8 `[henk]` `/opsx:sync` + `/opsx:archive`
