@@ -44,7 +44,11 @@ def test_loads_events_config_with_overrides():
     assert config.events.enabled is True
     assert config.events.events_topic == "henk-events"
     assert config.events.handoffs_topic == "henk-handoffs"
-    assert config.events.cap_per_24h == 3
+    # 5, not 3: one host outage produces two announceable conversations (measured
+    # 2026-08-07, sensor-routing-coverage 4.3c — 153s arrival gap vs 120s debounce),
+    # so 3 would gate the second half of a second outage. See test_event_pipeline.py
+    # ::test_two_host_outages_in_24h_fit_under_the_shipped_cap.
+    assert config.events.cap_per_24h == 5
     assert config.events.cooldown_overrides[0]["pattern"] == "swap"
     assert config.events.cooldown_overrides[0]["cooldown_seconds"] == 86400
 

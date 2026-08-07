@@ -156,6 +156,42 @@ def test_suppressed_count_surfaces_on_next_announceable_message():
     assert later.event_turn.suppressed_count == 2  # the two cap-suppressed ones
 
 
+def test_two_host_outages_in_24h_fit_under_the_shipped_cap():
+    """Why `cap_per_24h` is 5 rather than 3 (sensor-routing-coverage task 4.3c).
+
+    Measured 2026-08-07: one host outage produces **two** announceable conversations,
+    not one. Stopping pi2's DNS and node_exporter together, the Gatus tier-1 alert
+    arrived at T+36s and `HenkInstanceDown` at T+190s — a **153s** gap against the
+    120s debounce, so the two never batch together.
+
+    At the old cap of 3, a *second* outage inside the same 24h would have its second
+    conversation silently gated, losing the `HenkInstanceDown` half of the report —
+    the more diagnostic half. A cap of 5 leaves headroom for two full outages plus
+    one unrelated incident. Widening the debounce past 153s was rejected: it would
+    delay every triage to tidy a case that is genuinely two observations apart.
+    """
+    pipe = EventPipeline(_cfg(cap_per_24h=5))
+    turns = [
+        # outage 1: gatus alert, then instance-down ~153s later
+        pipe.evaluate([_event("g1", "Gatus: Core Infrastructure/Pi2 DNS")], now=0.0),
+        pipe.evaluate([_event("i1", "[FIRING:1] HenkInstanceDown a")], now=153.0),
+        # outage 2, hours later, same shape on a different host
+        pipe.evaluate([_event("g2", "Gatus: Core Infrastructure/Pi5 DNS")], now=6 * HOUR),
+        pipe.evaluate([_event("i2", "[FIRING:1] HenkInstanceDown b")], now=6 * HOUR + 153),
+    ]
+    assert all(t.event_turn is not None for t in turns)
+    assert all(t.event_turn.announceable for t in turns), (
+        "both halves of both outages must reach the owner"
+    )
+    # The 5th slot is still free for something unrelated.
+    spare = pipe.evaluate([_event("x", "Gatus: svc/other")], now=7 * HOUR)
+    assert spare.event_turn.announceable is True
+    # The 6th is correctly gated — the cap is still a cap.
+    sixth = pipe.evaluate([_event("y", "Gatus: svc/another")], now=8 * HOUR)
+    assert sixth.event_turn is not None
+    assert sixth.event_turn.announceable is False
+
+
 # --- Rehydration from the persisted audit log (design D2, D4) --------------
 # A restart must not re-arm cooldowns, reset the daily cap, or lose recurrence
 # refs. State is reconstructed from durable audit records, compared against a

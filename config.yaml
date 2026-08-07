@@ -74,7 +74,13 @@ events:
   debounce_seconds: 120
   cooldown_seconds: 21600 # 6h
   recurrence_window_seconds: 86400 # 24h
-  cap_per_24h: 3
+  # Raised 3 -> 5 on 2026-08-07 from measurement, not taste (sensor-routing-coverage
+  # task 4.3c): ONE host outage yields TWO announceable conversations. Gatus tier-1
+  # landed at T+36s and HenkInstanceDown at T+190s — a 153s gap against the 120s
+  # debounce above, so they never batch. At 3, a second outage in the same 24h would
+  # gate its HenkInstanceDown half, which is the more diagnostic one. Widening the
+  # debounce past 153s was rejected: it delays every triage to tidy a rare case.
+  cap_per_24h: 5
   cooldown_overrides:
     # Chronic identities carry a longer cooldown so they don't re-alert (D6.2).
     - pattern: "swap"

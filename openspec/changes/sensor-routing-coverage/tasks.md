@@ -294,7 +294,32 @@
         unreachable`), and the Silence link confirms all three labels deployed:
         `identity_scope=instance`, `route=henk-events`, `severity=critical`
       - **Cap now full**: this was announceable slot 3 of 3. Next slot frees 2026-08-07T17:53:51Z
-- [ ] 4.3c **[owner]** Host-down case: record **actual arrival timestamps** of the Gatus tier-1 alert
+- [x] 4.3c **PASSED 2026-08-07 — the split is CONFIRMED; two conversations per outage.** Run
+      unattended (trap- and on-host-guard-protected) on pi2, the only host where this is safe: it is
+      *backup* DNS, so pi5 and vps kept resolving. Stopped **AdGuardHome + node_exporter together**
+      at `T0 = 00:35:47Z` to reproduce the shape of a host outage, restored 00:42:49Z (`active
+      active` verified). Measured:
+      | Time (UTC) | Event | Offset |
+      |---|---|---|
+      | 00:35:47 | `T0` both services stopped | — |
+      | 00:35:53 | Gatus `Pi2 DNS` failure 1 | T+6s |
+      | **00:36:23** | Gatus failure 2 → **tier-1 alert fires** (threshold 2) | **T+36s** |
+      | **00:38:24** | **Henk spawn 1** → first arrival = spawn − 120s debounce = **00:36:24** | the Gatus event |
+      | **00:40:57** | **Henk spawn 2** → first arrival = **00:38:57** | `HenkInstanceDown`, **T+190s** |
+      | 00:42:49 | restore issued → `active active`, `DONE` | — |
+      - **Arrival gap = 153s against the 120s debounce → they do NOT batch. Two conversations.**
+        Design predicted a 90–150s gap and "expect two conversations per host outage, not one": the
+        conclusion is exactly right, the gap 3s outside its upper bound. `HenkInstanceDown` at T+190s
+        sits inside the predicted T+150–210s window; the Gatus alert came *earlier* than the modelled
+        ~T+60s (T+36s) because the first check happened to land 6s after T0
+      - **Conversation count read from `claude_agent_sdk` spawn lines** (one per conversation) rather
+        than from the audit log, since `docker exec` needs an interactive password. Two spawns, two
+        `POST /henk-handoffs`, and **no `signal-cli` lines at all** — the cadence cap was full, so
+        both ran `announceable: false`. That incidentally re-confirms a capped triage still triages
+        and still publishes a handoff; only the Signal message is withheld
+      - Native `InstanceDown` was `firing` for `node-exporter-pi2` at capture time, corroborating
+        that the Grafana twin had genuine cause
+      Original text: Host-down case: record **actual arrival timestamps** of the Gatus tier-1 alert
       and of `HenkInstanceDown`, and the resulting conversation count. Expected two conversations
       (~90–150s gap against a 120s debounce). **If confirmed, raise `cap_per_24h` 3 → 5** per design
       — applied by editing rp5's locally-modified `config.yaml` **in place**, never via
@@ -382,7 +407,29 @@
         it without limit
       Test payloads are synthesized against the real captured Grafana format and use hostnames
       rather than tailnet addresses; genuine captures land in 5.3 once 4.3/4.6 produce them
-- [ ] 5.2 `[henk]` If 4.3c or 4.7 say so: `cap_per_24h` and/or a cooldown override in `config.yaml`,
+- [x] 5.2 **DONE 2026-08-07 — `cap_per_24h` raised 3 → 5, the pre-committed resolution, on 4.3c's
+      evidence.** 4.7 contributed nothing (no cooldown override warranted), so this is the cap alone.
+      - **Test written first**, encoding *why* rather than just the number:
+        `test_two_host_outages_in_24h_fit_under_the_shipped_cap` replays 4.3c's measured shape — two
+        outages, each a Gatus alert plus a `HenkInstanceDown` 153s later — and asserts all four halves
+        stay announceable, that a 5th unrelated incident still fits, and that the **6th is still
+        gated** so the cap remains a cap. At the old 3, a second outage would have gated its
+        `HenkInstanceDown` half, i.e. the more diagnostic one
+      - `config.yaml` (repo) updated with the reasoning inline, and `tests/test_config.py`'s
+        contract assertion moved 3 → 5. That test failing was correct — it guards the shipped value,
+        and the value changed by decision on measurement, not by weakening the test
+      - **rp5's deployed `config.yaml` edited in place** (never `git checkout`): timestamped backup
+        at `/home/pi/henk-config-deployed.yaml.bak.pre-cap`, then a single anchored `sed`. Verified
+        by `diff` that **exactly one line** differs (`77c77`, `3` → `5`) and the owner Signal UUID /
+        number / `todo_note_allowlist` are untouched
+      - Suite 267 → **268 green**
+      - **REMAINING: the container must be restarted for it to take effect** — `config.yaml` is a
+        read-only bind mount read at startup, and `docker compose` needs an interactive password on
+        rp5. Until then the file says 5 and the running process still holds 3
+      - Note for future tuning: the existing `pattern: "swap"` override is a case-insensitive regex
+        over the identity key, and scoped keys are now longer (`grafana:HenkInstanceDown/<instance>`),
+        so a pattern intended to match a rule name can now also match an instance value
+      Original text: If 4.3c or 4.7 say so: `cap_per_24h` and/or a cooldown override in `config.yaml`,
       with tests from the existing per-pattern override coverage. rp5's `config.yaml` is locally
       modified and must stay that way — edit in place, never `git checkout`. Note the existing
       `pattern: "swap"` is a case-insensitive regex over the key, and scoped keys are now longer
