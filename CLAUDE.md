@@ -33,9 +33,14 @@ instead of embedding it. Governance and the public-flip milestone live in
 
 ## Canonical context (read before designing anything)
 
+- **North Star:** `NORTH-STAR.md` (this repo, settled 2026-08-07) — what Henk is *for*:
+  identity statement, attention contract, the two-axis permission model, architecture
+  principles, roadmap. Read it before proposing any change; spec Purposes derive from it.
 - **Project brief:** `~/Coding/homelab-ai-revised.md` — §5-A1 is this project's charter;
-  §2 constraint 6 (lethal-trifecta rules) is the non-negotiable security posture.
-  The spec must INHERIT that posture, not re-derive or relax it.
+  §2 constraint 6 (lethal-trifecta rules) is the non-negotiable security posture
+  (Tier W refined 2026-08-07: the hard wall is *client* data; owner's own work
+  metadata is shareable by allowlist). The spec must INHERIT that posture, not
+  re-derive or relax it.
 - **Homelab facts:** `~/Documents/homelab-docs-site/src/content/docs/` (devices,
   services, ACLs, ports). Do not assume infrastructure — read it.
 
