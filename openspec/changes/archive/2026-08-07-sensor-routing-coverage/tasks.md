@@ -503,4 +503,11 @@
       the breakdown (7 DNS + 12 infrastructure + 4 health-pipeline). **The same error was also in
       that change's `proposal.md:7`**, which the task did not name; fixed as well, since leaving one
       of two identical wrong counts is worse than fixing neither
-- [ ] 6.8 `[henk]` `/opsx:sync` + `/opsx:archive`
+- [x] 6.8 **DONE 2026-08-07.** Sync is not a separate command in this OpenSpec version — it is step 4
+      of `/opsx:archive`. Both delta specs applied to main: `sensor-routing` got the rewritten
+      *Curated Prometheus subset* requirement (curated list extended with instance availability and
+      container restarts, plus the series-vs-value and scrape-target-coverage paragraphs and 5 new
+      scenarios) and the two ADDED requirements (*Critical routed alerts retain a delivery path Henk
+      cannot suppress*, *Routing configuration is convergent and semantics-preserving*);
+      `event-intake` got the scoped-identity discriminator paragraph and 3 new scenarios on
+      *Stable alert identity*. `openspec validate --all` 12/12 after the sync
