@@ -423,9 +423,11 @@
         by `diff` that **exactly one line** differs (`77c77`, `3` → `5`) and the owner Signal UUID /
         number / `todo_note_allowlist` are untouched
       - Suite 267 → **268 green**
-      - **REMAINING: the container must be restarted for it to take effect** — `config.yaml` is a
-        read-only bind mount read at startup, and `docker compose` needs an interactive password on
-        rp5. Until then the file says 5 and the running process still holds 3
+      - **Restart DONE 2026-08-07 (owner-run), container verified to see 5** — `docker exec …
+        grep cap_per_24h /app/config.yaml` inside the running container reads `5`. The in-container
+        check matters because the value was applied with `sed -i`, which replaces the file's inode,
+        and Docker bind-mounts a file *by inode* — so until the restart the container was pinned to
+        the pre-edit content, and `up -d` alone would have reported "Running" and changed nothing
       - Note for future tuning: the existing `pattern: "swap"` override is a case-insensitive regex
         over the identity key, and scoped keys are now longer (`grafana:HenkInstanceDown/<instance>`),
         so a pattern intended to match a rule name can now also match an instance value
