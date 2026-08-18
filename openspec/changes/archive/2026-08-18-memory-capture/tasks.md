@@ -145,9 +145,51 @@ required.**
       a "timed out" result — consistent with the distinct `timeout` receipt
       outcome, but a skimming reader could read it as recording `denied`
 - [x] 7.3 Full test suite green; `openspec validate --all` clean
-- [ ] 7.4 Deploy-smoke checklist (deploy-verified items, ONLY after the explicit
+- [x] 7.4 Deploy-smoke checklist (deploy-verified items, ONLY after the explicit
       owner go): inbox/memory survive container recreation on rp5; SDK
       denied-call ToolUseBlock visibility confirmed against the live SDK; deploy
       also picks up the pending cryptography lockfile rebuild
 - [x] 7.5 Commit via git-commit-handler (publication rules; pre-commit hook);
       **no deploy — explicit owner go required**
+
+## As-built (deployed to rp5 2026-08-18, image rebuilt from `24fb65a`)
+
+Deploy-verified results for task 7.4, recorded here because none of it is reproducible
+from the test suite:
+
+- **Memory and inbox survive container recreation.** Verified with
+  `up -d --force-recreate henk`, and the test was stronger than it looks: at that moment
+  `henk-store.db` was 4 KB while `henk-store.db-wal` was 84 KB, so nearly all rows lived in
+  the write-ahead log. SQLite replayed it on open in the fresh container and every item was
+  still listed. WAL mode plus `synchronous=FULL` is doing what D2 claimed.
+- **The SDK DOES surface a denied tool call as a `ToolUseBlock`** (claude-agent-sdk 0.2.123).
+  Exercised by setting `gate.demote_standing: true`, denying a `store_memory` prompt, and
+  projecting the session record: `tool_calls` carried
+  `("store_memory", executed=False)` with the matching `denied` entry in `approvals`. So the
+  `executed` flag is load-bearing rather than theoretical — without it, a denied invocation
+  would read as an executed one in the record. Its receipt also kept `tier: "standing"`
+  while enforcement was demoted, confirming tier is reported as a *tool* property.
+- **The cryptography lockfile bullet was a false premise, not a passed check.** The image is
+  built with `pip install ".[runtime]"` and never reads `uv.lock`; `cryptography` only enters
+  the lock transitively via `pyjwt[crypto]` in the dev/uv resolution. Nothing about the
+  49→50 bump reaches the deployed image, so there was nothing to verify.
+- **Receipts, approvals threading and `memory_hash` all confirmed in production.** The
+  verified always-empty-`approvals` defect is fixed on the live host; two consecutive owner
+  sessions recorded *different* `memory_hash` values because the store grew between them,
+  which is the property the field exists for.
+- **Backup coverage confirmed** (the secure-deployment claim that the store "rides the
+  volume's existing backup path"): rp5's backup script lists `henk_henk_audit` in its
+  volume allowlist and produces a dated tarball for it nightly; it also copies the deployed
+  `config.yaml`.
+
+Two findings for a later change (neither blocks anything):
+
+1. **`tool_calls[].result_id` carries full tool result text**, not just the handoff message
+   id its name implies. With memory and capture in the registry that means owner-personal
+   content now lands in the audit JSONL and its backups — same sensitivity class as the
+   store itself, so not an exposure change, but it defeats the "audit records are metadata"
+   assumption and makes raw records unsafe to share. Candidate fix: bound or drop result
+   text for non-handoff tools.
+2. **The three new tools omit `additionalProperties: false`** from their parameter schemas,
+   where every pre-existing tool sets it. Harmless (a looser schema, and both write tools
+   absorb extra keys), but inconsistent with the shape proven against the live SDK.
