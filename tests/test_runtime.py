@@ -38,7 +38,10 @@ async def test_events_enabled_wires_checkpoint_and_coordinator():
         await client.aclose()
 
 
-async def test_events_disabled_skips_all_durability_wiring():
+async def test_events_disabled_skips_intake_but_keeps_audit():
+    # Disabling event intake is the documented rollback path. It must not disable
+    # receipts: with mutating tools in the registry, an audit log that only exists
+    # when events are enabled would make the rollback path unreceipted (design D11).
     base = Config.load(SAMPLE, env={})
     config = dataclasses.replace(
         base, events=dataclasses.replace(base.events, enabled=False)
@@ -47,7 +50,29 @@ async def test_events_disabled_skips_all_durability_wiring():
     try:
         assert app._coordinator is None       # subscriber never starts (v1 behaviour)
         assert app._core._checkpoint is None  # no checkpoint, no rehydration
-        assert app._core._audit is None
+        assert app._core._audit is not None   # receipts still land
+        assert app._dispatcher._gate._recorder is not None
+    finally:
+        await client.aclose()
+
+
+async def test_audit_path_falls_back_to_the_events_scoped_key():
+    # rp5's deployed config.yaml is locally modified and only carries
+    # events.audit_path; the fallback is what lets this change deploy without a
+    # host edit.
+    base = Config.load(SAMPLE, env={})
+    assert base.audit.path == base.events.audit_path
+
+
+async def test_receipts_are_wired_from_the_gate_to_the_core():
+    config = Config.load(SAMPLE, env={})
+    app, client = build_runtime(config)
+    try:
+        receipts = app._dispatcher._gate._recorder
+        assert app._core._receipts is receipts
+        # The core registered itself as the aggregation sink, so a decision lands
+        # in both places: durable on disk, and in the session record.
+        assert receipts.sink == app._core._note_receipt
     finally:
         await client.aclose()
 

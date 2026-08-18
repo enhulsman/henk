@@ -63,23 +63,21 @@ def test_event_session_record_validates_with_arc_flag():
     assert rec["handoff_message_id"] == "hf-1"
 
 
-# --- Schema v2: per-triage semantics + cache-read usage -------------------
+# --- Current schema: usage + declared version ----------------------------
+# (Version-3 specifics — authorization records, approvals shape, executed,
+# memory_hash — live in test_audit_receipts.py alongside the receipt tests.)
 
 
-def test_schema_version_is_two():
-    assert SCHEMA_VERSION == 2  # bumped for per-triage records + cache-read usage
-
-
-def test_new_records_declare_v2_and_validate():
+def test_new_records_declare_the_current_version_and_validate():
     rec = session_record(
         trigger="event",
         usage={"input_tokens": 4, "output_tokens": 200, "cache_read_input_tokens": 800},
     )
-    _validate(rec)  # against the v2 schema (AUDIT_SCHEMA_PATH)
-    assert rec["schema_version"] == 2
+    _validate(rec)  # against the current schema (AUDIT_SCHEMA_PATH)
+    assert rec["schema_version"] == SCHEMA_VERSION
 
 
-def test_usage_carries_cache_read_in_v2():
+def test_usage_carries_cache_read():
     rec = session_record(
         trigger="event",
         usage={"input_tokens": 4, "output_tokens": 2, "cache_read_input_tokens": 90},

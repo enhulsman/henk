@@ -127,3 +127,11 @@ store:
 # widens a turn scope, or registers a mutating tool — those ride code review.
 gate:
   demote_standing: false
+
+# The audit log. Its own section rather than an events-scoped key: mutation
+# receipts, owner-session records, and memory/inbox durability must exist in every
+# supported configuration, including the `events.enabled: false` rollback path.
+# When `audit.path` is absent, it falls back to `events.audit_path` above — so a
+# deployed config that predates this section keeps working untouched.
+audit:
+  path: "/data/audit/henk-audit.jsonl"

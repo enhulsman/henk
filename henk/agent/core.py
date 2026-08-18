@@ -12,7 +12,8 @@ Responsibilities (v1.2):
   the session's taint (design D10), cleared on every exit path including errors:
   the gate can only enforce turn scope if the core tells it what turn is running;
 - reset on ``/new`` and after an idle window;
-- one append-only audit record per session, flushed on session close.
+- one append-only audit record per session, flushed on session close, carrying
+  every mutating authorization decision made while it was live (design D5).
 
 Only the agent's final text reply is sent; intermediate tool activity is not.
 """
@@ -33,10 +34,15 @@ from henk.agent.triage import (
     extract_diagnosis,
 )
 from henk.agent.turns import CheckpointMarker, EventTurn, OwnerTurn, Turn
-from henk.gate.approval import TurnContext
-from henk.tools.base import TurnType
+from henk.gate.approval import EXECUTING_OUTCOMES, TurnContext
+from henk.tools.base import ToolClass, TurnType
 
 logger = logging.getLogger("henk.agent")
+
+#: Receipt outcomes under which the invocation was permitted to proceed. Read as
+#: the string values the records carry, not the enum, since that is what an audit
+#: reader sees.
+_EXECUTED_OUTCOMES = frozenset(o.value for o in EXECUTING_OUTCOMES)
 
 RESET_COMMAND = "/new"
 RESET_CONFIRMATION = "Session reset."
@@ -77,6 +83,12 @@ class _SessionAudit:
     turn_count: int = 0
     outcome: str = "completed"
     flushed: bool = False
+    #: Model-initiated authorization receipts recorded while THIS acc was live.
+    #: Scoped by construction: a continuation acc starts empty, so a triage's
+    #: approvals can never reappear in the interrogation's record.
+    approvals: list[dict] = field(default_factory=list)
+    #: Hash of the recall block this session received, as injected (null if none).
+    memory_hash: str | None = None
     #: Cumulative session stats at this acc's start; when set, the acc's record
     #: reports only stats accrued SINCE it (delta), so an owner interrogation
     #: continuing an event session is audited without double-counting the triage.
@@ -97,6 +109,7 @@ class AgentCore:
         checkpoint: Any | None = None,
         handoff_sink: Callable[[str, str], None] | None = None,
         gate: Any | None = None,
+        receipts: Any | None = None,
     ) -> None:
         self._factory = factory
         self._channel = channel
@@ -125,6 +138,12 @@ class AgentCore:
         # in EVERY turn of a tainted session, including the owner follow-up that
         # incident-triage mandates continues the same session.
         self._session_tainted = False
+        # Mutation receipts: durable at decision time in the audit log, and fanned
+        # back here so the session record's approvals[] is never empty when a
+        # mutating tool was invoked (the verified defect this change fixes).
+        self._receipts = receipts
+        if receipts is not None:
+            receipts.sink = self._note_receipt
         self._session: AgentSession | None = None
         self._last_activity: float | None = None
         self._acc: _SessionAudit | None = None
@@ -299,6 +318,21 @@ class AgentCore:
             "cap — retrieve them with henk-pickup.)"
         )
 
+    # --- Receipts (design D5) ---------------------------------------------
+
+    def _note_receipt(self, record: dict) -> None:
+        """Collect a model-initiated authorization decision for the live acc.
+
+        Owner-command receipts are deliberately skipped: commands run outside any
+        turn or session (design D8), so they exist only as standalone authorization
+        records and must not be attributed to whatever session happened to be open.
+        """
+        if record.get("initiated_by") != "model" or self._acc is None:
+            return
+        from henk.audit import approval_entry
+
+        self._acc.approvals.append(approval_entry(record))
+
     # --- Gate framing (design D10) ----------------------------------------
 
     @contextmanager
@@ -397,10 +431,12 @@ class AgentCore:
             stats = self._stats_since(stats, acc.stats_baseline)
         handoff_id = None
         tool_calls = []
+        pending_outcomes = self._outcomes_by_tool(acc)
         for call in stats.tool_calls if stats else ():
             tool_calls.append(
                 {"name": call.name, "tool_class": call.tool_class,
-                 "result_id": call.result_id}
+                 "result_id": call.result_id,
+                 "executed": self._was_executed(call, pending_outcomes)}
             )
             if call.name == "publish_handoff" and call.result_id:
                 handoff_id = call.result_id
@@ -420,6 +456,8 @@ class AgentCore:
             triage_arc_complete=(
                 acc.triage_arc_complete if acc.had_event_turn else None
             ),
+            approvals=acc.approvals,
+            memory_hash=acc.memory_hash,
             outcome=acc.outcome,
             announceable=acc.announceable,
             turn_count=acc.turn_count,
@@ -434,6 +472,36 @@ class AgentCore:
         )
         ok = self._audit.write(record)
         return ok, handoff_id
+
+    @staticmethod
+    def _outcomes_by_tool(acc: "_SessionAudit | None") -> dict[str, list[str]]:
+        """This acc's authorization outcomes, per tool, in decision order."""
+        outcomes: dict[str, list[str]] = {}
+        for entry in acc.approvals if acc is not None else ():
+            outcomes.setdefault(entry["tool"], []).append(entry["outcome"])
+        return outcomes
+
+    @staticmethod
+    def _was_executed(call, pending_outcomes: dict[str, list[str]]) -> bool:
+        """Whether this invocation was permitted to proceed.
+
+        Derived by correlating with the gate's receipts — never from tool-result
+        text, which the model can influence. Read-only and notify-only calls are
+        true by construction: they bypass the gate by classification. A mutating
+        call with no receipt left is not evidence of execution (structurally
+        impossible, so it is reported false AND logged rather than assumed benign).
+        """
+        if call.tool_class != ToolClass.MUTATING.value:
+            return True
+        outcomes = pending_outcomes.get(call.name)
+        if not outcomes:
+            logger.warning(
+                "mutating tool call %s appeared without an authorization receipt; "
+                "recording it as not executed",
+                call.name,
+            )
+            return False
+        return outcomes.pop(0) in _EXECUTED_OUTCOMES
 
     @staticmethod
     def _stats_since(

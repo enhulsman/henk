@@ -3,8 +3,15 @@
 The writer appends one JSON object per line and never rewrites or truncates
 (append-only). Every write is wrapped: a failure is logged at ERROR and swallowed
 so triage, replies, and message handling are never blocked by the audit path
-(audit-log spec). Records are built by :func:`session_record` /
-:func:`suppression_record` so their field names match the committed JSON Schema.
+(audit-log spec). Records are built by :func:`session_record`,
+:func:`suppression_record` and :func:`authorization_record` so their field names
+match the committed JSON Schema.
+
+:class:`MutationReceipts` is the decision-time half: it appends an
+``authorization`` record the moment the gate decides, without waiting for the turn
+or session to end and without depending on a graceful close. An agent that acts
+without asking must be more accountable, not less — so the receipt has to be
+durable before the mutation's effects are visible anywhere else.
 """
 
 from __future__ import annotations
@@ -20,16 +27,24 @@ logger = logging.getLogger("henk.audit")
 #: Bump on any change to the record structure (audit-log spec: schema is versioned).
 #: v2: event-triage records are one-per-triage (was one-per-session) and `usage`
 #: gains `cache_read_input_tokens`.
-SCHEMA_VERSION = 2
+#: v3: the `authorization` record type (mutation receipts, model-initiated and
+#: owner-command), the tier+outcome shape of session `approvals` entries (v2 used
+#: `decision`), the `executed` flag on `tool_calls`, and `memory_hash`.
+SCHEMA_VERSION = 3
 
 _SCHEMA_DIR = Path(__file__).resolve().parent / "schema"
 
 #: The current schema, matching :data:`SCHEMA_VERSION`. Historical versions stay
 #: committed so records that declare an older version still validate (audit-log
 #: spec: prior schema versions remain readable).
-AUDIT_SCHEMA_PATH = _SCHEMA_DIR / "audit-record.v2.schema.json"
+AUDIT_SCHEMA_PATH = _SCHEMA_DIR / "audit-record.v3.schema.json"
 AUDIT_SCHEMA_V1_PATH = _SCHEMA_DIR / "audit-record.v1.schema.json"
-AUDIT_SCHEMA_V2_PATH = AUDIT_SCHEMA_PATH
+AUDIT_SCHEMA_V2_PATH = _SCHEMA_DIR / "audit-record.v2.schema.json"
+AUDIT_SCHEMA_V3_PATH = AUDIT_SCHEMA_PATH
+
+#: Owner-command receipts carry a bounded effect summary — a receipt is evidence,
+#: not a transcript, and the audit log is not a place to spill free text.
+DETAIL_MAX_CHARS = 200
 
 
 def suppression_record(
@@ -46,6 +61,109 @@ def suppression_record(
     }
 
 
+def authorization_record(
+    *,
+    tool: str,
+    outcome: str,
+    tier: str | None = None,
+    reference: str | None = None,
+    turn_type: str | None = None,
+    initiated_by: str = "model",
+    detail: str | None = None,
+    at: float | None = None,
+) -> dict[str, Any]:
+    """Build one mutation receipt (audit-log spec: durable at decision time).
+
+    Records **authorization**, never execution: the gate cannot know whether the
+    tool then ran. Execution evidence lives in the session record's ``tool_calls``
+    ``executed`` flag, which is derived by correlating with these records.
+
+    ``tool`` is the named action — a registered tool name for model-initiated
+    decisions, the command itself (``/forget``) for owner-command receipts, which
+    carry ``tier: None`` and ``turn_type: "command"`` because they run outside any
+    turn or session.
+    """
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "record_type": "authorization",
+        "tool": tool,
+        "tier": tier,
+        "outcome": outcome,
+        "reference": reference,
+        "turn_type": turn_type,
+        "initiated_by": initiated_by,
+        "detail": _bounded(detail),
+        "at": at,
+    }
+
+
+def _bounded(detail: str | None) -> str | None:
+    if detail is None:
+        return None
+    text = " ".join(str(detail).split())
+    if len(text) > DETAIL_MAX_CHARS:
+        return text[:DETAIL_MAX_CHARS] + "…"
+    return text
+
+
+def approval_entry(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Project an authorization record into a session record's ``approvals`` entry."""
+    return {
+        "tool": record["tool"],
+        "tier": record.get("tier"),
+        "outcome": record["outcome"],
+        "initiated_by": record.get("initiated_by", "model"),
+        "reference": record.get("reference"),
+    }
+
+
+class MutationReceipts:
+    """Makes every authorization decision durable the moment it is made.
+
+    Wired as the gate's decision recorder and as the owner-command dispatch's
+    receipt writer. ``sink`` (the agent core) additionally collects model-initiated
+    entries for the session record's ``approvals`` — but the durable half never
+    depends on the sink, so a session that dies before its record still leaves the
+    decision on disk.
+    """
+
+    def __init__(self, audit: "AuditLog | None", *, sink=None) -> None:
+        self._audit = audit
+        self.sink = sink
+
+    def record(
+        self,
+        *,
+        tool: str,
+        outcome: str,
+        tier: str | None = None,
+        reference: str | None = None,
+        turn_type: str | None = None,
+        initiated_by: str = "model",
+        detail: str | None = None,
+    ) -> dict[str, Any]:
+        record = authorization_record(
+            tool=tool,
+            outcome=outcome,
+            tier=tier,
+            reference=reference,
+            turn_type=turn_type,
+            initiated_by=initiated_by,
+            detail=detail,
+        )
+        if self._audit is not None:
+            self._audit.write(record)  # loud but non-blocking; never raises
+        if self.sink is not None:
+            try:
+                self.sink(record)
+            except Exception:
+                # The durable receipt already exists; an aggregation failure must
+                # not propagate into the turn that is being authorized.
+                logger.error("could not aggregate an authorization receipt",
+                             exc_info=True)
+        return approval_entry(record)
+
+
 def session_record(
     *,
     trigger: str,
@@ -56,6 +174,7 @@ def session_record(
     handoff_message_id: str | None = None,
     triage_arc_complete: bool | None = None,
     approvals: Iterable[Mapping[str, Any]] = (),
+    memory_hash: str | None = None,
     outcome: str = "completed",
     announceable: bool | None = None,
     turn_count: int = 0,
@@ -63,7 +182,7 @@ def session_record(
     usage: Mapping[str, Any] | None = None,
     at: float | None = None,
 ) -> dict[str, Any]:
-    """Build one session record. Field names/types match the v1 JSON Schema."""
+    """Build one session record. Field names/types match the current JSON Schema."""
     return {
         "schema_version": SCHEMA_VERSION,
         "record_type": "session",
@@ -75,6 +194,7 @@ def session_record(
         "handoff_message_id": handoff_message_id,
         "triage_arc_complete": triage_arc_complete,
         "approvals": [dict(a) for a in approvals],
+        "memory_hash": memory_hash,
         "outcome": outcome,
         "announceable": announceable,
         "turn_count": turn_count,

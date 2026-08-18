@@ -17,7 +17,7 @@ import httpx
 from henk.agent.core import AgentCore
 from henk.agent.sdk_session import SdkSessionFactory
 from henk.app import App, Dispatcher
-from henk.audit import AuditLog, read_audit_records
+from henk.audit import AuditLog, MutationReceipts, read_audit_records
 from henk.channel.allowlist import AllowlistFilter
 from henk.channel.base import ChannelAdapter
 from henk.channel.signal import SignalAdapter, SignalCliRestBridge
@@ -72,12 +72,21 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         safe_length=config.signal.safe_length,
     )
 
+    # Audit is constructed UNCONDITIONALLY (design D11). It used to appear only
+    # when events were enabled — a leftover of arriving with that change. With
+    # mutating tools in the registry, every supported configuration must produce
+    # receipts, the rollback path (`events.enabled: false`) included.
+    audit = AuditLog(config.audit.path)
+    receipts = MutationReceipts(audit)
+
     # The gate sends approval prompts over the same channel the owner uses. The
-    # demotion flag is the only config input it takes, and it only narrows.
+    # demotion flag is the only config input it takes, and it only narrows; the
+    # recorder is what makes every decision it takes durable at decision time.
     gate = ApprovalGate(
         adapter,
         timeout_seconds=config.agent.approval_timeout_seconds,
         demote_standing=config.gate.demote_standing,
+        recorder=receipts,
     )
     factory = SdkSessionFactory(
         registry,
@@ -86,15 +95,13 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         system_prompt=config.agent.system_prompt,
     )
 
-    audit = AuditLog(config.events.audit_path) if config.events.enabled else None
-
     # Durability wiring (design D1/D2): only when events are enabled. The
     # checkpoint store + cadence rehydration read the existing audit volume; both
     # reads are non-fatal if the volume is absent (fresh install / test env).
     checkpoint = None
     pipeline = None
     if config.events.enabled:
-        checkpoint = OffsetCheckpoint(_checkpoint_path(config.events.audit_path))
+        checkpoint = OffsetCheckpoint(_checkpoint_path(config.audit.path))
         pipeline = _build_pipeline(config)
         # Reconstruct cooldown/cap/recurrence from the persisted log before the
         # coordinator consumes any event, so a restart does not re-arm cooldowns
@@ -103,9 +110,7 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         # falls back to empty cadence state (worst case: one restart re-alerts).
         try:
             pipeline.rehydrate(
-                read_audit_records(
-                    config.events.audit_path, limit=_REHYDRATE_LIMIT
-                ),
+                read_audit_records(config.audit.path, limit=_REHYDRATE_LIMIT),
                 now=time.time(),
             )
         except Exception:
@@ -127,6 +132,8 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         # The core frames every agent turn for the gate (turn type, announceability,
         # session taint) — without this the gate cannot enforce turn scope (D10).
         gate=gate,
+        # Fans model-initiated receipts into the session record's approvals[].
+        receipts=receipts,
     )
     dispatcher = Dispatcher(AllowlistFilter(config.owner.id), gate, core)
 
@@ -154,7 +161,7 @@ def _build_pipeline(config: Config) -> EventPipeline:
 def _build_coordinator(
     config: Config,
     core: AgentCore,
-    audit: AuditLog | None,
+    audit: AuditLog,
     pipeline: EventPipeline,
     checkpoint: OffsetCheckpoint,
     channel: ChannelAdapter,

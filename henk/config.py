@@ -134,6 +134,20 @@ class PersonalDataConfig:
 
 
 @dataclass(frozen=True)
+class AuditConfig:
+    """Where the audit log lives — its OWN section, not an events-scoped key.
+
+    Audit arrived with the events change and was scoped under it; with mutations in
+    the registry, receipts must exist in every supported configuration, including
+    the documented rollback path (``events.enabled: false``). ``path`` falls back to
+    ``events.audit_path`` at load time so the deployed, locally-modified rp5 config
+    keeps working without a host edit (design D11).
+    """
+
+    path: str = "/data/audit/henk-audit.jsonl"
+
+
+@dataclass(frozen=True)
 class GateConfig:
     """The authorization gate's only configuration surface — and it only narrows.
 
@@ -207,6 +221,7 @@ class Config:
     todo: EndpointConfig
     ntfy: NtfyConfig
     events: EventsConfig = field(default_factory=EventsConfig)
+    audit: AuditConfig = field(default_factory=AuditConfig)
     gate: GateConfig = field(default_factory=GateConfig)
     store: StoreConfig = field(default_factory=StoreConfig)
     personal_data: PersonalDataConfig = field(default_factory=PersonalDataConfig)
@@ -294,6 +309,11 @@ class Config:
             ),
         )
 
+        audit_sec = raw.get("audit", {}) or {}
+        # Explicit `audit.path` wins; otherwise inherit the events-scoped key that
+        # deployments already carry, so no host config edit is needed (D11).
+        audit = AuditConfig(path=audit_sec.get("path") or events.audit_path)
+
         gate_sec = raw.get("gate", {}) or {}
         gate = GateConfig(
             demote_standing=bool(
@@ -364,6 +384,7 @@ class Config:
                 ),
             ),
             events=events,
+            audit=audit,
             gate=gate,
             store=store,
             personal_data=personal_data,

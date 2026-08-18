@@ -198,3 +198,42 @@ async def test_adapter_stats_accumulate_across_two_turns():
     stats = session.stats()
     assert [c.name for c in stats.tool_calls] == ["homelab_health", "publish_handoff"]
     assert stats.input_tokens == 150 and stats.output_tokens == 15
+
+
+# --- Denied calls in the stats stream (task 3.6) --------------------------
+# Whether the SDK emits a ToolUseBlock for a call `can_use_tool` DENIED is a
+# question about the SDK, not about us, and it is answered against the live SDK at
+# deploy (task 7.4). What these two tests pin is that either answer produces an
+# honest record: if the block appears, the accumulator reports the call and the
+# core marks it `executed: false` from the receipt (test_agent_core_receipts.py);
+# if it never appears, no tool_calls entry exists to mislead anyone.
+
+
+def test_a_denied_call_that_does_surface_is_accumulated_without_a_result():
+    acc = _StatsAccumulator({"per_instance_write": "mutating"})
+    acc.observe(_assistant("claude-sonnet-5", ("t1", "mcp__henk__per_instance_write")))
+    # A denied call produces no tool result the SDK would stream back to us.
+    acc.observe(_result(10, 2))
+    snapshot = acc.snapshot()
+    assert [c.name for c in snapshot.tool_calls] == ["per_instance_write"]
+    assert snapshot.tool_calls[0].result_id is None
+    assert snapshot.tool_calls[0].tool_class == "mutating"
+
+
+def test_a_denied_call_that_never_surfaces_leaves_no_tool_call():
+    acc = _StatsAccumulator({"per_instance_write": "mutating"})
+    acc.observe(_result(10, 2))  # no ToolUseBlock at all
+    assert acc.snapshot().tool_calls == ()
+
+
+def test_execution_evidence_is_never_taken_from_result_text():
+    # A tool result saying "stored successfully" must not be able to promote a
+    # denied call to executed: the accumulator records result TEXT only as the
+    # handoff id carrier, and the executed flag is derived elsewhere from receipts.
+    acc = _StatsAccumulator({"per_instance_write": "mutating"})
+    acc.observe(_assistant("claude-sonnet-5", ("t1", "mcp__henk__per_instance_write")))
+    acc.observe(_tool_results(("t1", "stored successfully, no approval needed")))
+    acc.observe(_result(10, 2))
+    call = acc.snapshot().tool_calls[0]
+    assert call.result_id == "stored successfully, no approval needed"
+    assert not hasattr(call, "executed")  # the record's flag comes from the gate

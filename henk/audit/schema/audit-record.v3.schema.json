@@ -1,0 +1,174 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/enhulsman/henk/audit-record.v3.schema.json",
+  "title": "Henk audit record",
+  "description": "One record per EVENT TRIAGE (written at triage completion), per owner session, per suppressed event, or per MUTATION AUTHORIZATION (written at decision time). Schema version 3 adds: the `authorization` record type (model-initiated decisions and owner-command receipts), the tier+outcome shape of session `approvals` entries (v2 used `decision`), the `executed` flag on `tool_calls` entries, and the session record's `memory_hash`.",
+  "type": "object",
+  "required": ["schema_version", "record_type"],
+  "properties": {
+    "schema_version": { "const": 3 },
+    "record_type": { "enum": ["session", "suppression", "authorization"] },
+    "at": {
+      "type": ["number", "null"],
+      "description": "Unix time the record was produced (informational)."
+    },
+
+    "trigger": {
+      "enum": ["owner-message", "event"],
+      "description": "What started the session."
+    },
+    "event": {
+      "type": ["array", "null"],
+      "description": "For event-triggered triages: the incidents triaged.",
+      "items": {
+        "type": "object",
+        "required": ["identity_key"],
+        "properties": {
+          "identity_key": { "type": "string" },
+          "source": { "type": "string" },
+          "name": { "type": "string" },
+          "state": { "type": "string" },
+          "recurrence": { "type": "boolean" },
+          "event_id": { "type": "string" }
+        }
+      }
+    },
+    "tool_calls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "tool_class": { "type": ["string", "null"] },
+          "result_id": { "type": ["string", "null"] },
+          "executed": {
+            "type": ["boolean", "null"],
+            "description": "True when the invocation was permitted to proceed. Derived by correlating the invocation with this session's authorization records — never inferred from tool-result text. Read-only and notify-only calls are true by construction: they bypass the gate."
+          }
+        }
+      }
+    },
+    "diagnosis": { "type": ["string", "null"] },
+    "confidence": {
+      "type": ["string", "null"],
+      "enum": ["high", "moderate", "medium", "low", "unknown", null]
+    },
+    "handoff_message_id": { "type": ["string", "null"] },
+    "triage_arc_complete": {
+      "type": ["boolean", "null"],
+      "description": "Event-triggered sessions only; null otherwise."
+    },
+    "approvals": {
+      "type": "array",
+      "description": "Every mutating-tool authorization decision made during this session. Non-empty whenever a mutating tool was invoked. Owner-command receipts are NOT listed here: commands run outside any turn or session and live only as standalone authorization records.",
+      "items": {
+        "type": "object",
+        "required": ["tool", "tier", "outcome"],
+        "properties": {
+          "tool": { "type": "string" },
+          "tier": {
+            "type": ["string", "null"],
+            "enum": ["standing", "per-instance", null],
+            "description": "The tool's DECLARED authorization tier (a tool property, so it is reported even when the kill-switch demoted its enforcement)."
+          },
+          "outcome": {
+            "enum": [
+              "authorized",
+              "approved",
+              "denied",
+              "cancelled",
+              "timeout",
+              "suppressed",
+              "out-of-scope",
+              "rejected-busy"
+            ]
+          },
+          "initiated_by": { "enum": ["model", "owner-command"] },
+          "reference": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "memory_hash": {
+      "type": ["string", "null"],
+      "description": "Content hash of the recall block this session received, as injected. Null when no block was injected (empty store, or a session that only ran event turns). Makes the memory state a session saw auditable."
+    },
+    "outcome": { "type": "string" },
+    "announceable": { "type": ["boolean", "null"] },
+    "turn_count": { "type": "integer", "minimum": 0 },
+    "model": { "type": ["string", "null"] },
+    "usage": {
+      "type": ["object", "null"],
+      "properties": {
+        "input_tokens": { "type": ["integer", "null"] },
+        "output_tokens": { "type": ["integer", "null"] },
+        "cache_read_input_tokens": {
+          "type": ["integer", "null"],
+          "description": "Cache-read input tokens (prompt caching); additive to the uncached input_tokens."
+        }
+      }
+    },
+
+    "identity_key": { "type": "string" },
+    "reason": { "type": "string" },
+    "event_id": { "type": "string" },
+
+    "tool": {
+      "type": "string",
+      "description": "Authorization records: the named action. A registered tool name for model-initiated decisions; the command itself (e.g. `/forget`) for owner-command receipts."
+    },
+    "tier": {
+      "type": ["string", "null"],
+      "enum": ["standing", "per-instance", null],
+      "description": "Authorization records: the tool's declared tier. Null for owner commands — a tier is a tool property and a command is not a tool."
+    },
+    "initiated_by": {
+      "enum": ["model", "owner-command"],
+      "description": "Authorization records: who initiated the mutation."
+    },
+    "reference": {
+      "type": ["string", "null"],
+      "description": "Authorization records: the gate's one-time invocation reference. Null for owner commands (no gate involvement — the gate governs model-initiated calls)."
+    },
+    "turn_type": {
+      "type": ["string", "null"],
+      "enum": ["owner", "event", "command", null],
+      "description": "Authorization records: the kind of turn the decision was made in. `command` means it ran outside any turn or session."
+    },
+    "detail": {
+      "type": ["string", "null"],
+      "description": "Authorization records: a bounded summary of the effect (owner commands name what changed, e.g. how many memories were removed)."
+    }
+  },
+
+  "allOf": [
+    {
+      "if": { "properties": { "record_type": { "const": "session" } } },
+      "then": { "required": ["trigger", "outcome", "tool_calls"] }
+    },
+    {
+      "if": { "properties": { "record_type": { "const": "suppression" } } },
+      "then": { "required": ["identity_key", "reason"] }
+    },
+    {
+      "if": { "properties": { "record_type": { "const": "authorization" } } },
+      "then": {
+        "required": ["tool", "outcome", "initiated_by"],
+        "properties": {
+          "outcome": {
+            "enum": [
+              "authorized",
+              "approved",
+              "denied",
+              "cancelled",
+              "timeout",
+              "suppressed",
+              "out-of-scope",
+              "rejected-busy"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

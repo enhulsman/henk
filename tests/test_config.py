@@ -227,3 +227,27 @@ def test_gate_config_exposes_no_widening_knob():
     from henk.config import GateConfig
 
     assert [f.name for f in dataclasses.fields(GateConfig)] == ["demote_standing"]
+
+
+# --- audit section: decoupled from event intake (task 3.2) -----------------
+
+
+def test_audit_path_defaults_to_the_events_scoped_key():
+    raw = _minimal_raw("+1")
+    raw["events"] = {"audit_path": "/data/audit/legacy.jsonl"}
+    config = Config.from_dict(raw, env={})
+    assert config.audit.path == "/data/audit/legacy.jsonl"
+
+
+def test_explicit_audit_path_wins_over_the_events_key():
+    raw = _minimal_raw("+1")
+    raw["events"] = {"audit_path": "/data/audit/legacy.jsonl"}
+    raw["audit"] = {"path": "/data/audit/new.jsonl"}
+    assert Config.from_dict(raw, env={}).audit.path == "/data/audit/new.jsonl"
+
+
+def test_audit_path_present_even_with_events_absent():
+    # Audit must exist in every supported configuration, rollback path included.
+    config = Config.from_dict(_minimal_raw("+1"), env={})
+    assert config.audit.path
+    assert config.events.enabled is False

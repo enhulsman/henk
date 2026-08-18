@@ -52,28 +52,28 @@ required.**
 
 ## 3. Receipts: durable, unconditional, threaded (before or with the first mutating tool)
 
-- [ ] 3.1 Tests from audit-log delta scenarios: `authorization` record durable at
+- [x] 3.1 Tests from audit-log delta scenarios: `authorization` record durable at
       decision time (SIGKILL-style: no graceful close, record on disk);
       per-instance decision recorded; standing `authorized` receipt;
       owner-command receipts (`/capture`; `/forget` with count); no-op commands
       write no receipt; receipts written with events disabled; session
       `approvals[]` never empty when a mutating tool was invoked; v3 records
       validate; v1/v2 records still validate
-- [ ] 3.2 Decouple audit from event intake: `audit.path` config (fallback
+- [x] 3.2 Decouple audit from event intake: `audit.path` config (fallback
       `events.audit_path`), `AuditLog` constructed unconditionally in
       `henk/runtime.py` (design D11)
-- [ ] 3.3 `authorization_record()` builder + immediate append at decision time;
+- [x] 3.3 `authorization_record()` builder + immediate append at decision time;
       gate decision recorder reporting (tool, tier, outcome, reference,
       turn_type, initiated_by) for every mutating invocation and mutating owner
       command
-- [ ] 3.4 Fix the verified defect: thread recorded entries into `_SessionAudit`
+- [x] 3.4 Fix the verified defect: thread recorded entries into `_SessionAudit`
       and pass `approvals=` in `AgentCore._write_audit_record` → `session_record`
-- [ ] 3.5 Test: acc-rotation receipt scoping — approvals recorded during a
+- [x] 3.5 Test: acc-rotation receipt scoping — approvals recorded during a
       triage acc do not leak into the continuation (interrogation) record
-- [ ] 3.6 `tool_calls.executed` flag derived by correlating with authorization
+- [x] 3.6 `tool_calls.executed` flag derived by correlating with authorization
       records (never from result text); explicit test for whether the SDK
       surfaces denied calls as ToolUseBlocks (verify, don't assume)
-- [ ] 3.7 Bump `SCHEMA_VERSION` to 3; commit `audit-record.v3.schema.json`
+- [x] 3.7 Bump `SCHEMA_VERSION` to 3; commit `audit-record.v3.schema.json`
       (authorization record type, approvals entry shape, executed flag,
       memory_hash); keep v1/v2 documents
 
