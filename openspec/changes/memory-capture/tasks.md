@@ -143,5 +143,5 @@ required.**
       owner go): inbox/memory survive container recreation on rp5; SDK
       denied-call ToolUseBlock visibility confirmed against the live SDK; deploy
       also picks up the pending cryptography lockfile rebuild
-- [ ] 7.5 Commit via git-commit-handler (publication rules; pre-commit hook);
+- [x] 7.5 Commit via git-commit-handler (publication rules; pre-commit hook);
       **no deploy — explicit owner go required**
