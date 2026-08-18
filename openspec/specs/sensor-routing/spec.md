@@ -1,7 +1,14 @@
 # sensor-routing Specification
 
 ## Purpose
-TBD - created by archiving change henk-events. Update Purpose after archive.
+What the homelab is allowed to tell Henk about, and how. Exactly one curated alert subset
+reaches a deny-all events topic — Gatus endpoint transitions plus owner-approved Grafana-managed
+rules — under a payload contract that lets triage name an incident without querying the sensor
+first and lets intake derive a stable alert identity. Two constraints protect the owner from the
+agent: routed critical alerts keep their pre-existing non-agent delivery path, because Henk
+applies cooldowns and a daily cap and is a single process that can be down, so it may never be
+the sole path for something critical; and routing config is convergent, so re-applying it
+changes nothing and preserves existing alert semantics.
 ## Requirements
 ### Requirement: Gatus alerts publish to the events topic
 Gatus SHALL be configured to publish endpoint failure and resolution alerts to the dedicated events topic on the vps ntfy instance, identifying the affected endpoint.

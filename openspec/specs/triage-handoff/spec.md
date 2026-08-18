@@ -1,7 +1,12 @@
 # triage-handoff Specification
 
 ## Purpose
-TBD - created by archiving change henk-events. Update Purpose after archive.
+The durable half of the attention contract: every triaged incident, cap-suppressed ones
+included, leaves a full handoff document — trigger, evidence, diagnosis with confidence,
+suggested fix, and how to resume — on a deny-all topic the owner pulls from with `henk-pickup`
+from any tailnet host. Suppression therefore costs the owner nothing but an interruption: the
+investigation still happened and is still retrievable. The publishing tool takes no topic,
+server, or recipient argument, so a handoff can only ever land in the one place.
 ## Requirements
 ### Requirement: Handoff doc published per triaged incident
 For every triaged incident (including cap-suppressed ones), Henk SHALL publish a handoff document to the dedicated deny-all handoffs topic via a registered notify-class `publish_handoff` tool. The document SHALL contain: the trigger event(s), the evidence gathered (tool findings), the diagnosis with confidence, the suggested fix, and pickup instructions for resuming the investigation.

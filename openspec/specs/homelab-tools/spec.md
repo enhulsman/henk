@@ -1,7 +1,13 @@
 # homelab-tools Specification
 
 ## Purpose
-TBD - created by archiving change henk-v1. Update Purpose after archive.
+Henk's hands: read-only views of the homelab (Gatus and Prometheus over the tailnet, never SSH),
+the owner's personal todos, and notify-class sends to fixed topics that take no destination
+argument. Two rules make the set trustworthy rather than merely useful. Failures are honest —
+a tool that could not reach its backend says so and never returns stale, cached-as-fresh, or
+invented data. And any tool backed by a store that mixes personal with work/Anamata content
+enforces a default-deny allowlist inside Henk's own process, so an unset allowlist surfaces
+nothing and a backend-side filter is never the boundary.
 ## Requirements
 ### Requirement: homelab_health read-only tool
 The system SHALL provide a `homelab_health` tool (class: read-only) that reports homelab status by querying the Gatus API (rp5:8080) and the Prometheus HTTP API (vps:9090) over the tailnet, returning a structured summary of endpoint up/down states and per-node memory, disk, and load. The tool SHALL NOT use SSH or any other host-level access.

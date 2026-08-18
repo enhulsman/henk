@@ -1,7 +1,12 @@
 # channel-adapter Specification
 
 ## Purpose
-TBD - created by archiving change henk-v1. Update Purpose after archive.
+The owner's way in and Henk's way out, and the first place the security posture bites: only the
+configured owner identity is ever processed, nothing else gets a reply, a read receipt, or even
+a typing indicator. The contract is channel-neutral by construction — receive, reply, send
+proactively, route approval keywords — so Signal lives behind one adapter and can be swapped
+without touching agent logic. Outbound messages are split at natural boundaries rather than
+truncated, and a proactive send cannot name a recipient at all.
 ## Requirements
 ### Requirement: Owner-only allowlist
 The channel layer SHALL process messages only from the configured owner identity (the owner's Signal number/UUID). Messages from any other sender SHALL be dropped without any reply, read receipt, or typing indicator, and the drop SHALL be logged with the sender identity for audit.

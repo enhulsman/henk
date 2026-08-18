@@ -51,7 +51,7 @@ When the agent attempts to invoke a mutating tool whose authorization tier is `p
 - **THEN** the prompt renders that value delimited and truncated inside the argument section, and it does not alter the prompt's structure or the keyword matching
 
 ### Requirement: Fail closed on timeout
-A pending approval SHALL expire after a configured timeout (default 5 minutes). Expiry SHALL count as denial: the tool is not executed and the agent turn resumes with a "timed out, not executed" result.
+A pending approval SHALL expire after a configured timeout (default 5 minutes). Expiry SHALL fail closed exactly as a denial does — the tool is not executed and the agent turn resumes with a "timed out, not executed" result — while remaining a distinct event: its receipt records the outcome `timeout`, not `denied`, so an owner who said no is never conflated with an owner who was away.
 
 #### Scenario: Owner does not respond
 - **WHEN** no owner response arrives within the timeout
