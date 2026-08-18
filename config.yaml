@@ -96,3 +96,27 @@ events:
   # would be ~1,920 a day. Each line carries the frame count since the previous
   # one, so the ~45s delivery cadence stays readable from the lines alone.
   liveness_report_interval_seconds: 3600
+
+# Durable store (memory + capture inbox). One SQLite file on the SAME volume as
+# the audit log above — no new mount, port, socket, ACL grant, or secret. Its own
+# section rather than an events-scoped key: memory and the inbox exist even with
+# event intake disabled.
+store:
+  # INSIDE the audit volume's mount point (henk_audit:/data/audit), not a sibling
+  # /data/store — a path outside the mount would live in the container's writable
+  # layer and be lost on recreation. Same volume, same backup allowlist entry.
+  path: "/data/audit/henk-store.db"
+  # Per-type FIFO caps. Adopted from the proven in-house memory design: a few
+  # dozen short facts is the working set; beyond that, recall stops being cheap.
+  memory_pinned_cap: 50 # owner-authored (/remember)
+  memory_agent_cap: 20 # agent-authored (store_memory)
+  # Per-fact length limit. Over-limit facts are REJECTED naming the limit, never
+  # truncated — a silently shortened memory is a wrong memory.
+  fact_length_limit: 500
+  # Bound on the rendered recall block (~2k tokens). 70 facts x 500 chars would be
+  # ~35KB of prompt per session; when the bound bites, the OLDEST facts are left
+  # out of the render (with a count) and nothing is deleted from the store.
+  recall_render_limit: 8000
+  # Oldest-first page size for /inbox and inbox_read. Not a cap: newer items are
+  # counted in the reply and stay reachable by draining or /inbox all.
+  inbox_page_size: 20

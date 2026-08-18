@@ -8,15 +8,15 @@ required.**
 
 ## 1. Store foundation
 
-- [ ] 1.1 Tests: `henk/store/` SQLite module — memories table (types, per-fact
+- [x] 1.1 Tests: `henk/store/` SQLite module — memories table (types, per-fact
       length limit rejection, caps, FIFO per type with evicted-content returned,
       restart survival) and inbox table (append, oldest-first list with
       remainder count, list-all, mark done, unknown id, no eviction), WAL mode,
       path from the new `store.path` config
-- [ ] 1.2 Implement `henk/store/`: schema creation, memory repository
+- [x] 1.2 Implement `henk/store/`: schema creation, memory repository
       (add/list/delete-by-substring-with-echo/trim-FIFO), inbox repository
       behind the `InboxStore` seam (design D1/D2/D9)
-- [ ] 1.3 Test: backend-seam behavior invariance — inbox tools pass identical
+- [x] 1.3 Test: backend-seam behavior invariance — inbox tools pass identical
       behavioral tests against the SQLite backend and a test double
 
 ## 2. Gate: tiers, turn scope, concurrency, prompts

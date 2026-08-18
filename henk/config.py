@@ -134,6 +134,36 @@ class PersonalDataConfig:
 
 
 @dataclass(frozen=True)
+class StoreConfig:
+    """Durable-store settings: memory caps, the fact limit, the recall bound.
+
+    Its own section rather than an ``events``-scoped key (design D11): memory and
+    the capture inbox exist whether or not event intake is enabled.
+
+    ``path`` sits INSIDE the directory the audit volume is mounted at
+    (``/data/audit``), not a sibling ``/data/store``: the compose file mounts
+    ``henk_audit:/data/audit``, so anything outside that directory would live in
+    the container's writable layer and vanish on recreation — the opposite of what
+    "memory and inbox stores share the backed-up audit volume" requires
+    (secure-deployment spec). Design D2's illustrative path is refined here for
+    that reason; the volume itself is unchanged.
+    Caps and limits are the proven in-house defaults (design D3); the render bound
+    caps per-session injection cost (70 facts x 500 chars would be ~35KB).
+    """
+
+    path: str = "/data/audit/henk-store.db"
+    memory_pinned_cap: int = 50
+    memory_agent_cap: int = 20
+    fact_length_limit: int = 500
+    recall_render_limit: int = 8000
+    inbox_page_size: int = 20
+
+    @property
+    def memory_caps(self) -> dict[str, int]:
+        return {"pinned": self.memory_pinned_cap, "agent": self.memory_agent_cap}
+
+
+@dataclass(frozen=True)
 class Secrets:
     """Credentials pulled from the environment. Values may be empty in tests."""
 
@@ -163,6 +193,7 @@ class Config:
     todo: EndpointConfig
     ntfy: NtfyConfig
     events: EventsConfig = field(default_factory=EventsConfig)
+    store: StoreConfig = field(default_factory=StoreConfig)
     personal_data: PersonalDataConfig = field(default_factory=PersonalDataConfig)
     secrets: Secrets = field(default_factory=Secrets)
 
@@ -248,6 +279,26 @@ class Config:
             ),
         )
 
+        store_sec = raw.get("store", {}) or {}
+        store = StoreConfig(
+            path=store_sec.get("path", StoreConfig.path),
+            memory_pinned_cap=int(
+                store_sec.get("memory_pinned_cap", StoreConfig.memory_pinned_cap)
+            ),
+            memory_agent_cap=int(
+                store_sec.get("memory_agent_cap", StoreConfig.memory_agent_cap)
+            ),
+            fact_length_limit=int(
+                store_sec.get("fact_length_limit", StoreConfig.fact_length_limit)
+            ),
+            recall_render_limit=int(
+                store_sec.get("recall_render_limit", StoreConfig.recall_render_limit)
+            ),
+            inbox_page_size=int(
+                store_sec.get("inbox_page_size", StoreConfig.inbox_page_size)
+            ),
+        )
+
         pd_sec = raw.get("personal_data", {}) or {}
         personal_data = PersonalDataConfig(
             todo_note_allowlist=tuple(pd_sec.get("todo_note_allowlist", []) or []),
@@ -291,6 +342,7 @@ class Config:
                 ),
             ),
             events=events,
+            store=store,
             personal_data=personal_data,
             secrets=Secrets.from_env(env),
         )
