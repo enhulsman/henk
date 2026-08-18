@@ -59,6 +59,7 @@ class CaptureTool(Tool):
             }
         },
         "required": ["text"],
+        "additionalProperties": False,
     }
 
     def __init__(self, inbox, *, source: str = "capture-tool") -> None:
@@ -101,6 +102,7 @@ class InboxReadTool(Tool):
                 ),
             }
         },
+        "additionalProperties": False,
     }
 
     def __init__(self, inbox, *, page_size: int = DEFAULT_PAGE_SIZE) -> None:

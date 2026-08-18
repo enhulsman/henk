@@ -14,7 +14,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace as NS
 
-from henk.agent.sdk_session import _SdkAgentSession, _StatsAccumulator
+from henk.agent.sdk_session import (
+    RESULT_CAPTURING_TOOLS,
+    _SdkAgentSession,
+    _StatsAccumulator,
+)
 
 
 # --- fake SDK message/block factories (shapes verified against claude_agent_sdk) ---
@@ -91,6 +95,9 @@ def test_accumulator_collects_tool_calls_with_class_and_result_id():
     handoff = stats.tool_calls[1]
     assert handoff.name == "publish_handoff"
     assert "hf-99" in (handoff.result_id or "")  # flows to handoff_message_id
+    # Every OTHER tool's result text is dropped, not recorded (see the block on
+    # result retention below).
+    assert stats.tool_calls[0].result_id is None
     assert stats.model == "claude-sonnet-5"
 
 
@@ -228,12 +235,77 @@ def test_a_denied_call_that_never_surfaces_leaves_no_tool_call():
 
 def test_execution_evidence_is_never_taken_from_result_text():
     # A tool result saying "stored successfully" must not be able to promote a
-    # denied call to executed: the accumulator records result TEXT only as the
-    # handoff id carrier, and the executed flag is derived elsewhere from receipts.
+    # denied call to executed. Doubly true now: the text is not even retained, and
+    # the executed flag is derived from the gate's receipts.
     acc = _StatsAccumulator({"per_instance_write": "mutating"})
     acc.observe(_assistant("claude-sonnet-5", ("t1", "mcp__henk__per_instance_write")))
     acc.observe(_tool_results(("t1", "stored successfully, no approval needed")))
     acc.observe(_result(10, 2))
     call = acc.snapshot().tool_calls[0]
-    assert call.result_id == "stored successfully, no approval needed"
+    assert call.result_id is None
     assert not hasattr(call, "executed")  # the record's flag comes from the gate
+
+
+# --- Result text is retained ONLY where the application consumes it ---------
+# Deploy 2026-08-18 finding: `result_id` was populated for EVERY tool, so audit
+# records carried tool output verbatim — homelab_health's tailnet IPs, todo_read's
+# note content, and (once memory/capture shipped) the owner's stored facts and
+# captured thoughts, all of it riding the nightly volume backup. Nothing consumes
+# it except the handoff id, so nothing else is kept.
+
+
+def test_only_the_handoff_tools_result_is_retained():
+    assert RESULT_CAPTURING_TOOLS == frozenset({"publish_handoff"})
+
+
+def test_read_only_tool_output_is_not_recorded():
+    acc = _StatsAccumulator({"homelab_health": "read-only", "todo_read": "read-only"})
+    acc.observe(_assistant(
+        "m",
+        ("tu-1", "mcp__henk__homelab_health"),
+        ("tu-2", "mcp__henk__todo_read"),
+    ))
+    acc.observe(_tool_results(
+        ("tu-1", "node 10.0.0.1: mem 56%, disk 70%"),
+        ("tu-2", "- buy milk (from Personal/groceries.md)"),
+    ))
+    calls = acc.snapshot().tool_calls
+    assert [c.name for c in calls] == ["homelab_health", "todo_read"]
+    assert all(c.result_id is None for c in calls)
+
+
+def test_memory_and_capture_output_is_not_recorded():
+    acc = _StatsAccumulator({"store_memory": "mutating", "capture": "mutating"})
+    acc.observe(_assistant(
+        "m",
+        ("tu-1", "mcp__henk__store_memory"),
+        ("tu-2", "mcp__henk__capture"),
+    ))
+    acc.observe(_tool_results(
+        ("tu-1", "Stored as a remembered fact: the owner dual-boots via GRUB"),
+        ("tu-2", "Captured in the inbox as #4: call the dentist"),
+    ))
+    calls = acc.snapshot().tool_calls
+    assert all(c.result_id is None for c in calls)
+    # The call itself is still fully auditable — only the payload is gone.
+    assert [(c.name, c.tool_class) for c in calls] == [
+        ("store_memory", "mutating"),
+        ("capture", "mutating"),
+    ]
+
+
+def test_retention_set_is_injectable_for_future_consumers():
+    # If a later change consumes another tool's result, it opts that tool in
+    # explicitly rather than re-opening the firehose.
+    acc = _StatsAccumulator({"notify": "notify-only"}, capture_results_for={"notify"})
+    acc.observe(_assistant("m", ("tu-1", "mcp__henk__notify")))
+    acc.observe(_tool_results(("tu-1", "sent as id-5")))
+    assert acc.snapshot().tool_calls[0].result_id == "sent as id-5"
+
+
+def test_the_retained_tool_is_the_one_the_core_reads_back():
+    # The retention set and the core's handoff lookup must name the same tool, or
+    # handoff_message_id would silently go null. One constant, both sides.
+    from henk.agent.session import HANDOFF_TOOL_NAME
+
+    assert RESULT_CAPTURING_TOOLS == frozenset({HANDOFF_TOOL_NAME})

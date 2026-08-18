@@ -41,7 +41,10 @@
         "properties": {
           "name": { "type": "string" },
           "tool_class": { "type": ["string", "null"] },
-          "result_id": { "type": ["string", "null"] },
+          "result_id": {
+            "type": ["string", "null"],
+            "description": "The tool's returned identifier, retained ONLY for tools whose result the application consumes — in practice `publish_handoff`, whose value becomes this record's handoff_message_id. Null for every other tool: results are not recorded, so no tool output (node addresses, note content, stored memories, captured thoughts) enters the audit log."
+          },
           "executed": {
             "type": ["boolean", "null"],
             "description": "True when the invocation was permitted to proceed. Derived by correlating the invocation with this session's authorization records — never inferred from tool-result text. Read-only and notify-only calls are true by construction: they bypass the gate."

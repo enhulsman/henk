@@ -12,6 +12,13 @@ from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 
+#: The one tool whose RESULT the application reads rather than merely recording:
+#: its return value becomes the audit record's ``handoff_message_id``. Defined here,
+#: in the neutral seam both sides depend on, so the SDK wrapper (which decides whose
+#: result to retain) and the agent core (which reads it back out) cannot drift apart.
+HANDOFF_TOOL_NAME = "publish_handoff"
+
+
 @dataclass(frozen=True)
 class ToolCallRecord:
     """One tool invocation observed during a session, for the audit record."""

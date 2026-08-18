@@ -45,6 +45,7 @@ class StoreMemoryTool(Tool):
             }
         },
         "required": ["content"],
+        "additionalProperties": False,
     }
 
     def __init__(self, memories) -> None:

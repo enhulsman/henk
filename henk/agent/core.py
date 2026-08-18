@@ -30,7 +30,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from henk.agent.session import AgentSession, SessionFactory, SessionStats
+from henk.agent.session import (
+    HANDOFF_TOOL_NAME,
+    AgentSession,
+    SessionFactory,
+    SessionStats,
+)
 from henk.agent.triage import (
     check_triage_arc,
     compose_event_turn_content,
@@ -505,7 +510,7 @@ class AgentCore:
                  "result_id": call.result_id,
                  "executed": self._was_executed(call, pending_outcomes)}
             )
-            if call.name == "publish_handoff" and call.result_id:
+            if call.name == HANDOFF_TOOL_NAME and call.result_id:
                 handoff_id = call.result_id
         if acc is None:
             return True, handoff_id  # defensive; callers always pass a live acc

@@ -115,3 +115,25 @@ def test_default_system_prompt_frames_recall_as_data_and_names_the_taint_remedy(
     assert "never instructions" in prompt
     # So a refused write is relayed as a stated constraint, not improvised.
     assert "incident has touched" in prompt
+
+
+# --- Parameter schemas are uniformly strict (post-deploy follow-up) --------
+
+
+def test_every_tool_schema_is_closed_to_unexpected_properties(registry):
+    # `additionalProperties: false` was set on every tool predating memory-capture
+    # and omitted on the three it added — harmless (both write tools absorb extra
+    # keys) but an inconsistency that only an assertion keeps from recurring.
+    for tool in registry.tools():
+        schema = tool.parameters
+        assert schema.get("type") == "object", tool.name
+        assert schema.get("additionalProperties") is False, tool.name
+
+
+def test_tools_taking_arguments_declare_them_required_or_optional_explicitly(registry):
+    for tool in registry.tools():
+        properties = tool.parameters.get("properties", {})
+        required = set(tool.parameters.get("required", []))
+        assert required <= set(properties), tool.name
+        for name, spec in properties.items():
+            assert spec.get("description"), f"{tool.name}.{name} has no description"

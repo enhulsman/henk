@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from henk.agent.permission import decide_tool_permission, pretooluse_block_decision
-from henk.agent.session import SessionStats, ToolCallRecord
+from henk.agent.session import HANDOFF_TOOL_NAME, SessionStats, ToolCallRecord
 from henk.gate.approval import ApprovalGate
 from henk.tools.base import ToolRegistry
 
@@ -37,6 +37,20 @@ logger = logging.getLogger("henk.agent.sdk_session")
 
 #: In-process MCP server name Henk tools are exposed under.
 MCP_SERVER_NAME = "henk"
+
+#: The only tools whose RESULT TEXT is kept in the session record. Everything else
+#: contributes its name, class and outcome and nothing more.
+#:
+#: Deploy 2026-08-18 found the accumulator retaining every tool's result verbatim,
+#: so audit records carried `homelab_health`'s tailnet IPs, `todo_read`'s note
+#: content, and — once memory and capture shipped — the owner's stored facts and
+#: captured thoughts, all of it riding the nightly volume backup. Nothing consumes
+#: any of that: the application reads exactly one result, `publish_handoff`'s
+#: message id, which becomes the record's `handoff_message_id`. So the record is
+#: metadata plus that id, which is what "the audit log says what Henk did, not what
+#: was said" has always claimed. A later change that needs another tool's result
+#: opts it in here rather than re-opening the firehose.
+RESULT_CAPTURING_TOOLS = frozenset({HANDOFF_TOOL_NAME})
 
 #: Built-ins the SDK/bundled-CLI ships. Listed in ``disallowed_tools`` to strip
 #: them from the model's context (hygiene: the model won't see or attempt them).
@@ -267,8 +281,16 @@ class _StatsAccumulator:
     from every production audit record before ``stats()`` existed.
     """
 
-    def __init__(self, tool_classes: Mapping[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        tool_classes: Mapping[str, str] | None = None,
+        *,
+        capture_results_for: "frozenset[str] | set[str] | None" = None,
+    ) -> None:
         self._tool_classes = dict(tool_classes or {})
+        self._capture_results_for = frozenset(
+            RESULT_CAPTURING_TOOLS if capture_results_for is None else capture_results_for
+        )
         self._tool_uses: list[tuple[str, str]] = []  # (tool_use_id, bare name)
         self._results: dict[str, str] = {}  # tool_use_id → result text
         self._model: str | None = None
@@ -312,7 +334,11 @@ class _StatsAccumulator:
             ToolCallRecord(
                 name=name,
                 tool_class=self._tool_classes.get(name),
-                result_id=self._results.get(tool_use_id) or None,
+                result_id=(
+                    self._results.get(tool_use_id) or None
+                    if name in self._capture_results_for
+                    else None
+                ),
             )
             for tool_use_id, name in self._tool_uses
         )
