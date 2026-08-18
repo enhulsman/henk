@@ -9,6 +9,7 @@ without touching agent logic — design D1).
 """
 
 from henk.store.db import Store
+from henk.store.factory import HenkStores, build_stores
 from henk.store.errors import (
     ContentTooLongError,
     EmptyContentError,
@@ -23,6 +24,7 @@ from henk.store.inbox import (
     InboxPage,
     InboxStore,
     SqliteInboxStore,
+    format_created_at,
 )
 from henk.store.memory import (
     AGENT,
@@ -37,6 +39,8 @@ from henk.store.memory import (
 
 __all__ = [
     "AGENT",
+    "HenkStores",
+    "build_stores",
     "ContentTooLongError",
     "DEFAULT_CAPS",
     "DEFAULT_LENGTH_LIMIT",
@@ -55,5 +59,6 @@ __all__ = [
     "PINNED",
     "SqliteInboxStore",
     "Store",
+    "format_created_at",
     "StoreError",
 ]

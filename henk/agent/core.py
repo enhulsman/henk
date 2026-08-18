@@ -5,7 +5,10 @@ Responsibilities (v1.2):
   and event turns (proactive triage path) never run concurrently (design D5);
 - one session per conversation, reused across follow-ups for context continuity;
 - event turns arrive with delimited-untrusted-data + triage framing composed by
-  the app layer; owner turns get neither (agent-core delta);
+  the app layer; owner turns get neither, and instead the first owner turn of each
+  session is prefixed with the memory recall block (agent-core delta);
+- owner commands are dispatched app-side before any session exists, so a
+  deterministic action never costs a model turn (design D8);
 - event-turn output routes to the proactive owner-directed send, suppressed for
   non-announceable (cap-overflow) incidents;
 - every agent turn is framed for the gate with its turn type, announceability and
@@ -110,6 +113,8 @@ class AgentCore:
         handoff_sink: Callable[[str, str], None] | None = None,
         gate: Any | None = None,
         receipts: Any | None = None,
+        commands: Any | None = None,
+        recall: Any | None = None,
     ) -> None:
         self._factory = factory
         self._channel = channel
@@ -144,6 +149,16 @@ class AgentCore:
         self._receipts = receipts
         if receipts is not None:
             receipts.sink = self._note_receipt
+        # App-side owner commands (design D8): deterministic, instant, zero tokens,
+        # and exempt from session taint because the text never passes through the
+        # model. Optional so the core still runs with no store configured.
+        self._commands = commands
+        # Memory recall provider; None disables injection entirely.
+        self._recall = recall
+        # Whether THIS session has already received its recall block. Keyed on the
+        # first owner TURN rather than session creation, so an owner follow-up
+        # continuing an event-started session still gets memory (design D3).
+        self._recall_given = False
         self._session: AgentSession | None = None
         self._last_activity: float | None = None
         self._acc: _SessionAudit | None = None
@@ -201,10 +216,18 @@ class AgentCore:
             await self._channel.send(RESET_CONFIRMATION)
             return
 
+        command_reply = self._handle_command(text)
+        if command_reply is not None:
+            # Handled app-side: no session, no agent turn, no tokens, and no gate
+            # involvement (the gate governs model-initiated calls).
+            await self._channel.send(command_reply)
+            return
+
         await self._ensure_session("owner-message")
+        content = self._with_recall(text)
         try:
             with self._framed_turn(TurnType.OWNER):
-                reply = await self._session.run_turn(text)  # type: ignore[union-attr]
+                reply = await self._session.run_turn(content)  # type: ignore[union-attr]
         except Exception:
             logger.exception("agent turn failed")
             if self._acc is not None:
@@ -318,6 +341,45 @@ class AgentCore:
             "cap — retrieve them with henk-pickup.)"
         )
 
+    # --- Owner commands + recall (designs D8 / D3) ------------------------
+
+    def _handle_command(self, text: str) -> str | None:
+        """Return the reply for a recognized owner command, else None.
+
+        A broken command must not kill the queue worker or leave the owner with
+        silence, so a failure becomes the honest error reply — the command is still
+        "handled", just unsuccessfully.
+        """
+        if self._commands is None:
+            return None
+        try:
+            return self._commands.handle(text)
+        except Exception:
+            logger.exception("owner command failed")
+            return self._error_reply
+
+    def _with_recall(self, text: str) -> str:
+        """Prefix the recall block to the first owner turn of this session.
+
+        A read failure is logged and the turn proceeds without a block — memory is
+        continuity, not a precondition for talking. The "already given" flag is NOT
+        set in that case, so a transient failure does not cost the session its
+        memory for good.
+        """
+        if self._recall is None or self._recall_given:
+            return text
+        try:
+            block = self._recall.block()
+        except Exception:
+            logger.error("could not read memory for recall injection", exc_info=True)
+            return text
+        self._recall_given = True
+        if block is None:
+            return text  # empty store injects nothing
+        if self._acc is not None:
+            self._acc.memory_hash = block.content_hash
+        return f"{block.text}\n\n{text}"
+
     # --- Receipts (design D5) ---------------------------------------------
 
     def _note_receipt(self, record: dict) -> None:
@@ -372,6 +434,7 @@ class AgentCore:
             self._session = self._factory.create()
             self._last_activity = now
             self._session_tainted = False  # a brand-new session; no incident in it
+            self._recall_given = False
             self._acc = _SessionAudit(trigger=trigger)
         elif self._acc is not None and self._acc.flushed:
             # Reusing a session whose event-triage record already flushed (D3): the
@@ -391,6 +454,9 @@ class AgentCore:
         self._last_activity = self._clock()
         # The ONLY way an event turn enters a session, so taint cannot be missed.
         self._session_tainted = True
+        # The event turn itself never carries memory, but the owner follow-up this
+        # session is kept open for does.
+        self._recall_given = False
         self._acc = _SessionAudit(trigger="event")
 
     async def _close_session(self) -> None:
@@ -401,6 +467,7 @@ class AgentCore:
         self._session = None
         self._acc = None
         self._session_tainted = False
+        self._recall_given = False
         # An event-triage record was already flushed at triage completion (D3);
         # only owner sessions (and any un-flushed acc) write their record here.
         if acc is not None and not acc.flushed:

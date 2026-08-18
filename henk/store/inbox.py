@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
 from henk.store.db import Store
@@ -49,6 +50,20 @@ class InboxStore(Protocol):
     def list_open(self, *, limit: int | None = DEFAULT_PAGE_SIZE) -> InboxPage: ...
 
     def mark_done(self, item_id: int) -> InboxItem | None: ...
+
+
+def format_created_at(created_at: float) -> str:
+    """Render an item's capture time for a human (and for the model).
+
+    Lives beside the item type because both read-back surfaces — the `inbox_read`
+    tool and the `/inbox` command — must render it the same way; a raw epoch float
+    tells the owner nothing and invites the model to invent a date.
+    """
+    try:
+        stamp = datetime.fromtimestamp(float(created_at), tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):  # pragma: no cover - absurd clocks
+        return "unknown time"
+    return stamp.strftime("%Y-%m-%d %H:%M UTC")
 
 
 def _row_to_item(row: sqlite3.Row) -> InboxItem:

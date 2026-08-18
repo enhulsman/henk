@@ -7,19 +7,34 @@ import logging
 import httpx
 
 from henk.config import Config
-from henk.tools.base import Tool, ToolClass, ToolRegistry, ToolResult
+from henk.store import HenkStores, build_stores
+from henk.tools.base import (
+    AuthorizationTier,
+    Tool,
+    ToolClass,
+    ToolRegistry,
+    ToolResult,
+    TurnType,
+)
+from henk.tools.capture import CaptureTool, InboxReadTool
 from henk.tools.homelab_health import HomelabHealthTool
+from henk.tools.memory import StoreMemoryTool
 from henk.tools.notify import NotifyTool
 from henk.tools.publish_handoff import PublishHandoffTool
 from henk.tools.taiga_read import TaigaReadTool
 from henk.tools.todo_read import TodoReadTool
 
 __all__ = [
+    "AuthorizationTier",
     "Tool",
     "ToolClass",
     "ToolRegistry",
     "ToolResult",
+    "TurnType",
+    "CaptureTool",
     "HomelabHealthTool",
+    "InboxReadTool",
+    "StoreMemoryTool",
     "TaigaReadTool",
     "TodoReadTool",
     "NotifyTool",
@@ -31,10 +46,24 @@ logger = logging.getLogger("henk.tools")
 
 
 def build_production_registry(
-    config: Config, client: httpx.AsyncClient
+    config: Config,
+    client: httpx.AsyncClient,
+    *,
+    stores: HenkStores | None = None,
 ) -> ToolRegistry:
-    """The production toolset: homelab_health + todo_read (read), notify, plus
-    publish_handoff for triage. Zero mutating tools.
+    """The production toolset: reads, notify-class sends, and the durable writes.
+
+    Mutating tools live here now (approval-gate delta, owner-blessed reversal of
+    "v1 ships no mutating tools"): ``store_memory`` and ``capture`` write into
+    Henk's own capped/append-only stores, both at the **standing** tier and both
+    **owner-turn-only**, so they execute without a prompt but never during an event
+    turn, never in a session an incident has touched, and never without a durable
+    receipt. ``inbox_read`` is their read-only counterpart.
+
+    ``stores`` should be passed by any caller that also uses the repositories
+    itself — the runtime does, because `/remember` and recall must read and write
+    the same instances the tool does. When omitted, a fresh set is built from
+    config (correct, but a second connection to the same file).
 
     ``todo_read`` is registered behind a **default-deny note-path allowlist**
     (personal-data-scoping). The obsidian vault mixes personal and work/Anamata
@@ -50,6 +79,7 @@ def build_production_registry(
     registered until that project-id filter is implemented. Its class and tests are
     kept for that follow-up.
     """
+    stores = stores or build_stores(config.store)
     registry = ToolRegistry()
     registry.register(
         HomelabHealthTool(
@@ -92,5 +122,10 @@ def build_production_registry(
             token=config.secrets.ntfy_token,
             timeout=config.ntfy.timeout_seconds,
         )
+    )
+    registry.register(StoreMemoryTool(stores.memories))
+    registry.register(CaptureTool(stores.inbox))
+    registry.register(
+        InboxReadTool(stores.inbox, page_size=config.store.inbox_page_size)
     )
     return registry

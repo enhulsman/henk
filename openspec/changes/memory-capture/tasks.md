@@ -79,29 +79,29 @@ required.**
 
 ## 4. Memory capability
 
-- [ ] 4.1 Tests from memory-store delta scenarios: commands (`/remember`,
+- [x] 4.1 Tests from memory-store delta scenarios: commands (`/remember`,
       `/forget` substring + bounded echo + multi-match + no-match, `/memories`,
       empty remember, over-limit rejection, eviction named in confirmation),
       `store_memory` (agent-type, empty fails, over-limit fails, standing
       receipt), untrusted-input negative paths (event payload cannot plant a
       memory; tainted-session content never reaches later recall)
-- [ ] 4.2 Owner command dispatch in `AgentCore._process_owner` extending the
+- [x] 4.2 Owner command dispatch in `AgentCore._process_owner` extending the
       `/new` pattern (agent-core delta), wired to the memory repository, with
       command receipts per D5
-- [ ] 4.3 `store_memory` tool (mutating, standing, owner-turn-only) registered
+- [x] 4.3 `store_memory` tool (mutating, standing, owner-turn-only) registered
       in the production toolset
-- [ ] 4.4 Tests + implementation: recall block — first owner turn per session
+- [x] 4.4 Tests + implementation: recall block — first owner turn per session
       (including owner follow-up in an event-started session; never event
       turns), delimited typed markdown newest-first within groups, 8,000-char
       render bound with omission count (store intact), hash of the block as
       injected, hash into the session audit record, empty store injects nothing
-- [ ] 4.5 Tests + implementation: memory store failure modes — unreadable store
+- [x] 4.5 Tests + implementation: memory store failure modes — unreadable store
       does not block the turn (no recall block, error logged); failed writes
       never report success
 
 ## 5. Capture capability
 
-- [ ] 5.1 Tests from capture-inbox delta scenarios: capture durability (SIGKILL
+- [x] 5.1 Tests from capture-inbox delta scenarios: capture durability (SIGKILL
       after result), empty capture fails, no approval prompt (untainted owner
       turn), `/capture` command (no agent turn, confirmation with id, works
       mid-triage), read-back oldest-first 20 + "and N newer", `/inbox all`,
@@ -109,21 +109,21 @@ required.**
       deleted, no eviction under growth, store-reopen persistence, failure
       modes (failed capture never claims success; unreadable inbox is not
       "empty")
-- [ ] 5.2 `capture` tool (mutating, standing, owner-turn-only) + `inbox_read`
+- [x] 5.2 `capture` tool (mutating, standing, owner-turn-only) + `inbox_read`
       tool (read-only) over the `InboxStore` seam; register both in the
       production toolset
-- [ ] 5.3 `/capture`, `/inbox`, `/inbox all`, `/inbox done <id>` owner commands
+- [x] 5.3 `/capture`, `/inbox`, `/inbox all`, `/inbox done <id>` owner commands
       in the dispatch, with receipts for the mutating ones
 
 ## 6. Config and system prompt
 
-- [ ] 6.1 Config: `store` section (path, memory caps, fact length limit, render
+- [x] 6.1 Config: `store` section (path, memory caps, fact length limit, render
       bound), `audit` section (path with events fallback), standing-demotion
       flag — additive keys with safe defaults, no new secret
-- [ ] 6.2 Update the system prompt's tool enumeration (config default) for
+- [x] 6.2 Update the system prompt's tool enumeration (config default) for
       `store_memory`, `capture`, `inbox_read`, and the owner command set; keep
       the honest-capability framing
-- [ ] 6.3 Test: production registry contains exactly the intended toolset with
+- [x] 6.3 Test: production registry contains exactly the intended toolset with
       correct classes, tiers, and turn scopes (replaces the old "registry stays
       read-only" assertion deliberately)
 
@@ -138,7 +138,7 @@ required.**
       the merge). Note: "Schema is versioned" deliberately subsumes the old
       "readers SHALL be able to distinguish records across versions" clause via
       the prior-documents-remain-committed obligation — not an accidental drop
-- [ ] 7.3 Full test suite green; `openspec validate --all` clean
+- [x] 7.3 Full test suite green; `openspec validate --all` clean
 - [ ] 7.4 Deploy-smoke checklist (deploy-verified items, ONLY after the explicit
       owner go): inbox/memory survive container recreation on rp5; SDK
       denied-call ToolUseBlock visibility confirmed against the live SDK; deploy

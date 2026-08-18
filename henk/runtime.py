@@ -14,7 +14,9 @@ from pathlib import Path
 
 import httpx
 
+from henk.agent.commands import OwnerCommands
 from henk.agent.core import AgentCore
+from henk.agent.recall import MemoryRecall
 from henk.agent.sdk_session import SdkSessionFactory
 from henk.app import App, Dispatcher
 from henk.audit import AuditLog, MutationReceipts, read_audit_records
@@ -31,6 +33,7 @@ from henk.events.intake import (
 )
 from henk.events.pipeline import EventPipeline, PipelineConfig
 from henk.gate.approval import ApprovalGate
+from henk.store import build_stores
 from henk.tools import build_production_registry
 
 logger = logging.getLogger("henk.runtime")
@@ -62,7 +65,11 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
     per-conversation on demand.
     """
     client = httpx.AsyncClient()
-    registry = build_production_registry(config, client)
+    # One store, shared: the tools, the owner commands and recall must all read and
+    # write the same repositories, or `/remember` and `store_memory` would disagree
+    # about what Henk knows. Nothing is opened here — Store connects lazily.
+    stores = build_stores(config.store)
+    registry = build_production_registry(config, client, stores=stores)
 
     bridge = SignalCliRestBridge(config.signal.bridge_url, config.signal.account)
     adapter = SignalAdapter(
@@ -134,6 +141,16 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         gate=gate,
         # Fans model-initiated receipts into the session record's approvals[].
         receipts=receipts,
+        # Owner commands run app-side, before any session exists, and write their
+        # own receipts — they are owner-authored input, so no gate is involved (D8).
+        commands=OwnerCommands(
+            memories=stores.memories,
+            inbox=stores.inbox,
+            receipts=receipts,
+            inbox_page_size=config.store.inbox_page_size,
+        ),
+        # Memory recall for the first owner turn of each session (D3).
+        recall=MemoryRecall(stores.memories, limit=config.store.recall_render_limit),
     )
     dispatcher = Dispatcher(AllowlistFilter(config.owner.id), gate, core)
 

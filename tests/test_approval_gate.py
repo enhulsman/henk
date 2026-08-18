@@ -10,17 +10,14 @@ from __future__ import annotations
 
 import asyncio
 
-import httpx
 import pytest
 
-from henk.config import Config
 from henk.gate.approval import (
     ApprovalGate,
     ApprovalOutcome,
     Classification,
     gated_invoke,
 )
-from henk.tools import build_production_registry
 from henk.tools.base import (
     AuthorizationTier,
     Tool,
@@ -30,7 +27,6 @@ from henk.tools.base import (
     TurnType,
 )
 from tests.conftest import FakeChannel
-from tests.test_config import SAMPLE
 
 
 class SpyMutatingTool(Tool):
@@ -80,26 +76,6 @@ def test_unclassified_tool_rejected_naming_it():
     registry = ToolRegistry()
     with pytest.raises(ValueError, match="no_class"):
         registry.register(Unclassified())
-
-
-def test_production_registry_has_no_mutating_tools():
-    async def handler(request):  # pragma: no cover - never called at registration
-        return httpx.Response(200)
-
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    registry = build_production_registry(Config.load(SAMPLE, env={}), client)
-    assert registry.has_mutating() is False
-    # todo_read is re-registered behind a default-deny note-path allowlist
-    # (personal-data-scoping). taiga_read stays deferred until its project-id filter
-    # exists. publish_handoff (henk-events v1.2) is notify-class, so the registry is
-    # still zero mutating.
-    assert set(registry.names()) == {
-        "homelab_health",
-        "notify",
-        "publish_handoff",
-        "todo_read",
-    }
-    assert "taiga_read" not in registry.names()
 
 
 # --- Read-only bypass -----------------------------------------------------

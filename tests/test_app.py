@@ -128,3 +128,32 @@ async def test_pending_approval_unrelated_fails_closed_then_requeues():
     assert "cancelled" in blocked and "not executed" in blocked
     # ...and the unrelated message was NOT swallowed — it ran as a later turn.
     assert channel.sent.index(blocked) < channel.sent.index("echo:what's up?")
+
+
+async def test_command_during_pending_approval_fails_the_action_closed_then_runs():
+    # agent-core delta: a command arriving while an approval is pending is
+    # classified by the GATE first — as an unrelated message it fails the pending
+    # action closed, and is only then handled as a command. It must not be
+    # swallowed, and it must not be mistaken for an approval keyword.
+    from henk.agent.commands import OwnerCommands
+    from tests.test_store_seam import FakeInboxStore
+
+    channel, gate, factory, core, dispatcher, spy = _wire()
+    inbox = FakeInboxStore()
+    inbox.append("something to drain")
+    core._commands = OwnerCommands(inbox=inbox)
+    worker = asyncio.create_task(core.run())
+
+    await dispatcher.on_inbound(_msg("mutate"))
+    await _until(gate.has_pending)
+
+    await dispatcher.on_inbound(_msg("/inbox"))
+    await _until(lambda: any("something to drain" in s for s in channel.sent))
+    await _cancel(worker)
+
+    assert spy.calls == []  # the pending mutation failed closed
+    blocked = next(s for s in channel.sent if s.startswith("blocked:"))
+    assert "cancelled" in blocked
+    listing = next(s for s in channel.sent if "something to drain" in s)
+    assert channel.sent.index(blocked) < channel.sent.index(listing)
+    assert factory.created == 1  # the command itself started no session

@@ -1,17 +1,24 @@
 # Henk — "Homie Henk"
 
 A personal homelab agent on the **Claude Agent SDK**, reached over **Signal**,
-wired to read-only homelab surfaces. Ask "is everything up?" or "what's on my
-todo list?" from your daily messenger; Henk answers using a small, closed
-toolset. It doubles as a testbed for agent patterns (tool scoping, approval
-flows) that transfer to work.
+wired to read-only homelab surfaces plus his own durable memory and capture inbox.
+Ask "is everything up?" or "what's on my todo list?" from your daily messenger;
+Henk answers using a small, closed toolset. It doubles as a testbed for agent
+patterns (tool scoping, authorization tiers, approval flows) that transfer to
+work.
 
 As of **v1.2 (henk-events)** Henk is also **event-driven**: homelab sensors
 (Gatus + a curated Prometheus subset via Grafana) publish to a deny-all ntfy
 topic that Henk subscribes to. An incident starts a triage session and an
 *unprompted* Signal conversation ending in a triage arc — diagnosis + confidence,
-suggested fix, pickup path — that the owner can interrogate. Still **zero
-mutations**: every tool is read-only or notify-class.
+suggested fix, pickup path — that the owner can interrogate.
+
+As of **memory-capture** Henk has state that outlives a conversation: a capped
+store of short facts recalled into every owner conversation, and a durable capture
+inbox. These are his first **mutating** tools, both at the *standing* tier —
+they act without asking, and every call leaves a durable receipt in the audit log.
+Both are **owner-turn-only**: they are refused during incident triage and in any
+conversation an incident has touched.
 
 See `openspec/specs/` (and archived changes under `openspec/changes/archive/`)
 for the full design; this README is the operator runbook.
@@ -25,10 +32,26 @@ for the full design; this README is the operator runbook.
   host-touching SDK built-in is stripped, and a default-deny permission callback
   denies anything not in the registry — so an unknown/built-in tool is refused
   even if the SDK adds new ones.
-- **Read-only by default, approval-gated mutations.** v1 ships zero mutating
-  tools. The approval gate exists and is tested: any mutating tool is routed
-  through inline owner approval (fail-closed on deny/timeout/unrelated), keyed on
-  the registry so *registering* a write tool forces gating.
+- **Two-axis authorization for every mutation.** A mutating tool declares, in
+  code, an **authorization tier** — `standing` (executes without prompting,
+  receipt always) or `per-instance` (inline owner approval, fail-closed on
+  deny/timeout/unrelated/busy) — and a **turn scope** (owner-only by default).
+  The third tier, *never*, is simply not being registered. The registry refuses a
+  mutating tool missing either declaration, so *registering* a write tool forces
+  the gate. Configuration can only **narrow** (`gate.demote_standing` demotes
+  every standing action to per-instance); nothing in config can widen a tier,
+  widen a scope, or register a tool.
+- **Untrusted input can never drive a write.** A session that has processed an
+  event turn is *tainted* for its lifetime: an owner-turn-only mutation is denied
+  in that session even on owner turns, because a write persists into every future
+  conversation while a misleading reply misleads once, visibly. Reads (memory
+  recall, `inbox_read`) stay allowed there — Henk's outputs are structurally
+  owner-only. Owner commands are exempt: they never pass through the model.
+- **Receipts, not just prompts.** Every authorization decision — standing,
+  approved, denied, cancelled, timed out, suppressed, out-of-scope, rejected-busy
+  — is appended to the audit log *at decision time*, independent of graceful
+  shutdown and of whether event intake is enabled. Mutating owner commands write
+  one too. An agent that acts without asking is more accountable, not less.
 - **Least-privilege network.** Own tailnet identity (`tag:henk`) with egress only
   to the four service ports it uses; no inbound; no SSH.
 - **Scoped secrets only.** No `~/.ssh`, no broad API keys, no work/Anamata
@@ -140,11 +163,12 @@ existing `henk_audit` volume (already in the rp5 backup allowlist).
 | Path | What |
 |---|---|
 | `henk/channel/` | Channel-neutral contract, owner allowlist, Signal adapter (the only Signal-aware module) |
-| `henk/gate/` | Approval gate (classification, inline prompt, approve/deny/timeout, fail-closed) |
-| `henk/agent/` | Agent core (typed turns, session lifecycle, serial queue, reset/idle), triage framing + arc check, permission decision, SDK wrapper |
+| `henk/gate/` | Authorization gate (tiers, turn scope + session taint, resolve-then-confirm prompt, fail-closed concurrency, decision receipts) |
+| `henk/agent/` | Agent core (typed turns, session lifecycle, serial queue, reset/idle, gate framing), owner-command dispatch, memory recall, triage framing + arc check, permission decision, SDK wrapper |
 | `henk/events/` | Event intake (ntfy subscribe, since-replay), per-source identity derivation, debounce/cooldown/cap pipeline, coordinator |
-| `henk/audit/` | Append-only JSONL audit writer + the versioned record **JSON Schema** (the transferable artifact) |
-| `henk/tools/` | `homelab_health`, `todo_read`, `notify`, `publish_handoff` (+ deferred `taiga_read`) and the production registry |
+| `henk/audit/` | Append-only JSONL audit writer, decision-time mutation receipts, + the versioned record **JSON Schema** (the transferable artifact) |
+| `henk/store/` | One SQLite file on the audit volume: capped memory repository + capture inbox behind the swappable `InboxStore` seam |
+| `henk/tools/` | `homelab_health`, `todo_read`, `notify`, `publish_handoff`, `store_memory`, `capture`, `inbox_read` (+ deferred `taiga_read`) and the production registry |
 | `henk/app.py`, `henk/runtime.py`, `henk/__main__.py` | Composition, production wiring, entrypoint |
 | `config.yaml` | Non-secret settings | `.env` | Secrets (git-ignored) |
 | `~/.claude-config/bin/henk-pickup` | Pull-based CLI to fetch handoffs from any tailnet host (lives in the claude-config repo) |
@@ -173,6 +197,17 @@ existing `henk_audit` volume (already in the rp5 backup allowlist).
   No new keys for durability: the intake-offset checkpoint sits beside
   `audit_path` on the same `henk_audit` volume, and cadence state rehydrates from
   the audit log at that path.
+- `store.*` — `path` (the SQLite file, **inside** the `henk_audit` mount at
+  `/data/audit/` so it rides the existing backup allowlist and survives container
+  recreation), `memory_pinned_cap` (50), `memory_agent_cap` (20),
+  `fact_length_limit` (500), `recall_render_limit` (8000 chars ≈ 2k tokens — when
+  it bites, the oldest facts are left out of the *render* with a count and nothing
+  is deleted), `inbox_page_size` (20).
+- `audit.path` — where the audit log lives. Falls back to `events.audit_path` when
+  absent, so a deployed config predating this key keeps working. Audit is now
+  constructed unconditionally: `events.enabled: false` no longer disables receipts.
+- `gate.demote_standing` (false) — the kill-switch: demotes every standing-tier
+  action to per-instance approval. The only gate knob, and it only narrows.
 - `events.liveness_deadline_seconds` (135) and
   `endpoints.ntfy.keepalive_interval_seconds` (45) — the intake liveness watchdog.
   The interval records a property of the **ntfy server**; the deadline is
@@ -192,16 +227,46 @@ existing `henk_audit` volume (already in the rp5 backup allowlist).
 server-side (design D3): publish on the notify topic, read on `henk-events`,
 publish on `henk-handoffs`.
 
-## Tools (v1)
+## Tools
 
-| Tool | Class | Backend |
-|---|---|---|
-| `homelab_health` | read-only | Gatus API (rp5:8080) + Prometheus HTTP API (vps:9090) over the tailnet — no SSH |
-| `todo_read` | read-only | obsidian-todo-api (vps:8089), GET only; **default-deny note-path allowlist** (`personal_data.todo_note_allowlist`) — surfaces only allowlisted personal notes, drops everything else in-process; empty allowlist → surfaces nothing |
-| `notify` | notify-only | ntfy (vps:2586), fixed topic, every message prefixed `[AI]`, no destination arg |
-| `publish_handoff` | notify-only | ntfy (vps:2586), fixed `henk-handoffs` topic, `[AI]`-prefixed, no destination arg; returns the message id |
+| Tool | Class | Tier / scope | Backend |
+|---|---|---|---|
+| `homelab_health` | read-only | — | Gatus API (rp5:8080) + Prometheus HTTP API (vps:9090) over the tailnet — no SSH |
+| `todo_read` | read-only | — | obsidian-todo-api (vps:8089), GET only; **default-deny note-path allowlist** (`personal_data.todo_note_allowlist`) — surfaces only allowlisted personal notes, drops everything else in-process; empty allowlist → surfaces nothing |
+| `notify` | notify-only | — | ntfy (vps:2586), fixed topic, every message prefixed `[AI]`, no destination arg |
+| `publish_handoff` | notify-only | — | ntfy (vps:2586), fixed `henk-handoffs` topic, `[AI]`-prefixed, no destination arg; returns the message id |
+| `store_memory` | **mutating** | standing / owner-turn-only | one `agent`-type fact into the local SQLite store (cap 20, FIFO); over-limit text is refused, never truncated |
+| `capture` | **mutating** | standing / owner-turn-only | appends one item to the local capture inbox (no cap, no eviction); durable before the result says so |
+| `inbox_read` | read-only | — | the oldest 20 open inbox items plus a count of any newer |
 
-`taiga_read` is implemented and tested but **deferred to v1.1** — the Taiga
+The two standing grants are argued on **containment**, not on saved attention:
+both are append-only writes into Henk-local stores that cannot leave the
+container, both are owner-turn-only, both are receipted, and both are reversible
+by the owner (`/forget`, `/inbox done`). When the planned personal-inbox service
+replaces the inbox backend, `capture`'s tier has to be re-litigated — "cannot
+leave the container" does not survive that swap.
+
+### Owner commands (no agent turn, no tokens)
+
+Handled app-side before any session exists, so they are instant, deterministic,
+and work in any conversation state — including mid-incident, where the *tools*
+are refused:
+
+| Command | Effect |
+|---|---|
+| `/new` | Reset the conversation (new session) |
+| `/remember <fact>` | Store a `pinned` memory (cap 50, FIFO; eviction is named in the reply) |
+| `/forget <text>` | Delete every memory containing `<text>` (case-insensitive) and echo what went, so a mistake is re-addable |
+| `/memories` | List every memory with its id and type |
+| `/capture <thought>` | Append to the capture inbox, confirming with the item id |
+| `/inbox` | Oldest 20 open items + a count of any newer |
+| `/inbox all` | Every open item |
+| `/inbox done <id>` | Archive one item (it leaves the listings; it is never deleted) |
+
+`/remember`, `/forget`, `/capture` and `/inbox done` write a receipt when they
+change something. Read-only commands and no-ops write none.
+
+`taiga_read` is implemented and tested but **deferred** — the Taiga
 instance holds mixed personal/work data and needs a dedicated project-scoped
 account first.
 

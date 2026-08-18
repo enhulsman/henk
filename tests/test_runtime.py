@@ -126,3 +126,37 @@ async def test_standing_demotion_flag_reaches_the_gate():
         assert app._dispatcher._gate._demote_standing is True
     finally:
         await client.aclose()
+
+
+async def test_store_backed_surfaces_share_one_store():
+    # The tool, the owner commands and recall must agree about what Henk knows;
+    # separate store instances would be three subtly different answers.
+    config = Config.load(SAMPLE, env={})
+    app, client = build_runtime(config)
+    try:
+        core = app._core
+        tool_memories = app._core._recall._memories
+        assert core._commands.memories is tool_memories
+        assert core._commands.inbox is not None
+    finally:
+        await client.aclose()
+
+
+async def test_store_config_reaches_the_repositories():
+    import dataclasses
+
+    base = Config.load(SAMPLE, env={})
+    config = dataclasses.replace(
+        base,
+        store=dataclasses.replace(
+            base.store, fact_length_limit=42, memory_agent_cap=7, recall_render_limit=99
+        ),
+    )
+    app, client = build_runtime(config)
+    try:
+        memories = app._core._commands.memories
+        assert memories.length_limit == 42
+        assert memories.cap("agent") == 7
+        assert app._core._recall._limit == 99
+    finally:
+        await client.aclose()
