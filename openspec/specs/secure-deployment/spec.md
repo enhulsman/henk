@@ -1,7 +1,10 @@
 # secure-deployment Specification
 
 ## Purpose
-TBD - created by archiving change henk-v1. Update Purpose after archive.
+The deployed shape of the inherited security posture: containerized on rp5 with scoped tokens
+only, loopback/tailnet binds, an enumerated secret set, least-privilege ACLs, and an enumerated
+durable-state surface (audit volume) — so what runs matches what the specs promise, and any new
+surface is a deliberate spec change.
 ## Requirements
 ### Requirement: Containerized deployment on rp5
 Henk SHALL run as a Docker Compose stack on rp5 under `/home/pi/Coding/henk/`, consisting of the agent container, the signal-cli-rest-api container, and a Tailscale sidecar container. The agent container SHALL run as a non-root user, with no Docker socket mount and no host filesystem mounts other than its own state/config volumes. Every container SHALL have a memory limit.
@@ -90,3 +93,9 @@ Durable pipeline state (the intake offset checkpoint and any cadence-rehydration
 - **WHEN** the deployed stack's volumes, ports, and ACL grants are audited before and after this change
 - **THEN** they are identical except for new files on the existing audit volume
 
+### Requirement: Memory and inbox stores share the backed-up audit volume
+Durable memory and capture-inbox state SHALL live in a SQLite store on the existing backed-up audit volume; this change SHALL NOT add a new volume, published port, listening socket, ACL/egress grant, or secret. The stored content is owner-personal free text and rides the volume's existing backup path.
+
+#### Scenario: No new infrastructure surface
+- **WHEN** the deployed stack's volumes, ports, and ACL grants are audited before and after this change
+- **THEN** they are identical except for new files on the existing audit volume

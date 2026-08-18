@@ -129,15 +129,21 @@ required.**
 
 ## 7. Hygiene and verification
 
-- [ ] 7.1 At sync/archive: apply the drafted Purpose texts from design.md's
+- [x] 7.1 At sync/archive: apply the drafted Purpose texts from design.md's
       appendix to approval-gate, audit-log, agent-core, incident-triage,
       secure-deployment, memory-store, and capture-inbox (paste operation — no
       drafting left to that session)
-- [ ] 7.2 After archive: re-read the merged approval-gate and audit-log specs
+- [x] 7.2 After archive: re-read the merged approval-gate and audit-log specs
       end-to-end for contradictions (the scrutiny loop verified the deltas, not
       the merge). Note: "Schema is versioned" deliberately subsumes the old
       "readers SHALL be able to distinguish records across versions" clause via
-      the prior-documents-remain-committed obligation — not an accidental drop
+      the prior-documents-remain-committed obligation — not an accidental drop.
+      **Read done, no contradictions.** One ambiguity recorded for a later change
+      (not edited here — it sits in an untouched requirement and an edit would be
+      unreviewed): approval-gate's "Fail closed on timeout" still says expiry
+      "SHALL count as denial", which its own colon defines as *not executed* with
+      a "timed out" result — consistent with the distinct `timeout` receipt
+      outcome, but a skimming reader could read it as recording `denied`
 - [x] 7.3 Full test suite green; `openspec validate --all` clean
 - [ ] 7.4 Deploy-smoke checklist (deploy-verified items, ONLY after the explicit
       owner go): inbox/memory survive container recreation on rp5; SDK

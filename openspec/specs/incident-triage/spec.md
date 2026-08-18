@@ -1,7 +1,10 @@
 # incident-triage Specification
 
 ## Purpose
-TBD - created by archiving change henk-events. Update Purpose after archive.
+Defines what happens when the homelab breaks: every triageable event gets a full investigation
+and a durable handoff, the owner's attention is spent only within the cadence contract (hard cap,
+suppression to the record — never to the inbox), and triage runs with read-only hands unless a
+verb's declared scope says otherwise.
 ## Requirements
 ### Requirement: Every triageable event becomes a triage session
 An event that survives debounce and cooldown is a **triageable event**. Every triageable event SHALL start an agent triage session — including evidence gathering via registered read-only tools and handoff publication — regardless of the cadence cap. A triageable incident that is also within the daily cadence cap is an **announceable incident** and SHALL additionally deliver a proactive Signal message to the owner; cap-overflow incidents run their full triage session with Signal delivery suppressed. Recurrence detection (whether an identity was triaged within the recurrence window, and the prior handoff reference used for recurrence framing) SHALL be reconstructed from the persisted audit log on startup, so recurrence framing survives a restart.
@@ -34,14 +37,18 @@ Every unprompted incident message SHALL end with (a) a diagnosis with an explici
 - **THEN** the message is still delivered and the session's audit record carries `triage_arc_complete: false`
 
 ### Requirement: Triage stays inside the read-only toolset
-Event-triggered sessions SHALL have exactly the same registered toolset and structural boundaries as owner-triggered sessions. No mutation capability SHALL be introduced by this change; the approval gate remains wired but unused.
+Event-triggered sessions SHALL have exactly the same registered toolset and structural boundaries as owner-triggered sessions. A mutating tool executes during a triage only if its declared turn scope includes event turns (approval-gate spec, "Mutating tools declare a turn scope, enforced per session"); no tool in this change declares event scope, so triage tool *executions* remain read-only or notify-class. A mutating invocation attempted during an event turn or in a tainted session is denied by the gate's turn-scope enforcement, silently and fail-closed, with an `out-of-scope` receipt.
 
 #### Scenario: Triage tool calls audited
 - **WHEN** a triage session completes and its audit record is inspected
-- **THEN** every tool call is a registered read-only or notify-class tool
+- **THEN** every tool call that executed is a registered read-only or notify-class tool
+
+#### Scenario: Mutating attempt during triage denied with a receipt
+- **WHEN** the agent attempts a mutating tool during an event-triage turn
+- **THEN** the invocation is denied without any channel message, the audit record shows only read-only/notify executions, and an `out-of-scope` authorization record exists for the attempt
 
 ### Requirement: Cadence is condition-triggered with a hard cap on announcements
-Unprompted Signal messages SHALL be sent only for announceable incidents — never on a timer, and no scheduled digest or "all is well" message SHALL exist. Announceable incidents SHALL be limited by a configured hard cap per 24 hours; triageable incidents beyond the cap are suppressed from Signal only (their triage session, audit record, and handoff still occur), and the next announceable message SHALL note how many incidents were suppressed. The cap bounds unprompted-message volume, not token spend — token spend is bounded upstream by the curated source list, debounce, and cooldown. **The cadence cap window SHALL survive a process restart**: on startup the count of announceable incidents within the current cap window SHALL be reconstructed from the persisted audit log, so a restart does not reset the cap and allow the owner's cadence constraint to be exceeded.
+Unprompted Signal messages SHALL be sent only for announceable incidents — never on a timer, and no scheduled digest or "all is well" message SHALL exist. Announceable incidents SHALL be limited by a configured hard cap per 24 hours; triageable incidents beyond the cap are suppressed from Signal only (their triage session, audit record, and handoff still occur), and the next announceable message SHALL note how many incidents were suppressed. Mutating invocations are the one exception to "Signal only": during a suppressed triage they fail closed silently per the approval-gate spec — a suppressed incident can never place an approval prompt (a context-free owner interruption) on the channel. The cap bounds unprompted-message volume, not token spend — token spend is bounded upstream by the curated source list, debounce, and cooldown. **The cadence cap window SHALL survive a process restart**: on startup the count of announceable incidents within the current cap window SHALL be reconstructed from the persisted audit log, so a restart does not reset the cap and allow the owner's cadence constraint to be exceeded.
 
 #### Scenario: Quiet homelab means silence
 - **WHEN** no triageable event occurs for a week
@@ -54,6 +61,10 @@ Unprompted Signal messages SHALL be sent only for announceable incidents — nev
 #### Scenario: Cap holds across a restart
 - **WHEN** the daily cap has already been reached, the process restarts, and a new triageable event arrives while still inside the cap window
 - **THEN** the incident is triaged and handed off but no Signal message is sent, exactly as before the restart
+
+#### Scenario: Suppressed triage cannot prompt
+- **WHEN** the agent attempts a per-instance mutating tool during a cap-suppressed triage
+- **THEN** no approval prompt or any other Signal message is sent, and the attempt is recorded with a fail-closed outcome
 
 ### Requirement: Owner replies interrogate the triage session
 An owner reply following a triage message SHALL continue the same agent session, so follow-up questions resolve against the incident context under the existing continuity, `/new`, and idle-expiry rules.
