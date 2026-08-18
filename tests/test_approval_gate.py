@@ -1,4 +1,10 @@
-"""Approval-gate tests (task 2.3), from specs/approval-gate."""
+"""Approval-gate tests (task 2.3), from specs/approval-gate.
+
+The per-instance flow's original coverage, kept green through the three-tier
+change: registration validation, the read-only bypass, and
+approve/deny/cancel/timeout single-use semantics. Tier, turn scope, taint,
+concurrency and prompt rendering are covered in ``test_gate_authorization.py``.
+"""
 
 from __future__ import annotations
 
@@ -12,11 +18,17 @@ from henk.gate.approval import (
     ApprovalGate,
     ApprovalOutcome,
     Classification,
-    GateBusyError,
     gated_invoke,
 )
 from henk.tools import build_production_registry
-from henk.tools.base import Tool, ToolClass, ToolRegistry, ToolResult
+from henk.tools.base import (
+    AuthorizationTier,
+    Tool,
+    ToolClass,
+    ToolRegistry,
+    ToolResult,
+    TurnType,
+)
 from tests.conftest import FakeChannel
 from tests.test_config import SAMPLE
 
@@ -25,6 +37,8 @@ class SpyMutatingTool(Tool):
     name = "spy_mutate"
     description = "test-only mutating tool"
     tool_class = ToolClass.MUTATING
+    authorization = AuthorizationTier.PER_INSTANCE
+    turn_scope = (TurnType.OWNER,)
     parameters = {"type": "object", "properties": {"x": {"type": "integer"}}}
 
     def __init__(self) -> None:
@@ -161,13 +175,18 @@ async def test_timeout_counts_as_denial():
 
 
 async def test_only_one_approval_pending_per_conversation():
+    # The invariant holds, but a second request now resolves fail-closed as
+    # rejected-busy instead of raising into the agent turn (design D5 / task 2.6):
+    # a single assistant message can legitimately carry two tool invocations.
     channel = FakeChannel()
     gate = ApprovalGate(channel, timeout_seconds=5)
     tool = SpyMutatingTool()
     task = asyncio.create_task(gated_invoke(gate, tool, {"x": 5}))
     await _until_pending(gate)
-    with pytest.raises(GateBusyError):
-        await gate.authorize(tool, {"x": 6})
+    second = await gate.authorize(tool, {"x": 6})
+    assert second.outcome is ApprovalOutcome.REJECTED_BUSY
+    assert second.permits is False
+    assert len(channel.sent) == 1  # no second prompt became outstanding
     gate.deliver("no")
     await task
 

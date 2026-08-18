@@ -120,3 +120,10 @@ store:
   # Oldest-first page size for /inbox and inbox_read. Not a cap: newer items are
   # counted in the reply and stay reachable by draining or /inbox all.
   inbox_page_size: 20
+
+# The authorization gate. This section can only NARROW authorization: setting
+# demote_standing makes every standing-tier action (capture, store_memory) ask for
+# inline approval instead. There is deliberately no knob that promotes a tier,
+# widens a turn scope, or registers a mutating tool — those ride code review.
+gate:
+  demote_standing: false

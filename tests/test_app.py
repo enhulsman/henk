@@ -122,7 +122,9 @@ async def test_pending_approval_unrelated_fails_closed_then_requeues():
 
     # The mutation never executed (fail-closed)...
     assert spy.calls == []
-    blocked = "blocked: denied by owner; not executed"
-    assert blocked in channel.sent
+    # ...and the turn was told it was CANCELLED, not denied: an unrelated message
+    # is not an owner "no", and the receipt vocabulary keeps them distinct (D5).
+    blocked = next(s for s in channel.sent if s.startswith("blocked:"))
+    assert "cancelled" in blocked and "not executed" in blocked
     # ...and the unrelated message was NOT swallowed — it ran as a later turn.
     assert channel.sent.index(blocked) < channel.sent.index("echo:what's up?")

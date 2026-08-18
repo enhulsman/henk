@@ -76,3 +76,28 @@ async def test_since_rejected_notice_reaches_the_channel():
         assert sent == [SINCE_REJECTED_NOTICE]
     finally:
         await client.aclose()
+
+
+async def test_gate_is_wired_to_the_core_for_turn_framing():
+    # Without this wiring the gate would fall back to its unframed context and
+    # never see an event turn's taint — turn scope would be unenforceable (D10).
+    config = Config.load(SAMPLE, env={})
+    app, client = build_runtime(config)
+    try:
+        assert app._core._gate is app._dispatcher._gate
+    finally:
+        await client.aclose()
+
+
+async def test_standing_demotion_flag_reaches_the_gate():
+    import dataclasses
+
+    base = Config.load(SAMPLE, env={})
+    config = dataclasses.replace(
+        base, gate=dataclasses.replace(base.gate, demote_standing=True)
+    )
+    app, client = build_runtime(config)
+    try:
+        assert app._dispatcher._gate._demote_standing is True
+    finally:
+        await client.aclose()

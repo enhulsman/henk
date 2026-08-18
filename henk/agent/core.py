@@ -8,6 +8,9 @@ Responsibilities (v1.2):
   the app layer; owner turns get neither (agent-core delta);
 - event-turn output routes to the proactive owner-directed send, suppressed for
   non-announceable (cap-overflow) incidents;
+- every agent turn is framed for the gate with its turn type, announceability and
+  the session's taint (design D10), cleared on every exit path including errors:
+  the gate can only enforce turn scope if the core tells it what turn is running;
 - reset on ``/new`` and after an idle window;
 - one append-only audit record per session, flushed on session close.
 
@@ -19,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -29,6 +33,8 @@ from henk.agent.triage import (
     extract_diagnosis,
 )
 from henk.agent.turns import CheckpointMarker, EventTurn, OwnerTurn, Turn
+from henk.gate.approval import TurnContext
+from henk.tools.base import TurnType
 
 logger = logging.getLogger("henk.agent")
 
@@ -90,6 +96,7 @@ class AgentCore:
         model: str | None = None,
         checkpoint: Any | None = None,
         handoff_sink: Callable[[str, str], None] | None = None,
+        gate: Any | None = None,
     ) -> None:
         self._factory = factory
         self._channel = channel
@@ -109,6 +116,15 @@ class AgentCore:
         # advance past a non-durable event, and opaque ntfy ids can't be compared
         # for a per-offset high-water-mark, so "a gap appeared" latches globally.
         self._checkpoint_blocked = False
+        # The authorization gate, framed per turn with the turn's context (D10).
+        # Optional: unit tests and a reactive-only deployment run without one, and
+        # its absence must not change turn handling.
+        self._gate = gate
+        # Session taint (D10): set the moment a session processes an event turn,
+        # never cleared while that session lives. Out-of-scope mutations are denied
+        # in EVERY turn of a tainted session, including the owner follow-up that
+        # incident-triage mandates continues the same session.
+        self._session_tainted = False
         self._session: AgentSession | None = None
         self._last_activity: float | None = None
         self._acc: _SessionAudit | None = None
@@ -168,7 +184,8 @@ class AgentCore:
 
         await self._ensure_session("owner-message")
         try:
-            reply = await self._session.run_turn(text)  # type: ignore[union-attr]
+            with self._framed_turn(TurnType.OWNER):
+                reply = await self._session.run_turn(text)  # type: ignore[union-attr]
         except Exception:
             logger.exception("agent turn failed")
             if self._acc is not None:
@@ -209,7 +226,8 @@ class AgentCore:
             )
         content = compose_event_turn_content(turn)
         try:
-            reply = await self._session.run_turn(content)  # type: ignore[union-attr]
+            with self._framed_turn(TurnType.EVENT, announceable=turn.announceable):
+                reply = await self._session.run_turn(content)  # type: ignore[union-attr]
         except Exception:
             logger.exception("triage turn failed")
             if self._acc is not None:
@@ -281,6 +299,32 @@ class AgentCore:
             "cap — retrieve them with henk-pickup.)"
         )
 
+    # --- Gate framing (design D10) ----------------------------------------
+
+    @contextmanager
+    def _framed_turn(self, turn_type: TurnType, *, announceable: bool = True):
+        """Frame one agent turn for the gate, clearing it on every exit path.
+
+        try/finally rather than best-effort cleanup: a gate context that outlived
+        an errored event turn would carry ``announceable=False`` into the owner's
+        next conversation and silently suppress a legitimate approval prompt.
+        """
+        gate = self._gate
+        if gate is None:
+            yield
+            return
+        gate.enter_turn(
+            TurnContext(
+                turn_type=turn_type,
+                announceable=announceable,
+                tainted=self._session_tainted,
+            )
+        )
+        try:
+            yield
+        finally:
+            gate.exit_turn()
+
     # --- Session lifecycle + audit ----------------------------------------
 
     async def _ensure_session(self, trigger: str) -> None:
@@ -293,6 +337,7 @@ class AgentCore:
             await self._close_session()
             self._session = self._factory.create()
             self._last_activity = now
+            self._session_tainted = False  # a brand-new session; no incident in it
             self._acc = _SessionAudit(trigger=trigger)
         elif self._acc is not None and self._acc.flushed:
             # Reusing a session whose event-triage record already flushed (D3): the
@@ -310,6 +355,8 @@ class AgentCore:
         await self._close_session()
         self._session = self._factory.create()
         self._last_activity = self._clock()
+        # The ONLY way an event turn enters a session, so taint cannot be missed.
+        self._session_tainted = True
         self._acc = _SessionAudit(trigger="event")
 
     async def _close_session(self) -> None:
@@ -319,6 +366,7 @@ class AgentCore:
         acc = self._acc
         self._session = None
         self._acc = None
+        self._session_tainted = False
         # An event-triage record was already flushed at triage completion (D3);
         # only owner sessions (and any un-flushed acc) write their record here.
         if acc is not None and not acc.flushed:

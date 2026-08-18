@@ -72,9 +72,12 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         safe_length=config.signal.safe_length,
     )
 
-    # The gate sends approval prompts over the same channel the owner uses.
+    # The gate sends approval prompts over the same channel the owner uses. The
+    # demotion flag is the only config input it takes, and it only narrows.
     gate = ApprovalGate(
-        adapter, timeout_seconds=config.agent.approval_timeout_seconds
+        adapter,
+        timeout_seconds=config.agent.approval_timeout_seconds,
+        demote_standing=config.gate.demote_standing,
     )
     factory = SdkSessionFactory(
         registry,
@@ -121,6 +124,9 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         # Wire recurrence framing live: a triage that publishes a handoff records
         # its id for the next re-fire of that identity (removes dead note_handoff).
         handoff_sink=pipeline.note_handoff if pipeline is not None else None,
+        # The core frames every agent turn for the gate (turn type, announceability,
+        # session taint) — without this the gate cannot enforce turn scope (D10).
+        gate=gate,
     )
     dispatcher = Dispatcher(AllowlistFilter(config.owner.id), gate, core)
 

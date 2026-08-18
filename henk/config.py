@@ -134,6 +134,20 @@ class PersonalDataConfig:
 
 
 @dataclass(frozen=True)
+class GateConfig:
+    """The authorization gate's only configuration surface — and it only narrows.
+
+    ``demote_standing`` is the kill-switch: every standing-tier action falls back
+    to per-instance approval. There is deliberately no flag that promotes a tier,
+    widens a turn scope, or registers a mutating tool — authorization widens
+    through code review alone (design D4). Every config knob on the gate is a
+    security surface, so a knob has to earn its place with a scenario.
+    """
+
+    demote_standing: bool = False
+
+
+@dataclass(frozen=True)
 class StoreConfig:
     """Durable-store settings: memory caps, the fact limit, the recall bound.
 
@@ -193,6 +207,7 @@ class Config:
     todo: EndpointConfig
     ntfy: NtfyConfig
     events: EventsConfig = field(default_factory=EventsConfig)
+    gate: GateConfig = field(default_factory=GateConfig)
     store: StoreConfig = field(default_factory=StoreConfig)
     personal_data: PersonalDataConfig = field(default_factory=PersonalDataConfig)
     secrets: Secrets = field(default_factory=Secrets)
@@ -279,6 +294,13 @@ class Config:
             ),
         )
 
+        gate_sec = raw.get("gate", {}) or {}
+        gate = GateConfig(
+            demote_standing=bool(
+                gate_sec.get("demote_standing", GateConfig.demote_standing)
+            )
+        )
+
         store_sec = raw.get("store", {}) or {}
         store = StoreConfig(
             path=store_sec.get("path", StoreConfig.path),
@@ -342,6 +364,7 @@ class Config:
                 ),
             ),
             events=events,
+            gate=gate,
             store=store,
             personal_data=personal_data,
             secrets=Secrets.from_env(env),

@@ -166,3 +166,64 @@ def test_empty_owner_id_rejected_fail_closed():
         Config.from_dict(_minimal_raw(""), env={})
     with pytest.raises(ConfigError):
         Config.from_dict(_minimal_raw("   "), env={})
+
+
+# --- store section (memory + capture inbox, task 1.1 / 6.1) ---------------
+
+
+def test_store_section_absent_uses_safe_defaults():
+    config = Config.from_dict(_minimal_raw("+1"), env={})
+    # Default sits inside the audit volume's mount point, so state survives
+    # container recreation without adding a volume (secure-deployment spec).
+    assert config.store.path == "/data/audit/henk-store.db"
+    assert config.store.memory_caps == {"pinned": 50, "agent": 20}
+    assert config.store.fact_length_limit == 500
+    assert config.store.recall_render_limit == 8000
+    assert config.store.inbox_page_size == 20
+
+
+def test_store_section_parsed_when_present():
+    raw = _minimal_raw("+1")
+    raw["store"] = {
+        "path": "/data/store/other.db",
+        "memory_pinned_cap": 5,
+        "memory_agent_cap": 3,
+        "fact_length_limit": 120,
+        "recall_render_limit": 400,
+        "inbox_page_size": 10,
+    }
+    config = Config.from_dict(raw, env={})
+    assert config.store.path == "/data/store/other.db"
+    assert config.store.memory_caps == {"pinned": 5, "agent": 3}
+    assert config.store.fact_length_limit == 120
+    assert config.store.recall_render_limit == 400
+    assert config.store.inbox_page_size == 10
+
+
+def test_sample_config_declares_the_store_path():
+    config = Config.load(SAMPLE, env={})
+    assert config.store.path
+
+
+# --- gate section: the kill-switch only narrows (task 2.2 / 6.1) ----------
+
+
+def test_gate_section_absent_defaults_to_standing_enabled():
+    config = Config.from_dict(_minimal_raw("+1"), env={})
+    assert config.gate.demote_standing is False
+
+
+def test_gate_demotion_flag_parsed_when_present():
+    raw = _minimal_raw("+1")
+    raw["gate"] = {"demote_standing": True}
+    assert Config.from_dict(raw, env={}).gate.demote_standing is True
+
+
+def test_gate_config_exposes_no_widening_knob():
+    # Structural, not stylistic: a promote/scope knob in config would move a
+    # security decision out of code review (design D4).
+    import dataclasses
+
+    from henk.config import GateConfig
+
+    assert [f.name for f in dataclasses.fields(GateConfig)] == ["demote_standing"]

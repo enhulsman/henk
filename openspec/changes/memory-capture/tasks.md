@@ -21,32 +21,32 @@ required.**
 
 ## 2. Gate: tiers, turn scope, concurrency, prompts
 
-- [ ] 2.1 Tests from approval-gate delta scenarios: mutating-without-tier
+- [x] 2.1 Tests from approval-gate delta scenarios: mutating-without-tier
       rejected at registration; standing executes with zero channel sends and
       never touches the pending slot; per-instance flow unchanged
       (approve/deny/cancel-by-unrelated/timeout); kill-switch demotes standing;
       unregistered tool still denied
-- [ ] 2.2 Add `authorization` tier + turn-scope declaration to `Tool` and
+- [x] 2.2 Add `authorization` tier + turn-scope declaration to `Tool` and
       registry validation (`henk/tools/base.py`); gate standing path + demotion
       flag (`henk/gate/approval.py`, `henk/config.py`)
-- [ ] 2.3 Tests: turn scope + session taint — denial in event turns; denial in
+- [x] 2.3 Tests: turn scope + session taint — denial in event turns; denial in
       owner turns of tainted sessions with reason+remedy in the result text;
       untainted owner turns execute; taint set at `_start_event_session` and
       never cleared for the session's life; per-turn gate context cleared on
       every exit path including error (post-turn prompt normal)
-- [ ] 2.4 Implement turn-scope/taint enforcement: core supplies per-turn context
+- [x] 2.4 Implement turn-scope/taint enforcement: core supplies per-turn context
       (turn type, announceability, taint) via try/finally;
       `henk/agent/permission.py` + gate deny out-of-scope with honest result
-- [ ] 2.5 Tests: gate concurrency — two standing invocations in one assistant
+- [x] 2.5 Tests: gate concurrency — two standing invocations in one assistant
       message both execute; concurrent per-instance resolves `rejected-busy`
       without disturbing the pending approval and without raising
-- [ ] 2.6 Implement fail-closed concurrency (replace `GateBusyError` propagation
+- [x] 2.6 Implement fail-closed concurrency (replace `GateBusyError` propagation
       at the permission layer)
-- [ ] 2.7 Tests: resolve-then-confirm prompt — delimited, truncated argument
+- [x] 2.7 Tests: resolve-then-confirm prompt — delimited, truncated argument
       rendering; crafted argument cannot alter prompt structure or keyword match
-- [ ] 2.8 Replace `_format_prompt`'s raw `{v!r}` interpolation with
+- [x] 2.8 Replace `_format_prompt`'s raw `{v!r}` interpolation with
       resolved-action rendering (delimiters + bounded truncation)
-- [ ] 2.9 Tests + implementation: suppressed event turn — per-instance
+- [x] 2.9 Tests + implementation: suppressed event turn — per-instance
       invocation (test-only event-scoped tool) denied with no channel send and
       `suppressed` outcome
 

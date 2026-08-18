@@ -5,8 +5,10 @@ Every tool call the agent attempts is decided here:
   this is the closed toolset, enforced as default-deny rather than an
   enumerate-and-hope denylist;
 - a read-only / notify-only tool is allowed without a prompt;
-- a mutating tool is routed through the approval gate, and allowed only if the
-  owner approves.
+- a mutating tool is routed through the authorization gate, and allowed only if
+  its tier and turn scope permit it (standing) or the owner approves it
+  (per-instance). Every non-executing decision comes back with the gate's own
+  honest reason, which is what the model is told.
 
 Because the decision is keyed on the registry's classification, *registering* a
 mutating tool is what forces it through the gate — there is no way to add a write
@@ -21,7 +23,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from henk.gate.approval import ApprovalGate, ApprovalOutcome
+from henk.gate.approval import ApprovalGate
 from henk.tools.base import ToolRegistry
 
 logger = logging.getLogger("henk.agent.permission")
@@ -89,9 +91,13 @@ async def decide_tool_permission(
         )
 
     tool = registry.get(name)
-    outcome = await gate.authorize(tool, dict(arguments or {}))
-    if outcome is ApprovalOutcome.APPROVED:
+    # The gate resolves every ambiguous case itself (busy, out of scope, suppressed
+    # turn) rather than raising, so there is no error path to translate here: a
+    # decision either permits execution or carries the reason it did not.
+    decision = await gate.authorize(tool, dict(arguments or {}))
+    if decision.permits:
         return PermissionDecision(True)
-    if outcome is ApprovalOutcome.DENIED:
-        return PermissionDecision(False, "denied by owner; not executed")
-    return PermissionDecision(False, "approval timed out; not executed")
+    logger.info(
+        "tool call not executed: %s (%s)", sdk_tool_name, decision.outcome.value
+    )
+    return PermissionDecision(False, decision.reason)
