@@ -71,6 +71,23 @@ class SignalAdapter:
         self._max_backoff = max_backoff
         self._max_send_attempts = max_send_attempts
         self._sleep = sleep
+        #: Serializes outbound send sequences (reminder-delivery design D6). Chunks
+        #: of concurrent senders could interleave before this existed — harmless
+        #: while the only cross-task sender emitted a single-chunk notice, and a real
+        #: defect the moment the reminder scheduler became a second multi-chunk
+        #: sender.
+        #:
+        #: **Instance state, and that is load-bearing wiring.** A second
+        #: `SignalAdapter` over the same bridge would satisfy every serialization
+        #: test while serializing nothing, so the scheduler must be handed the SAME
+        #: adapter the agent core holds (asserted where the runtime is wired).
+        #:
+        #: Deliberately unbounded: no hold timer and no chunk cap. Both were designed
+        #: and rejected in channel-integrity D5 — a bounded hold's `failed` outcome
+        #: is unreachable, and a chunk cap discards owner-requested content on the
+        #: healthy path. The measured cost of waiting is ~1.1 s per chunk at the
+        #: worst observed send over 29 days on the deployed host.
+        self._send_lock = asyncio.Lock()
 
     async def messages(self) -> AsyncIterator[InboundMessage]:
         """Yield inbound messages, reconnecting with backoff on bridge errors.
@@ -121,37 +138,45 @@ class SignalAdapter:
         Shared rather than one wrapper calling the other: re-entering the other
         operation would deadlock outright once a send mutex exists, and the notice
         must be emitted from inside the same sequence as the chunks it describes.
+
+        The mutex is taken **here**, around the whole sequence, and nowhere else. In
+        the wrappers instead it would leave the notice outside the critical section —
+        so a waiting sender's chunks could land between a truncated message and the
+        banner explaining it — and in both places it would deadlock.
         """
-        chunks = split_message(text, self._safe_length)
-        if not chunks:
-            # No chunk was attempted, so nothing was delivered — and no notice:
-            # a banner claiming a delivery failure here would be false.
-            return SendOutcome.FAILED
-        for index, chunk in enumerate(chunks):
-            if not await self._send_chunk(chunk):
-                # A chunk failed permanently. Do NOT silently truncate: stop
-                # (later chunks would arrive out of order) and tell the owner the
-                # message was cut off, if this path has a notice to give.
-                remaining = len(chunks) - index
-                logger.error(
-                    "send failed on chunk %d/%d; %d chunk(s) undelivered",
-                    index + 1,
-                    len(chunks),
-                    remaining,
-                )
-                if failure_notice is not None:
-                    # A single attempt, never the retry budget: a bridge that
-                    # just refused three attempts will not take a fourth, and the
-                    # notice's own failure is not worth more of the caller's
-                    # latency. Its outcome is deliberately discarded — the notice
-                    # never alters what this send reports.
-                    await self._send_chunk(failure_notice, attempts=1)
-                # The condition is "not delivered, having attempted a chunk" —
-                # not "partial". A wholly-failed single-chunk send is the most
-                # common failure shape, and a partial-only condition would drop
-                # the notice exactly there.
-                return SendOutcome.PARTIAL if index else SendOutcome.FAILED
-        return SendOutcome.DELIVERED
+        async with self._send_lock:
+            chunks = split_message(text, self._safe_length)
+            if not chunks:
+                # No chunk was attempted, so nothing was delivered — and no notice:
+                # a banner claiming a delivery failure here would be false.
+                return SendOutcome.FAILED
+            for index, chunk in enumerate(chunks):
+                if not await self._send_chunk(chunk):
+                    # A chunk failed permanently. Do NOT silently truncate: stop
+                    # (later chunks would arrive out of order) and tell the owner the
+                    # message was cut off, if this path has a notice to give.
+                    remaining = len(chunks) - index
+                    logger.error(
+                        "send failed on chunk %d/%d; %d chunk(s) undelivered",
+                        index + 1,
+                        len(chunks),
+                        remaining,
+                    )
+                    if failure_notice is not None:
+                        # A single attempt, never the retry budget: a bridge that
+                        # just refused three attempts will not take a fourth, and the
+                        # notice's own failure is not worth more of the caller's
+                        # latency. Its outcome is deliberately discarded — the notice
+                        # never alters what this send reports. It is sent while the
+                        # lock is still held, which is what "within the same
+                        # serialized sequence" means.
+                        await self._send_chunk(failure_notice, attempts=1)
+                    # The condition is "not delivered, having attempted a chunk" —
+                    # not "partial". A wholly-failed single-chunk send is the most
+                    # common failure shape, and a partial-only condition would drop
+                    # the notice exactly there.
+                    return SendOutcome.PARTIAL if index else SendOutcome.FAILED
+            return SendOutcome.DELIVERED
 
     async def _send_chunk(self, chunk: str, *, attempts: int | None = None) -> bool:
         """Send one chunk with backoff. Returns True if delivered, False if given up.

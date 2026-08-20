@@ -90,16 +90,16 @@ notes — which is deliberately the cheapest moment a spec edit will ever have.
 
 ## 4. Channel: send serialization
 
-- [ ] 4.1 Tests from the channel-adapter delta scenarios, against `SignalAdapter`'s real lock
+- [x] 4.1 Tests from the channel-adapter delta scenarios, against `SignalAdapter`'s real lock
       with a slow `FakeBridge` (per-send `await` that actually yields): two concurrent
       multi-chunk sends never interleave chunks; both complete with their own outcomes; the
       failure notice lands before the waiting sender's first chunk; a waiting send is never
       dropped. `conftest.FakeChannel` is forbidden for these — it has no lock.
-- [ ] 4.2 Watch 4.1 go red first against the current lockless adapter (the interleaving must
+- [x] 4.2 Watch 4.1 go red first against the current lockless adapter (the interleaving must
       be demonstrated, not assumed), then implement: one `asyncio.Lock` in `SignalAdapter`
       around `_send_serialized`'s body, covering the notice. No lock in `send`/`send_proactive`
       wrappers (D3's re-entry argument), no hold timer, no chunk cap, no priority tier.
-- [ ] 4.3 Assert the existing channel contract tests pass untouched — serialization is
+- [x] 4.3 Assert the existing channel contract tests pass untouched — serialization is
       additive for every existing single-sender caller.
 
 ## 5. Scheduler: tick, delivery, grace, summary

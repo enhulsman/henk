@@ -271,3 +271,71 @@ Seen to fail, both ways:
    guard failure — `await` in a synchronous method never reaches the AST check, so a defect
    planted in the wrong kind of method would have "proved" the guard works without exercising
    it at all.
+
+---
+
+## Group 4 — channel send serialization
+
+Suite after: **1356** (+11). `tests/test_channel_adapter.py` is **purely additive** —
+273 insertions, 0 deletions, confirmed by `git diff --stat` — which is task 4.3's claim
+asserted rather than assumed: serialization is additive for every existing single-sender
+caller, and not one existing contract test was touched to accommodate it.
+
+### 4.2 The interleaving, demonstrated before it was fixed
+
+The task required the defect be shown, not assumed. Against the lockless adapter, with a
+bridge whose `send` actually suspends:
+
+```
+test_concurrent_multi_chunk_sends_do_not_interleave
+  AssertionError: chunks interleaved: ABABAB
+
+test_ten_concurrent_senders_all_stay_contiguous
+  AssertionError: a sender's chunks were split: ABCDEFGHIJABCDEFGHIJABCDEFGHIJ
+```
+
+Seven of the eleven new tests were red; the four that passed lockless are the
+release-the-lock ones, which cannot fail when there is no lock to strand anyone on. After
+the change, all eleven pass.
+
+### The double, and why `conftest.FakeChannel` is banned here
+
+`SlowBridge.send` records the chunk and then does exactly one `await asyncio.sleep(0)`.
+That single suspension is the whole design: asyncio's ready queue is round-robin, so two
+gathered senders each yielding once per chunk alternate **strictly**, which makes the
+interleaving deterministic rather than lucky. Without a suspension there is no
+interleaving to prevent and every assertion below would pass against the lockless
+adapter — which is precisely how a serialization test fools itself. `conftest.FakeChannel`
+has no lock and never suspends mid-send, so it would satisfy all eleven while serializing
+nothing; the reminders README names that trap explicitly and the delta has a scenario for
+it ("enforced by the adapter, not by caller convention").
+
+### What the eleven cover
+
+Beyond the delta's four scenarios: a **reply against a proactive send** (the pairing that
+actually occurs — the scheduler's delivery racing an owner reply; a lock on one path only
+would pass a reply-vs-reply test and fail in production), two proactive senders, **ten**
+concurrent senders (a lock that serialises pairs may still admit a gap), a failing sender
+not stranding the waiter, an unforeseen exception still releasing the lock (a leaked lock
+would hang every later send on the process — a worse failure than the exception), and two
+structural tests.
+
+The structural pair is worth its keep:
+
+- `test_the_lock_is_the_whole_mechanism_and_nothing_more` — exactly one `.Lock()` in the
+  module, no `wait_for`/`timeout` around it (that would be a hold timer), and none of
+  `max_chunks` / `chunk_cap` / `priority` / `hold_timeout` anywhere in the source. All
+  three were designed and rejected — the bounded hold and chunk cap in channel-integrity
+  D5, delivery-path priority in this change's D6 — so a future change adding one has to
+  argue with the decision rather than around it.
+- `test_the_lock_wraps_the_shared_sequence_not_the_two_wrappers` — asserts the set of
+  methods holding the lock is exactly `{"_send_serialized"}`. In the wrappers instead, the
+  failure notice would sit outside the critical section and a waiting sender's chunks could
+  land between a truncated message and the banner explaining it; in both places, deadlock.
+
+### Wiring consequence, recorded here because group 8 has to honour it
+
+The lock is **instance state**. A second `SignalAdapter` over the same bridge satisfies
+every test above while serializing nothing, so the scheduler must be handed the *same*
+adapter instance the agent core holds. Task 8.1 asserts that, and the reason is written
+into the lock's own comment so the next reader of `signal.py` finds it there.

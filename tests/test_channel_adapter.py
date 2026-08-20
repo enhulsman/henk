@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -636,3 +637,275 @@ def test_no_bridge_code_path_constructs_a_client_without_a_timeout():
 def test_receive_connection_timeout_comes_from_configuration():
     # Previously a constructor default the wiring never supplied.
     assert _bridge(open_timeout=25.0)._open_timeout == 25.0
+
+
+# --- Outbound send serialization (reminder-delivery, channel-adapter delta) ---
+#
+# Every test in this section drives `SignalAdapter`'s REAL lock over a bridge whose
+# send actually yields control. `conftest.FakeChannel` is forbidden here and would be
+# useless: it has no lock and never suspends mid-send, so it satisfies every
+# serialization assertion below while serializing nothing. That is the defect the
+# delta's "enforced by the adapter, not by caller convention" scenario exists to
+# catch, and the reminders README names it explicitly as a trap this project's task
+# lists forbid falling into.
+#
+# The scheduler is the first real second sender on this channel, which is why
+# serialization lands in this change rather than in `channel-integrity`.
+
+
+class SlowBridge:
+    """A bridge whose every send suspends, so concurrent senders CAN interleave.
+
+    One `await asyncio.sleep(0)` per send is what makes the interleaving
+    deterministic rather than lucky: asyncio's ready queue is round-robin, so two
+    gathered tasks each yielding once per chunk alternate strictly. Without the
+    suspension there is no interleaving to prevent and the test would pass against a
+    lockless adapter — which is precisely how a serialization test fools itself.
+    """
+
+    def __init__(self, fail_marker: str | None = None) -> None:
+        #: Chunk texts in the order the transport actually saw them.
+        self.sends: list[str] = []
+        self.fail_marker = fail_marker
+
+    async def receive(self):  # pragma: no cover - not exercised here
+        if False:
+            yield {}
+
+    async def send(self, recipient, text):
+        if self.fail_marker is not None and self.fail_marker in text:
+            await asyncio.sleep(0)
+            raise SignalBridgeError("refused")
+        self.sends.append(text)
+        await asyncio.sleep(0)
+
+
+#: Three chunks each at safe_length 30, distinguishable by content alone — the
+#: bridge sees only text, so the marker has to be in the payload.
+MESSAGE_A = "\n\n".join("A" * 25 for _ in range(3))
+MESSAGE_B = "\n\n".join("B" * 25 for _ in range(3))
+
+
+def _tags(sends: list[str]) -> str:
+    """Collapse recorded chunks to their sender's letter: 'AAABBB' or 'ABABAB'."""
+    return "".join(text.strip()[0] for text in sends if text.strip())
+
+
+def _is_contiguous(tags: str) -> bool:
+    """True when no sender's chunks are split by another's — 'AAABBB', not 'ABABAB'."""
+    return len(["" for i, c in enumerate(tags) if i == 0 or tags[i - 1] != c]) == len(
+        set(tags)
+    )
+
+
+async def test_concurrent_multi_chunk_sends_do_not_interleave():
+    bridge = SlowBridge()
+    adapter = _adapter(bridge)
+    outcomes = await asyncio.gather(
+        adapter.send(MESSAGE_A), adapter.send(MESSAGE_B)
+    )
+    assert len(bridge.sends) == 6
+    tags = _tags(bridge.sends)
+    assert _is_contiguous(tags), f"chunks interleaved: {tags}"
+    assert tags in ("AAABBB", "BBBAAA"), tags
+    # Both senders report their OWN outcome, not a shared one.
+    assert outcomes == [SendOutcome.DELIVERED, SendOutcome.DELIVERED]
+
+
+async def test_a_reply_and_a_proactive_send_serialize_against_each_other():
+    """The lock covers both operations, because they share one send sequence.
+
+    This is the pairing that actually occurs: the scheduler's proactive delivery
+    racing an owner reply. A lock on only one of the two paths would pass the
+    reply-vs-reply test above and fail in production.
+    """
+    bridge = SlowBridge()
+    adapter = _adapter(bridge)
+    outcomes = await asyncio.gather(
+        adapter.send(MESSAGE_A),
+        adapter.send_proactive(MESSAGE_B, failure_notice="[notice]"),
+    )
+    tags = _tags(bridge.sends)
+    assert _is_contiguous(tags), f"chunks interleaved: {tags}"
+    assert outcomes == [SendOutcome.DELIVERED, SendOutcome.DELIVERED]
+
+
+async def test_two_proactive_senders_serialize():
+    bridge = SlowBridge()
+    adapter = _adapter(bridge)
+    await asyncio.gather(
+        adapter.send_proactive(MESSAGE_A), adapter.send_proactive(MESSAGE_B)
+    )
+    assert _is_contiguous(_tags(bridge.sends))
+
+
+async def test_the_failure_notice_lands_before_the_waiting_senders_first_chunk():
+    """The notice cannot be separated from the chunks it describes.
+
+    The delta already worded the notice as firing "within the same serialized
+    sequence"; before the lock existed there was no sequence for it to be inside, so
+    a waiting sender's chunks could land between the truncated message and the banner
+    explaining it — leaving the owner reading an apology about a message that appears
+    to have arrived intact.
+    """
+    # Sender A's third chunk carries the marker the bridge refuses.
+    failing = "\n\n".join(["A" * 25, "A" * 25, "FAILME"])
+    bridge = SlowBridge(fail_marker="FAILME")
+    adapter = _adapter(bridge)
+    outcomes = await asyncio.gather(
+        adapter.send_proactive(failing, failure_notice="[NOTICE]"),
+        adapter.send(MESSAGE_B),
+    )
+    texts = bridge.sends
+    notice_at = next(i for i, t in enumerate(texts) if "[NOTICE]" in t)
+    first_b = next(i for i, t in enumerate(texts) if t.strip().startswith("B"))
+    assert notice_at < first_b, texts
+    # A reports PARTIAL (a chunk landed, then one did not); B is unaffected.
+    assert outcomes[0] is SendOutcome.PARTIAL
+    assert outcomes[1] is SendOutcome.DELIVERED
+
+
+async def test_a_waiting_send_is_delivered_not_dropped_or_truncated():
+    bridge = SlowBridge()
+    adapter = _adapter(bridge)
+    outcomes = await asyncio.gather(
+        *[adapter.send(MESSAGE_A), adapter.send(MESSAGE_B)]
+    )
+    assert all(o is SendOutcome.DELIVERED for o in outcomes)
+    # Every sender's content arrives complete and in its own order.
+    for letter, message in (("A", MESSAGE_A), ("B", MESSAGE_B)):
+        mine = [t for t in bridge.sends if t.strip().startswith(letter)]
+        assert "".join(mine) == message
+
+
+async def test_a_failing_sender_does_not_strand_the_waiting_one():
+    """A send that gives up must release the lock, including after its notice."""
+    bridge = SlowBridge(fail_marker="FAILME")
+    adapter = _adapter(bridge)
+    outcomes = await asyncio.gather(
+        adapter.send_proactive("FAILME", failure_notice="[NOTICE]"),
+        adapter.send(MESSAGE_B),
+    )
+    assert outcomes[0] is SendOutcome.FAILED  # nothing landed: wholly failed
+    assert outcomes[1] is SendOutcome.DELIVERED
+    assert "".join(t for t in bridge.sends if t.strip().startswith("B")) == MESSAGE_B
+
+
+async def test_an_exception_escaping_a_send_still_releases_the_lock():
+    """Belt and braces: the lock is released on the error path too.
+
+    `_send_chunk` normalises bridge errors, so an escaping exception means something
+    unforeseen. If that leaked the lock, every later send on the process would hang
+    forever — a deadlock is a worse failure than the exception that caused it.
+    """
+
+    class ExplodingBridge(SlowBridge):
+        async def send(self, recipient, text):
+            raise RuntimeError("something unforeseen")
+
+    adapter = _adapter(ExplodingBridge())
+    with pytest.raises(RuntimeError):
+        await adapter.send("boom")
+    # The adapter is still usable: a second send acquires the lock and completes.
+    adapter._bridge = SlowBridge()
+    assert await adapter.send(MESSAGE_A) is SendOutcome.DELIVERED
+
+
+async def test_ten_concurrent_senders_all_stay_contiguous():
+    """Scale past two, because a lock that serialises pairs may still admit a gap."""
+    bridge = SlowBridge()
+    adapter = _adapter(bridge)
+    letters = "ABCDEFGHIJ"
+    messages = {c: "\n\n".join(c * 25 for _ in range(3)) for c in letters}
+    outcomes = await asyncio.gather(
+        *[adapter.send(messages[c]) for c in letters]
+    )
+    assert all(o is SendOutcome.DELIVERED for o in outcomes)
+    assert len(bridge.sends) == 30
+    tags = _tags(bridge.sends)
+    runs = [tags[i] for i in range(len(tags)) if i == 0 or tags[i - 1] != tags[i]]
+    assert len(runs) == len(letters), f"a sender's chunks were split: {tags}"
+    for c in letters:
+        assert "".join(t for t in bridge.sends if t.strip().startswith(c)) == messages[c]
+
+
+async def test_serialization_does_not_change_a_single_senders_behaviour():
+    """The whole point of 4.3: additive for every existing caller."""
+    bridge = SlowBridge()
+    adapter = _adapter(bridge)
+    assert await adapter.send(MESSAGE_A) is SendOutcome.DELIVERED
+    assert "".join(bridge.sends) == MESSAGE_A
+    # And the lock is re-entrant across sequential sends, not held after one returns.
+    assert await adapter.send(MESSAGE_B) is SendOutcome.DELIVERED
+
+
+def test_the_lock_is_the_whole_mechanism_and_nothing_more():
+    """No hold timer, no chunk cap, no priority tier — each rejected in design.
+
+    A bounded hold was rejected in `channel-integrity` D5 (its `failed` outcome is
+    unreachable), a chunk cap likewise (it discards owner-requested content on the
+    healthy path), and delivery-path priority in this change's D6 (it rescues nothing
+    under a degraded bridge, and the cheap fix for a pathological reply is bounding
+    the reply at its source). Recorded as a test so a future change adding one has to
+    argue with the decision rather than around it.
+    """
+    import ast
+    import inspect
+
+    from henk.channel import signal as module
+
+    source = inspect.getsource(module)
+    tree = ast.parse(source)
+
+    # Exactly one lock, and it is constructed in __init__ (instance state, so the
+    # scheduler and the core must share one adapter — group 8 asserts that half).
+    locks = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "Lock"
+    ]
+    assert len(locks) == 1, [n.lineno for n in locks]
+
+    # `asyncio.wait_for` / `timeout` around the lock would be a hold timer.
+    for name in ("wait_for", "timeout"):
+        offenders = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == name
+        ]
+        assert offenders == [], f"asyncio.{name} looks like a hold timer: {offenders}"
+
+    for forbidden in ("max_chunks", "chunk_cap", "priority", "hold_timeout"):
+        assert forbidden not in source, f"{forbidden} was rejected in design"
+
+
+def test_the_lock_wraps_the_shared_sequence_not_the_two_wrappers():
+    """`send`/`send_proactive` must NOT take the lock (design D3's re-entry argument).
+
+    They already share `_send_serialized`, and the notice has to be emitted from
+    inside the same sequence as the chunks it describes. A lock in the wrappers
+    instead would put the notice outside the critical section; a lock in BOTH would
+    deadlock outright.
+    """
+    import ast
+    import inspect
+
+    from henk.channel.signal import SignalAdapter
+
+    tree = ast.parse(inspect.getsource(SignalAdapter))
+    holders = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.AsyncWith):
+                for item in inner.items:
+                    expr = item.context_expr
+                    name = getattr(expr, "attr", None) or getattr(expr, "id", "")
+                    if "lock" in str(name).lower():
+                        holders.add(node.name)
+    assert holders == {"_send_serialized"}, holders
