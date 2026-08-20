@@ -131,14 +131,65 @@ Two standing rules for this change:
       into `openspec/specs/channel-adapter/spec.md` is performed by `openspec archive`, i.e. by
       task 4.6. `openspec validate channel-integrity --strict` passes, so the delta is
       merge-ready
-- [ ] 4.4 Commit (publication-safe: no real numbers, no tailnet IPs — the pre-commit hook
+- [x] 4.4 Commit (publication-safe: no real numbers, no tailnet IPs — the pre-commit hook
       enforces it)
-- [ ] 4.5 **STOP — owner go required before deploying to rp5.** Then: confirm the **effective**
+- [x] 4.5 **STOP — owner go required before deploying to rp5.** Then: confirm the **effective**
       value of `signal.send_timeout_seconds`, `signal.open_timeout_seconds` and the `safe_length`
       floor against rp5's live `config.yaml` **before restart** — that file is locally modified and
       will not carry the new keys, so the values come from the loader, not from this repo's
       `config.yaml`. Deploy, confirm nothing owner-visible changed beyond non-ASCII replies
       splitting slightly more, and watch for `partial`/`failed` log lines for a few days. That
       watch is the delivery outcome's only consumer until a later change gives it a durable one
-      (design Risks), so it is a task rather than a suggestion
-- [ ] 4.6 `/opsx:archive` with the deploy verification recorded
+      (design Risks), so it is a task rather than a suggestion. **Deployed 2026-08-20; the
+      multi-day watch is deliberately left open — see As-built.**
+- [x] 4.6 `/opsx:archive` with the deploy verification recorded
+
+## As-built (deployed to rp5 2026-08-20, image rebuilt from `0bfcc5b`)
+
+Deploy-verified results for task 4.5, recorded here because none of it is reproducible from
+the test suite.
+
+- **The new config keys' effective values come from the loader, as predicted.** rp5's live
+  `config.yaml` was grepped before restart and carries `safe_length: 2000` and neither timeout
+  key. Read back through the new loader against that same file
+  (`compose run --rm --no-deps henk python -c '…Config.load("/app/config.yaml")…'`, which
+  needs no restart): `send 10.0 open 30.0 safe 2000`. So production runs on the dataclass +
+  `from_dict` literals this change pinned, which is exactly why task 3.2 required pinning both.
+- **A real deploy, confirmed by the build rather than by the container line.** In the
+  build-only step `COPY henk ./henk` was NOT cached and `pip install` re-ran (19.1s), so the
+  new source is in image `db07bf85`; the container line then read `Started`. The follow-up
+  `up -d --build` reported every layer `CACHED` — expected, since it reused the image built a
+  minute earlier, and NOT the "silently did nothing" tell the README warns about. Startup
+  logged `GET …/henk-events/json?since=<id>`, proving it attached to the real
+  `henk_henk_audit` volume.
+- **The reply path works under the new contract, single-chunk only.** A homelab-status
+  question, `/memories` and `/inbox all` all replied normally; the log grep for
+  `not delivered|send failed on chunk|Traceback` was empty. Every reply fit one chunk, so the
+  outcome plumbing and the new total timeout are exercised against the real bridge but
+  **multi-chunk delivery is not** — `/memories` was empty and `/inbox all` held one item, and
+  neither reaches 2000 bytes. Multi-chunk splitting remains covered only by tests, against a
+  fake bridge.
+- **The byte-split change is not hand-observable at this limit.** Forcing a split with
+  non-ASCII text needs roughly 500 emoji in one reply, which cannot be reliably elicited. For
+  ASCII, byte length equals character length, so there is nothing owner-visible to confirm —
+  which is itself the "nothing changed beyond non-ASCII replies splitting slightly more" check
+  passing.
+- **The multi-day `partial`/`failed` watch is OPEN, by owner decision.** The change is archived
+  without it. Rationale accepted: if the failure case arrives it is findable from these specs
+  and reopenable. The watch command is
+  `docker compose -p henk -f /home/pi/Coding/henk/docker-compose.yml logs henk --since 24h |
+  grep -E 'not delivered|send failed on chunk'`. Anything it prints is real and was invisible
+  before this change.
+
+Three findings for a later change (none blocks anything):
+
+1. **Henk emits Markdown in Signal replies** — bold markers and nested bullets — against
+   `AgentConfig.system_prompt`'s explicit "avoid Markdown code blocks and tables". Observed in
+   the smoke-test reply. Pre-existing, unrelated to this change, and a prompt-side fix.
+2. **Node status is reported by raw tailnet IP rather than hostname.** The homelab-health tool
+   output names nodes by address, so the owner-facing reply does too. Cosmetic for the owner,
+   but it means owner-visible text (and any transcript of it) carries tailnet addresses — the
+   same class of value the repo's commit hygiene rules keep out of the tree. Candidate fix:
+   map addresses to `rp5`/`vps`/`rp2` in the tool's presentation layer.
+3. **`owner-acknowledgement`'s proposal cites a line number this change moved.** The
+   `DEPLOY-VERIFY` note it references as `henk/channel/signal.py:146-151` is now at line 192.
