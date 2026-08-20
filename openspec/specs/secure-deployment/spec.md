@@ -94,8 +94,16 @@ Durable pipeline state (the intake offset checkpoint and any cadence-rehydration
 - **THEN** they are identical except for new files on the existing audit volume
 
 ### Requirement: Memory and inbox stores share the backed-up audit volume
-Durable memory and capture-inbox state SHALL live in a SQLite store on the existing backed-up audit volume; this change SHALL NOT add a new volume, published port, listening socket, ACL/egress grant, or secret. The stored content is owner-personal free text and rides the volume's existing backup path.
+Durable memory, capture-inbox, and reminder state SHALL live in one SQLite store on the existing backed-up audit volume; adding any of them SHALL NOT add a new volume, published port, listening socket, ACL/egress grant, or secret. The stored content is owner-personal free text and rides the volume's existing backup path. The reminder capability SHALL introduce no inbound surface and no outbound network dependency of its own: its added dependency is the timezone database, which is data read from the image rather than a service call.
 
 #### Scenario: No new infrastructure surface
 - **WHEN** the deployed stack's volumes, ports, and ACL grants are audited before and after this change
 - **THEN** they are identical except for new files on the existing audit volume
+
+#### Scenario: Reminders add no listener
+- **WHEN** the running container's listening sockets are inspected with reminders enabled
+- **THEN** they are unchanged from before this change
+
+#### Scenario: The timezone database resolves inside the image
+- **WHEN** a zone name is resolved in the built image rather than on a development host
+- **THEN** it resolves successfully, so no reminder resolution depends on the base image happening to carry a zone database
