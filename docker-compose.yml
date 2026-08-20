@@ -44,11 +44,13 @@ services:
       - ./config.yaml:/app/config.yaml:ro
       # Durable state, all of it: the append-only audit log (config `audit.path`,
       # falling back to `events.audit_path`), the intake-offset checkpoint beside
-      # it, AND the memory/capture-inbox SQLite store (config `store.path`, which
-      # must stay INSIDE this mount point or it would live in the container's
-      # writable layer and vanish on recreation). One named volume so all of it
-      # survives container recreation and joins the rp5 backup allowlist —
-      # memory-capture adds files here, not a new volume (secure-deployment).
+      # it, AND the memory / capture-inbox / reminders SQLite store (config
+      # `store.path`, which must stay INSIDE this mount point or it would live in
+      # the container's writable layer and vanish on recreation). One named
+      # volume so all of it survives container recreation and joins the rp5
+      # backup allowlist —
+      # memory-capture and reminders add FILES here, not a new volume
+      # (secure-deployment): no new mount, port, socket, ACL grant or secret.
       - henk_audit:/data/audit
     restart: unless-stopped
     # Sized from the 1.5 probe: agent peaked at ~420 MiB per-turn (idle ~180); 768m

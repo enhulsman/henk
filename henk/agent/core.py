@@ -7,6 +7,10 @@ Responsibilities (v1.2):
 - event turns arrive with delimited-untrusted-data + triage framing composed by
   the app layer; owner turns get neither, and instead the first owner turn of each
   session is prefixed with the memory recall block (agent-core delta);
+- when reminders are enabled, **every** owner turn additionally carries a one-line
+  current-time header, composed per TURN rather than per session — a relative time
+  has to resolve against the moment of the turn, not against whenever the
+  conversation started. Event turns never carry it;
 - owner commands are dispatched app-side before any session exists, so a
   deterministic action never costs a model turn (design D8);
 - event-turn output routes to the proactive owner-directed send, suppressed for
@@ -138,6 +142,7 @@ class AgentCore:
         receipts: Any | None = None,
         commands: Any | None = None,
         recall: Any | None = None,
+        time_header: Callable[[], str] | None = None,
     ) -> None:
         self._factory = factory
         self._channel = channel
@@ -178,6 +183,13 @@ class AgentCore:
         self._commands = commands
         # Memory recall provider; None disables injection entirely.
         self._recall = recall
+        # Composes the per-turn current-time header. A zero-argument callable, so
+        # the core stays ignorant of zones, clocks and renderers — the runtime
+        # supplies one closing over the SAME resolver the tools and commands use,
+        # which is what makes the time the model reasons from and the time the owner
+        # is told read identically. None when `reminders.enabled` is false, and then
+        # owner-turn composition is byte-identical to before this change.
+        self._time_header = time_header
         # Whether THIS session has already received its recall block. Keyed on the
         # first owner TURN rather than session creation, so an owner follow-up
         # continuing an event-started session still gets memory (design D3).
@@ -276,7 +288,7 @@ class AgentCore:
             return
 
         await self._ensure_session("owner-message")
-        content = self._with_recall(text)
+        content = self._with_time_header(self._with_recall(text))
         try:
             with self._framed_turn(TurnType.OWNER):
                 reply = await self._session.run_turn(content)  # type: ignore[union-attr]
@@ -417,6 +429,28 @@ class AgentCore:
         except Exception:
             logger.exception("owner command failed")
             return self._error_reply
+
+    def _with_time_header(self, text: str) -> str:
+        """Prefix this owner turn's current-time header (agent-core delta).
+
+        Composed **per turn**: two owner turns an hour apart carry two different
+        times, so a relative reminder resolves against the moment the owner spoke
+        rather than against the session's start. Applied outside the recall block, so
+        the composition order is fixed and predictable: time, then memory, then what
+        the owner said.
+
+        A failure is logged and the turn proceeds without it — knowing the time is
+        not a precondition for talking, and the header is a convenience for the
+        model, not a guarantee the owner is relying on.
+        """
+        if self._time_header is None:
+            return text
+        try:
+            header = self._time_header()
+        except Exception:
+            logger.error("could not compose the current-time header", exc_info=True)
+            return text
+        return f"{header}\n\n{text}" if header else text
 
     def _with_recall(self, text: str) -> str:
         """Prefix the recall block to the first owner turn of this session.

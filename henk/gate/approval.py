@@ -267,17 +267,17 @@ class ApprovalGate:
             if context.turn_type is TurnType.EVENT:
                 return (
                     "this is an event-triage turn driven by untrusted sensor data, "
-                    "so writes are out of scope here; nothing was stored. Tell the "
-                    "owner what should be remembered and let them use /remember or "
-                    "/capture, or /new for a clean session."
+                    "so writes are out of scope here; nothing was stored or "
+                    "scheduled. Tell the owner what should be kept and let them use "
+                    "/remember, /capture or /remind, or /new for a clean session."
                 )
             if context.tainted:
                 return (
                     "this session has already handled an incident, so it stays "
                     "tainted for its lifetime and writes are out of scope in it; "
-                    "nothing was stored. The owner can use /remember or /capture "
-                    "(which bypass this session entirely), or /new to start a "
-                    "clean session where writes work again."
+                    "nothing was stored or scheduled. The owner can use /remember, "
+                    "/capture or /remind (which bypass this session entirely), or "
+                    "/new to start a clean session where writes work again."
                 )
         if context.turn_type not in scope:
             return (

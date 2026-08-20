@@ -30,17 +30,23 @@ logger = logging.getLogger("henk.audit")
 #: v3: the `authorization` record type (mutation receipts, model-initiated and
 #: owner-command), the tier+outcome shape of session `approvals` entries (v2 used
 #: `decision`), the `executed` flag on `tool_calls`, and `memory_hash`.
-SCHEMA_VERSION = 3
+#: v4: the `reminder` record type (one per lifecycle transition) and the `scheduler`
+#: value for `initiated_by`. v4 declares the COMPLETE reminder transition
+#: enumeration, delivery's half included, so shipping `reminder-delivery` needs no
+#: further bump — a schema document is a validation contract, not an inventory of
+#: what the current build emits.
+SCHEMA_VERSION = 4
 
 _SCHEMA_DIR = Path(__file__).resolve().parent / "schema"
 
 #: The current schema, matching :data:`SCHEMA_VERSION`. Historical versions stay
 #: committed so records that declare an older version still validate (audit-log
 #: spec: prior schema versions remain readable).
-AUDIT_SCHEMA_PATH = _SCHEMA_DIR / "audit-record.v3.schema.json"
+AUDIT_SCHEMA_PATH = _SCHEMA_DIR / "audit-record.v4.schema.json"
 AUDIT_SCHEMA_V1_PATH = _SCHEMA_DIR / "audit-record.v1.schema.json"
 AUDIT_SCHEMA_V2_PATH = _SCHEMA_DIR / "audit-record.v2.schema.json"
-AUDIT_SCHEMA_V3_PATH = AUDIT_SCHEMA_PATH
+AUDIT_SCHEMA_V3_PATH = _SCHEMA_DIR / "audit-record.v3.schema.json"
+AUDIT_SCHEMA_V4_PATH = AUDIT_SCHEMA_PATH
 
 #: Owner-command receipts carry a bounded effect summary — a receipt is evidence,
 #: not a transcript, and the audit log is not a place to spill free text.
@@ -95,6 +101,98 @@ def authorization_record(
         "detail": _bounded(detail),
         "at": at,
     }
+
+
+#: Every reminder lifecycle transition v4 can express. The four this change never
+#: writes belong to `reminder-delivery`; they are declared so that half needs no
+#: schema bump. `reinstated` is a TRANSITION name, not a row status — a reinstated
+#: reminder's stored status is `pending`.
+REMINDER_TRANSITIONS = (
+    "scheduled",
+    "cancelled",
+    "reinstated",
+    "delivered",
+    "delivered-late",
+    "missed",
+    "abandoned",
+)
+
+#: Who caused a transition. `scheduler` is delivery's; nothing here emits it.
+REMINDER_INITIATORS = ("model", "owner-command", "scheduler")
+
+
+def reminder_record(
+    *,
+    reminder_id: int,
+    due_at: float | None,
+    transition: str,
+    initiated_by: str = "model",
+    at: float | None = None,
+) -> dict[str, Any]:
+    """Build one reminder lifecycle record (audit-log spec).
+
+    Carries the reminder's id, its due **instant**, the transition, the initiator and
+    a timestamp — and deliberately **not** the reminder's text. The store holds the
+    content; the log holds the evidence, and the log gets read and pasted around, so
+    owner-personal free text does not belong in it. The committed v4 document
+    enforces that as well as this builder does.
+
+    The due time is the epoch instant rather than a rendered string: rendering depends
+    on the currently configured zone, and a receipt must not move when the config does.
+
+    This record is appended **after** the store transaction that performed the
+    transition commits, so the log never claims a transition the store did not make.
+    A crash between the two costs a receipt for a real transition, which is the
+    preferable direction: a log that claims state the store does not have is worse
+    than a log with a gap. That ordering is the caller's to honour — see
+    :class:`ReminderReceipts`.
+    """
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "record_type": "reminder",
+        "reminder_id": int(reminder_id),
+        "due_at": None if due_at is None else float(due_at),
+        "transition": transition,
+        "initiated_by": initiated_by,
+        "at": at,
+    }
+
+
+class ReminderReceipts:
+    """Appends one `reminder` record per lifecycle transition. Never blocks.
+
+    A thin counterpart to :class:`MutationReceipts`, deliberately separate because the
+    two answer different questions at different moments: an `authorization` record
+    says whether the agent was *permitted* to act and is written when the gate
+    decides; a `reminder` record says what *changed* and is written after the store
+    commits. One existing without the other is itself evidence — an authorization with
+    no transition means the tool was allowed and then failed.
+
+    Call this only on a transition that actually happened. A scheduling, cancellation
+    or reinstatement rejected by validation, by the cap, or by an unknown id writes
+    **nothing**: receipts record state changes, and none occurred.
+    """
+
+    def __init__(self, audit: "AuditLog | None") -> None:
+        self._audit = audit
+
+    def record(
+        self,
+        *,
+        reminder_id: int,
+        due_at: float | None,
+        transition: str,
+        initiated_by: str = "model",
+    ) -> dict[str, Any]:
+        record = reminder_record(
+            reminder_id=reminder_id,
+            due_at=due_at,
+            transition=transition,
+            initiated_by=initiated_by,
+        )
+        if self._audit is not None:
+            self._audit.write(record)  # loud but non-blocking; never raises
+        return record
 
 
 def _bounded(detail: str | None) -> str | None:

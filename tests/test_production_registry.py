@@ -82,12 +82,16 @@ def test_default_system_prompt_enumerates_every_registered_tool(registry):
     # Henk's honest-capability framing is only honest if the enumeration and the
     # registry agree. This is the drift that would make him claim a tool he does
     # not have, or hide one he does.
-    from henk.config import AgentConfig
+    from henk.config import BASE_TOOL_SUMMARIES, COUNT_WORDS, AgentConfig
 
     prompt = AgentConfig().system_prompt
     for name in registry.names():
         assert name in prompt, f"{name} is registered but not enumerated"
-    assert "seven" in prompt and len(registry.names()) == 7
+    # The count is DERIVED, not asserted as a literal: reminders-core made this the
+    # second place a hardcoded "seven" would have had to be updated, so both the
+    # prompt and this test now read one source.
+    assert [name for name, _ in BASE_TOOL_SUMMARIES] == registry.names()
+    assert COUNT_WORDS[len(registry.names())] in prompt
 
 
 def test_default_system_prompt_names_the_owner_command_set():

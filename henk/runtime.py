@@ -19,7 +19,12 @@ from henk.agent.core import AgentCore
 from henk.agent.recall import MemoryRecall
 from henk.agent.sdk_session import SdkSessionFactory
 from henk.app import App, Dispatcher
-from henk.audit import AuditLog, MutationReceipts, read_audit_records
+from henk.audit import (
+    AuditLog,
+    MutationReceipts,
+    ReminderReceipts,
+    read_audit_records,
+)
 from henk.channel.allowlist import AllowlistFilter
 from henk.channel.base import ChannelAdapter, SendOutcome
 from henk.channel.signal import SignalAdapter, SignalCliRestBridge
@@ -33,8 +38,9 @@ from henk.events.intake import (
 )
 from henk.events.pipeline import EventPipeline, PipelineConfig
 from henk.gate.approval import ApprovalGate
+from henk.reminders.timeparse import TimeResolver
 from henk.store import build_stores
-from henk.tools import build_production_registry
+from henk.tools import build_production_registry, build_time_resolver
 
 logger = logging.getLogger("henk.runtime")
 
@@ -73,8 +79,27 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
     # One store, shared: the tools, the owner commands and recall must all read and
     # write the same repositories, or `/remember` and `store_memory` would disagree
     # about what Henk knows. Nothing is opened here — Store connects lazily.
-    stores = build_stores(config.store)
-    registry = build_production_registry(config, client, stores=stores)
+    stores = build_stores(config.store, config.reminders)
+
+    # Audit is constructed UNCONDITIONALLY (design D11) — see the note below — but
+    # the reminder receipts need it before the registry is built, because the tools
+    # take the lifecycle-record writer as a constructor argument.
+    audit = AuditLog(config.audit.path)
+    receipts = MutationReceipts(audit)
+    reminder_receipts = ReminderReceipts(audit)
+
+    # ONE resolver for the whole runtime, or None when reminders are disabled. The
+    # tools, the owner commands and the per-turn time header all close over this
+    # same instance: a due time rendered by two resolvers could differ, and the owner
+    # would be the one left adjudicating which is right.
+    resolver = build_time_resolver(config)
+    registry = build_production_registry(
+        config,
+        client,
+        stores=stores,
+        resolver=resolver,
+        reminder_receipts=reminder_receipts,
+    )
 
     # Every timeout comes from config, none from a constructor default: an
     # unsupplied default is how the receive path's 30s went unchosen.
@@ -91,13 +116,11 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         safe_length=config.signal.safe_length,
     )
 
-    # Audit is constructed UNCONDITIONALLY (design D11). It used to appear only
-    # when events were enabled — a leftover of arriving with that change. With
+    # Audit was constructed above, UNCONDITIONALLY (design D11). It used to appear
+    # only when events were enabled — a leftover of arriving with that change. With
     # mutating tools in the registry, every supported configuration must produce
     # receipts, the rollback path (`events.enabled: false`) included.
-    audit = AuditLog(config.audit.path)
-    receipts = MutationReceipts(audit)
-
+    #
     # The gate sends approval prompts over the same channel the owner uses. The
     # demotion flag is the only config input it takes, and it only narrows; the
     # recorder is what makes every decision it takes durable at decision time.
@@ -158,11 +181,22 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         commands=OwnerCommands(
             memories=stores.memories,
             inbox=stores.inbox,
+            # The SAME repository and resolver instances the tools got. Passed only
+            # when the capability is enabled, so all four reminder commands reply
+            # honestly rather than half-working when it is off.
+            reminders=stores.reminders if config.reminders.enabled else None,
+            resolver=resolver,
             receipts=receipts,
+            reminder_receipts=reminder_receipts,
             inbox_page_size=config.store.inbox_page_size,
         ),
         # Memory recall for the first owner turn of each session (D3).
         recall=MemoryRecall(stores.memories, limit=config.store.recall_render_limit),
+        # The per-turn current-time header, composed from the same resolver — so the
+        # time the model reasons from and the time the owner is told read identically.
+        # None when reminders are disabled, and then owner-turn composition is
+        # byte-identical to before this change.
+        time_header=_time_header(resolver),
     )
     dispatcher = Dispatcher(AllowlistFilter(config.owner.id), gate, core)
 
@@ -172,6 +206,18 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         else None
     )
     return App(adapter, dispatcher, core, coordinator=coordinator), client
+
+
+def _time_header(resolver: TimeResolver | None):
+    """A zero-argument header composer, or None when reminders are disabled.
+
+    Reads the clock once per call, which is once per owner turn — the header has to
+    reflect the moment of *this* turn, not the session's start, or a relative time
+    the model composes from it means something the owner did not say.
+    """
+    if resolver is None:
+        return None
+    return lambda: resolver.time_header(resolver.current_instant())
 
 
 def _build_pipeline(config: Config) -> EventPipeline:

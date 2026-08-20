@@ -7,6 +7,7 @@ import logging
 import httpx
 
 from henk.config import Config
+from henk.reminders.timeparse import TimeResolver
 from henk.store import HenkStores, build_stores
 from henk.tools.base import (
     AuthorizationTier,
@@ -21,6 +22,12 @@ from henk.tools.homelab_health import HomelabHealthTool
 from henk.tools.memory import StoreMemoryTool
 from henk.tools.notify import NotifyTool
 from henk.tools.publish_handoff import PublishHandoffTool
+from henk.tools.reminders import (
+    REMINDER_TOOL_NAMES,
+    CancelReminderTool,
+    RemindersReadTool,
+    RemindTool,
+)
 from henk.tools.taiga_read import TaigaReadTool
 from henk.tools.todo_read import TodoReadTool
 
@@ -39,10 +46,37 @@ __all__ = [
     "TodoReadTool",
     "NotifyTool",
     "PublishHandoffTool",
+    "REMINDER_TOOL_NAMES",
+    "CancelReminderTool",
+    "RemindersReadTool",
+    "RemindTool",
+    "build_time_resolver",
     "build_production_registry",
 ]
 
 logger = logging.getLogger("henk.tools")
+
+
+def build_time_resolver(config: Config) -> TimeResolver | None:
+    """The one resolver the tools AND the owner commands share, or None when off.
+
+    One instance, because a due time rendered by two resolvers could differ and the
+    owner would have to adjudicate. ``config.owner.zone`` is guaranteed present here:
+    config load refuses `reminders.enabled` without `owner.timezone`, naming both.
+    """
+    if not config.reminders.enabled:
+        return None
+    zone = config.owner.zone
+    if zone is None:  # pragma: no cover - config load already refuses this
+        raise ValueError(
+            "reminders are enabled but owner.timezone is unset; config load should "
+            "have refused this"
+        )
+    return TimeResolver(
+        zone,
+        horizon_days=config.reminders.horizon_days,
+        clock_skew_tolerance_seconds=config.reminders.clock_skew_tolerance_seconds,
+    )
 
 
 def build_production_registry(
@@ -50,6 +84,8 @@ def build_production_registry(
     client: httpx.AsyncClient,
     *,
     stores: HenkStores | None = None,
+    resolver: TimeResolver | None = None,
+    reminder_receipts=None,
 ) -> ToolRegistry:
     """The production toolset: reads, notify-class sends, and the durable writes.
 
@@ -79,7 +115,7 @@ def build_production_registry(
     registered until that project-id filter is implemented. Its class and tests are
     kept for that follow-up.
     """
-    stores = stores or build_stores(config.store)
+    stores = stores or build_stores(config.store, config.reminders)
     registry = ToolRegistry()
     registry.register(
         HomelabHealthTool(
@@ -128,4 +164,19 @@ def build_production_registry(
     registry.register(
         InboxReadTool(stores.inbox, page_size=config.store.inbox_page_size)
     )
+    # Reminders register ONLY when enabled, and the capability ships disabled. A
+    # build that accepts "remind me at six", echoes a confident confirmation and
+    # then says nothing at six has spent the owner's trust on a promise it
+    # structurally cannot keep — delivery is the `reminder-delivery` change. With the
+    # flag off the registry is byte-for-byte the pre-change one.
+    if config.reminders.enabled:
+        resolver = resolver or build_time_resolver(config)
+        registry.register(
+            RemindTool(stores.reminders, resolver, receipts=reminder_receipts)
+        )
+        registry.register(
+            CancelReminderTool(stores.reminders, resolver, receipts=reminder_receipts)
+        )
+        # Read-only, so it bypasses the gate and takes no receipt.
+        registry.register(RemindersReadTool(stores.reminders, resolver))
     return registry

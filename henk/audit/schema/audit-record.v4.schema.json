@@ -1,0 +1,427 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/enhulsman/henk/audit-record.v4.schema.json",
+  "title": "Henk audit record",
+  "description": "One record per EVENT TRIAGE (written at triage completion), per owner session, per suppressed event, per MUTATION AUTHORIZATION (written at decision time), or per REMINDER LIFECYCLE TRANSITION (written after the store transaction commits). Schema version 4 adds: the `reminder` record type and the `scheduler` value for `initiated_by`. Version 4 declares the COMPLETE transition enumeration for the reminder capability, including the transitions only the delivery half writes, so that shipping delivery requires no further version increment \u2014 a schema document is a validation contract, not an inventory of what the current build emits. Version 3 added: the `authorization` record type (model-initiated decisions and owner-command receipts), the tier+outcome shape of session `approvals` entries (v2 used `decision`), the `executed` flag on `tool_calls` entries, and the session record's `memory_hash`.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "record_type"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 4
+    },
+    "record_type": {
+      "enum": [
+        "session",
+        "suppression",
+        "authorization",
+        "reminder"
+      ]
+    },
+    "at": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "description": "Unix time the record was produced (informational)."
+    },
+    "trigger": {
+      "enum": [
+        "owner-message",
+        "event"
+      ],
+      "description": "What started the session."
+    },
+    "event": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "description": "For event-triggered triages: the incidents triaged.",
+      "items": {
+        "type": "object",
+        "required": [
+          "identity_key"
+        ],
+        "properties": {
+          "identity_key": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "recurrence": {
+            "type": "boolean"
+          },
+          "event_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "tool_calls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "tool_class": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "result_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The tool's returned identifier, retained ONLY for tools whose result the application consumes \u2014 in practice `publish_handoff`, whose value becomes this record's handoff_message_id. Null for every other tool: results are not recorded, so no tool output (node addresses, note content, stored memories, captured thoughts) enters the audit log."
+          },
+          "executed": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "True when the invocation was permitted to proceed. Derived by correlating the invocation with this session's authorization records \u2014 never inferred from tool-result text. Read-only and notify-only calls are true by construction: they bypass the gate."
+          }
+        }
+      }
+    },
+    "diagnosis": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "confidence": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "high",
+        "moderate",
+        "medium",
+        "low",
+        "unknown",
+        null
+      ]
+    },
+    "handoff_message_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "triage_arc_complete": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Event-triggered sessions only; null otherwise."
+    },
+    "approvals": {
+      "type": "array",
+      "description": "Every mutating-tool authorization decision made during this session. Non-empty whenever a mutating tool was invoked. Owner-command receipts are NOT listed here: commands run outside any turn or session and live only as standalone authorization records.",
+      "items": {
+        "type": "object",
+        "required": [
+          "tool",
+          "tier",
+          "outcome"
+        ],
+        "properties": {
+          "tool": {
+            "type": "string"
+          },
+          "tier": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "standing",
+              "per-instance",
+              null
+            ],
+            "description": "The tool's DECLARED authorization tier (a tool property, so it is reported even when the kill-switch demoted its enforcement)."
+          },
+          "outcome": {
+            "enum": [
+              "authorized",
+              "approved",
+              "denied",
+              "cancelled",
+              "timeout",
+              "suppressed",
+              "out-of-scope",
+              "rejected-busy"
+            ]
+          },
+          "initiated_by": {
+            "enum": [
+              "model",
+              "owner-command"
+            ]
+          },
+          "reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "memory_hash": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Content hash of the recall block this session received, as injected. Null when no block was injected (empty store, or a session that only ran event turns). Makes the memory state a session saw auditable."
+    },
+    "outcome": {
+      "type": "string"
+    },
+    "announceable": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "turn_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "model": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "usage": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "input_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cache_read_input_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Cache-read input tokens (prompt caching); additive to the uncached input_tokens."
+        }
+      }
+    },
+    "identity_key": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "event_id": {
+      "type": "string"
+    },
+    "tool": {
+      "type": "string",
+      "description": "Authorization records: the named action. A registered tool name for model-initiated decisions; the command itself (e.g. `/forget`) for owner-command receipts."
+    },
+    "tier": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "standing",
+        "per-instance",
+        null
+      ],
+      "description": "Authorization records: the tool's declared tier. Null for owner commands \u2014 a tier is a tool property and a command is not a tool."
+    },
+    "initiated_by": {
+      "enum": [
+        "model",
+        "owner-command",
+        "scheduler"
+      ],
+      "description": "Authorization and reminder records: who initiated the action. `scheduler` is written only by the reminder-delivery half (every delivered, missed and abandoned transition); it is declared in v4 so delivery needs no new version."
+    },
+    "reference": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Authorization records: the gate's one-time invocation reference. Null for owner commands (no gate involvement \u2014 the gate governs model-initiated calls)."
+    },
+    "turn_type": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "owner",
+        "event",
+        "command",
+        null
+      ],
+      "description": "Authorization records: the kind of turn the decision was made in. `command` means it ran outside any turn or session."
+    },
+    "detail": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Authorization records: a bounded summary of the effect (owner commands name what changed, e.g. how many memories were removed)."
+    },
+    "reminder_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Reminder records: the reminder's store id."
+    },
+    "due_at": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "description": "Reminder records: the reminder's resolved due instant, epoch seconds. The instant rather than a rendered string, because rendering depends on the currently configured zone and a receipt must not move."
+    },
+    "transition": {
+      "enum": [
+        "scheduled",
+        "cancelled",
+        "reinstated",
+        "delivered",
+        "delivered-late",
+        "missed",
+        "abandoned"
+      ],
+      "description": "Reminder records: the name of the LIFECYCLE TRANSITION, not the stored row status \u2014 a reinstated reminder's row status is `pending`. The COMPLETE enumeration for the capability: `delivered`, `delivered-late`, `missed` and `abandoned` are written only by the reminder-delivery half and validate here before that half exists."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "session"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "trigger",
+          "outcome",
+          "tool_calls"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "suppression"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "identity_key",
+          "reason"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "authorization"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "tool",
+          "outcome",
+          "initiated_by"
+        ],
+        "properties": {
+          "outcome": {
+            "enum": [
+              "authorized",
+              "approved",
+              "denied",
+              "cancelled",
+              "timeout",
+              "suppressed",
+              "out-of-scope",
+              "rejected-busy"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "reminder"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "reminder_id",
+          "transition",
+          "initiated_by",
+          "due_at"
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "text"
+              ]
+            },
+            {
+              "required": [
+                "reminder_text"
+              ]
+            },
+            {
+              "required": [
+                "content"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

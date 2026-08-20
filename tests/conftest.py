@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import time
 from typing import AsyncIterator
 
 import httpx
@@ -194,3 +196,41 @@ def inbound(text: str, sender: str = "+31600000000", *, is_group: bool = False):
 @pytest.fixture
 def fake_channel() -> FakeChannel:
     return FakeChannel()
+
+
+# --- Process-timezone guard (reminders design D8a) ------------------------
+
+#: The process default zone is a separate hazard from the zone *database*, and the
+#: larger one, because it fails asymmetrically: a bare `datetime.now()`, a
+#: zone-less `fromtimestamp(t)`, a bare `.astimezone()`, or `.timestamp()` on a
+#: naive value all read it silently. The development host resolves as
+#: Europe/Amsterdam and a slim container with no TZ is UTC, so the likeliest slip
+#: is green locally and two hours wrong on rp5 only.
+#:
+#: `Pacific/Kiritimati` (+14) is the hostile value that earns its place: a leak
+#: there changes the *date*, not merely the hour, so it fails assertions an
+#: hour-only offset would slip past. `Europe/Amsterdam` is included as the
+#: false-negative control — a leak is invisible under it, which is the whole point.
+HOSTILE_PROCESS_ZONES = ("UTC", "Pacific/Kiritimati", "Europe/Amsterdam")
+
+
+@pytest.fixture(params=HOSTILE_PROCESS_ZONES)
+def process_tz(request) -> str:
+    """Run the test body under each hostile process timezone in turn.
+
+    Every clock-touching surface uses this — the resolver, the renderer, the
+    reminder owner commands and the per-turn time header — because the dispatcher
+    is where `datetime.now()` is most idiomatic to write, not just the resolver.
+    The suite is the guard; the image's `TZ=UTC` is only the floor under it.
+    """
+    original = os.environ.get("TZ")
+    os.environ["TZ"] = request.param
+    time.tzset()
+    try:
+        yield request.param
+    finally:
+        if original is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = original
+        time.tzset()

@@ -1,7 +1,9 @@
 """Owner commands, executed app-side with no agent turn (design D8).
 
-`/remember`, `/forget`, `/memories`, `/capture`, `/inbox`, `/inbox all` and
-`/inbox done <id>` are deterministic, instant, and cost zero tokens. They are also
+`/remember`, `/forget`, `/memories`, `/capture`, `/inbox`, `/inbox all`,
+`/inbox done <id>`, `/remind <when> <text>`, `/reminders`,
+`/reminders cancel <id>` and `/reminders reinstate <id>` are deterministic,
+instant, and cost zero tokens. They are also
 **owner-initiated by construction**: the text never passes through the model, so
 the gate — which governs model-initiated tool calls — is not involved, and session
 taint does not apply. That is the whole point of `/capture` existing as a command:
@@ -14,18 +16,38 @@ mutations, and none occurred.
 
 Failures are loud but honest. A write that failed never reads as success, and an
 unreadable store is never reported as an empty one.
+
+The reminder commands add two rules of their own:
+
+- **`/remind` accepts explicit time forms only**, matched longest-first so
+  `/remind 2026-08-25 07:30 buy bread` splits without a heuristic. A command must be
+  deterministic, and a command is not the place to guess — `/remind sometime next
+  week …` is a sentence for the agent, not for the dispatcher.
+- **Reinstating is command-only, and refuses a past due time.** As a tool it would
+  need a pending-cap bypass and a counter reset; as a command it needs neither. The
+  past-due refusal is what keeps the entire late/missed question inside
+  `reminder-delivery` instead of leaking into a core command.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 
+from henk.reminders.timeparse import COMMAND as COMMAND_PATH
+from henk.reminders.timeparse import TimeResolutionError
 from henk.store import (
     DEFAULT_PAGE_SIZE,
     ContentTooLongError,
     EmptyContentError,
     StoreError,
     format_created_at,
+)
+from henk.store.reminders import (
+    CANCELLED,
+    PENDING,
+    SOURCE_COMMAND,
+    ReminderCapReachedError,
 )
 
 logger = logging.getLogger("henk.agent.commands")
@@ -47,6 +69,26 @@ _UNAVAILABLE = (
     "deployment. Nothing was changed."
 )
 
+#: Covers BOTH reasons honestly — the capability is switched off, or no store is
+#: wired — because from the owner's side they are the same fact. Nothing is
+#: scheduled, nothing is changed, and every stored reminder is left alone: they
+#: become operable again the moment the capability is re-enabled.
+_REMINDERS_UNAVAILABLE = (
+    "Reminders aren't configured in this deployment, so nothing is scheduled and "
+    "nothing was changed. Any reminders already stored are untouched."
+)
+
+#: The accepted `<when>` forms, in one place so every refusal names the same set.
+_ACCEPTED_WHEN = (
+    "Accepted times are +90m / +2h / +3d, a clock time like 07:30 (the next time "
+    "it comes round), or a dated time like 2026-08-25 07:30."
+)
+
+#: The two-token dated form, tried FIRST so a dated time is never mistaken for a
+#: clock reading followed by text.
+_DATE_TOKEN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_TIME_TOKEN = re.compile(r"^\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?$")
+
 
 class OwnerCommands:
     """Recognizes and executes the owner command set. Returns the reply text.
@@ -61,13 +103,23 @@ class OwnerCommands:
         *,
         memories=None,
         inbox=None,
+        reminders=None,
+        resolver=None,
         receipts=None,
+        reminder_receipts=None,
         inbox_page_size: int = DEFAULT_PAGE_SIZE,
         forget_echo_limit: int = FORGET_ECHO_LIMIT,
     ) -> None:
         self.memories = memories
         self.inbox = inbox
+        # Both None when the capability is disabled: the runtime passes them only
+        # when `reminders.enabled`, so the four commands reply honestly rather than
+        # half-working. The same repository and the SAME resolver instance the tools
+        # got, so a due time can never read differently between the two paths.
+        self.reminders = reminders
+        self._resolver = resolver
         self._receipts = receipts
+        self._reminder_receipts = reminder_receipts
         self._page_size = inbox_page_size
         self._echo_limit = forget_echo_limit
 
@@ -83,6 +135,8 @@ class OwnerCommands:
             "/memories": self._list_memories,
             "/capture": self._capture,
             "/inbox": self._inbox,
+            "/remind": self._remind,
+            "/reminders": self._reminders,
         }.get(verb.lower())
         if handler is None:
             return None
@@ -236,6 +290,196 @@ class OwnerCommands:
             return f"No open inbox item has id {item_id}, so nothing changed."
         self._receipt("/inbox done", f"marked inbox item {item_id} done")
         return f"Done: #{item.id} {item.text}"
+
+    # --- reminders --------------------------------------------------------
+
+    def _remind(self, rest: str) -> str:
+        if self.reminders is None or self._resolver is None:
+            return _REMINDERS_UNAVAILABLE
+        when, text = self._split_remind(rest)
+        if when is None:
+            return f"I couldn't read a time in that. {_ACCEPTED_WHEN}"
+        # Resolve BEFORE checking the text: resolution has no side effects, and this
+        # is what makes "unrecognized form" and "recognized form, text missing" two
+        # distinct, honest replies rather than one vague one.
+        try:
+            resolution = self._resolver.resolve(when, path=COMMAND_PATH)
+        except TimeResolutionError as exc:
+            return f"Nothing scheduled: {exc}"
+        if not text.strip():
+            return (
+                "That time reads fine, but the reminder text is required — "
+                f"try /remind {when} <what to remind you about>."
+            )
+        try:
+            stored = self.reminders.schedule(
+                text,
+                due_at=resolution.due_at,
+                due_tz=self._resolver.zone_key,
+                # The `<when>` TOKEN, not the whole command line: a forensic column
+                # whose meaning varies per row cannot be read at all.
+                input_spec=when,
+                source=SOURCE_COMMAND,
+            )
+        except EmptyContentError:
+            return "That was empty — /remind needs the reminder text after the time."
+        except (ContentTooLongError, ReminderCapReachedError) as exc:
+            return f"Nothing scheduled: {exc}"
+        except StoreError as exc:
+            logger.error("/remind failed: %s", exc)
+            return (
+                f"Couldn't schedule that — the store could not be written ({exc}). "
+                "Nothing was scheduled."
+            )
+        self._receipt("/remind", f"scheduled reminder {stored.id}")
+        self._reminder_receipt(stored, "scheduled")
+        reply = (
+            f"Reminder #{stored.id} set for "
+            f"{self._resolver.render(stored.due_at)}: {stored.text}"
+        )
+        if resolution.disclosure:
+            reply += f"\nNote: {resolution.disclosure}."
+        return reply
+
+    @staticmethod
+    def _split_remind(rest: str) -> tuple[str | None, str]:
+        """Split `<when> <text>`, trying the two-token dated form first.
+
+        Longest-first is what makes `/remind 2026-08-25 07:30 buy bread` work without
+        a heuristic: had the one-token form won, `<when>` would be a date with no
+        time of day (refused) and the text would begin with the clock reading.
+        """
+        parts = rest.split()
+        if not parts:
+            return None, ""
+        if (
+            len(parts) >= 2
+            and _DATE_TOKEN.match(parts[0])
+            and _TIME_TOKEN.match(parts[1])
+        ):
+            return f"{parts[0]} {parts[1]}", " ".join(parts[2:])
+        return parts[0], " ".join(parts[1:])
+
+    def _reminders(self, rest: str) -> str:
+        if self.reminders is None or self._resolver is None:
+            return _REMINDERS_UNAVAILABLE
+        argument = rest.strip()
+        if not argument:
+            return self._reminders_list()
+        verb, _, tail = argument.partition(" ")
+        verb = verb.lower()
+        raw_id = tail.strip()
+        if verb in ("cancel", "reinstate") and raw_id.isdigit():
+            if verb == "cancel":
+                return self._reminders_cancel(int(raw_id))
+            return self._reminders_reinstate(int(raw_id))
+        return (
+            f'I don\'t know "/reminders {argument}". Use /reminders, '
+            "/reminders cancel <id>, or /reminders reinstate <id>."
+        )
+
+    def _reminders_list(self) -> str:
+        try:
+            page = self.reminders.list_pending()
+        except StoreError as exc:
+            logger.error("/reminders failed: %s", exc)
+            # An unreadable schedule is NOT an empty one, and must never read as
+            # one: the owner would conclude nothing is coming.
+            return (
+                f"Couldn't read your reminders ({exc}). They aren't lost — I just "
+                "can't list them right now, so don't take this as an empty schedule."
+            )
+        if not page.items:
+            return "Nothing scheduled. Add one with /remind <when> <what>."
+        count = len(page.items)
+        lines = [f"{count} pending reminder{'' if count == 1 else 's'} (soonest first):"]
+        lines.extend(
+            f"- [{item.id}] {self._resolver.render(item.due_at)}: {item.text}"
+            for item in page.items
+        )
+        if page.remainder:
+            lines.append(f"...and {page.remainder} further out, not shown.")
+        lines.append("Cancel one with /reminders cancel <id>.")
+        return "\n".join(lines)
+
+    def _reminders_cancel(self, reminder_id: int) -> str:
+        try:
+            cancelled = self.reminders.cancel(reminder_id)
+        except StoreError as exc:
+            logger.error("/reminders cancel failed: %s", exc)
+            return (
+                f"Couldn't cancel that — the store could not be written ({exc}). "
+                "Nothing changed."
+            )
+        if cancelled is None:
+            return f"No pending reminder has id {reminder_id}, so nothing changed."
+        self._receipt("/reminders cancel", f"cancelled reminder {reminder_id}")
+        self._reminder_receipt(cancelled, "cancelled")
+        return (
+            f"Cancelled #{cancelled.id}, which was set for "
+            f"{self._resolver.render(cancelled.due_at)}: {cancelled.text}\n"
+            f"Put it back with /reminders reinstate {cancelled.id}."
+        )
+
+    def _reminders_reinstate(self, reminder_id: int) -> str:
+        try:
+            existing = self.reminders.get(reminder_id)
+        except StoreError as exc:
+            logger.error("/reminders reinstate failed: %s", exc)
+            return f"Couldn't read that reminder ({exc}). Nothing changed."
+        if existing is None or existing.status != CANCELLED:
+            return (
+                f"No cancelled reminder has id {reminder_id}, so nothing changed. "
+                "See /reminders for what is pending."
+            )
+        # Refused rather than reinstated into the past. This is the line that keeps
+        # the whole late/missed question inside reminder-delivery: a core command
+        # never has to decide what a reminder that is already due should do.
+        if existing.due_at <= self._resolver.current_instant():
+            return (
+                f"#{existing.id} was due at "
+                f"{self._resolver.render(existing.due_at)}, which has already "
+                "passed, so nothing changed. Set a new time with "
+                f"/remind <when> {existing.text}"
+            )
+        try:
+            back = self.reminders.reinstate(reminder_id)
+        except ReminderCapReachedError as exc:
+            return f"Nothing changed: {exc}"
+        except StoreError as exc:
+            logger.error("/reminders reinstate failed: %s", exc)
+            return (
+                f"Couldn't reinstate that — the store could not be written "
+                f"({exc}). Nothing changed."
+            )
+        if back is None:  # pragma: no cover - the status was checked above
+            return f"No cancelled reminder has id {reminder_id}, so nothing changed."
+        self._receipt("/reminders reinstate", f"reinstated reminder {reminder_id}")
+        self._reminder_receipt(back, "reinstated")
+        assert back.status == PENDING
+        return (
+            f"Reinstated #{back.id} for {self._resolver.render(back.due_at)}: "
+            f"{back.text}"
+        )
+
+    def _reminder_receipt(self, reminder, transition: str) -> None:
+        """Append the lifecycle record — AFTER the store transaction committed.
+
+        A crash between the two costs a receipt for a real transition, which is the
+        preferable direction: a log that claims state the store does not have is
+        worse than a log with a gap.
+        """
+        if self._reminder_receipts is None:
+            return
+        try:
+            self._reminder_receipts.record(
+                reminder_id=reminder.id,
+                due_at=reminder.due_at,
+                transition=transition,
+                initiated_by="owner-command",
+            )
+        except Exception:  # pragma: no cover - audit is never blocking
+            logger.error("could not record a reminder receipt", exc_info=True)
 
     # --- receipts ---------------------------------------------------------
 
