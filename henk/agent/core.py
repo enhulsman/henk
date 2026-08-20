@@ -143,6 +143,7 @@ class AgentCore:
         commands: Any | None = None,
         recall: Any | None = None,
         time_header: Callable[[], str] | None = None,
+        deliveries: Any | None = None,
     ) -> None:
         self._factory = factory
         self._channel = channel
@@ -190,6 +191,13 @@ class AgentCore:
         # is told read identically. None when `reminders.enabled` is false, and then
         # owner-turn composition is byte-identical to before this change.
         self._time_header = time_header
+        # Composes the delivered-reminder block, and marks those deliveries surfaced
+        # as it does. None when reminders are disabled, and then owner-turn
+        # composition is byte-identical to before this change. Deliberately NOT gated
+        # on a per-session flag the way recall is: "surfaced already" is durable state
+        # in the store, so a delivery that landed mid-session reaches the owner's next
+        # turn even though the recall block was given long before it.
+        self._deliveries = deliveries
         # Whether THIS session has already received its recall block. Keyed on the
         # first owner TURN rather than session creation, so an owner follow-up
         # continuing an event-started session still gets memory (design D3).
@@ -288,7 +296,13 @@ class AgentCore:
             return
 
         await self._ensure_session("owner-message")
-        content = self._with_time_header(self._with_recall(text))
+        # Composition order, outermost first: time, then memory, then what Henk just
+        # sent, then what the owner said. The delivered-reminder block sits closest to
+        # the owner's message because it is the context their message most likely
+        # refers to.
+        content = self._with_time_header(
+            self._with_recall(self._with_deliveries(text))
+        )
         try:
             with self._framed_turn(TurnType.OWNER):
                 reply = await self._session.run_turn(content)  # type: ignore[union-attr]
@@ -451,6 +465,28 @@ class AgentCore:
             logger.error("could not compose the current-time header", exc_info=True)
             return text
         return f"{header}\n\n{text}" if header else text
+
+    def _with_deliveries(self, text: str) -> str:
+        """Prefix the delivered-reminder block, if any delivery is unsurfaced.
+
+        A failure is logged and the turn proceeds without it, like the recall block and
+        the time header: a delivery Henk cannot recall is a worse conversation, not a
+        reason to refuse to talk. Nothing here touches session taint — the block is not
+        event-derived input, and the reminder text inside it has the same provenance as
+        a remembered fact.
+        """
+        if self._deliveries is None:
+            return text
+        try:
+            block = self._deliveries.block()
+        except Exception:
+            logger.error(
+                "could not read delivered reminders for the turn note", exc_info=True
+            )
+            return text
+        if not block:
+            return text
+        return f"{block}\n\n{text}"
 
     def _with_recall(self, text: str) -> str:
         """Prefix the recall block to the first owner turn of this session.
