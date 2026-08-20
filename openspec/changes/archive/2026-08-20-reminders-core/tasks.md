@@ -343,6 +343,13 @@ Two rules for this group specifically, both earned in review rather than assumed
       honest: no scheduler task, no send, no `surfaced_at` / `send_attempts` / `delivered_at` /
       `reported_at` writer, no cadence amendment. A grep for writers of those four columns must
       come back empty
-- [ ] 9.5 **Hard stop.** No deploy to rp5 without explicit owner go. When it comes, the deploy is
+- [x] 9.5 **DONE — deployed to rp5 2026-08-20** (image `ba638f0466ea`, `0bfcc5b` → `bccc642`,
+      so it carried `51972fd` and the channel-integrity archive too — the paired rebuild the
+      reminder-delivery notes were holding out for). Startup clean, no ConfigError on a config
+      carrying neither new key; the store half verified over Signal because it opens LAZILY and
+      startup proves nothing about it; four v4 receipts on the volume; 11 log lines, zero
+      ERROR/WARNING/StoreError. Full record and the standing watch:
+      `notes/apply-enumerations.md`, section "9.5 — DEPLOYED". Original task text:
+      **Hard stop.** No deploy to rp5 without explicit owner go. When it comes, the deploy is
       expected to be a no-op — pair it with the pending rp5 rebuild for `51972fd` (the per-phase
       timeout fix, committed and not deployed) rather than rebuilding twice

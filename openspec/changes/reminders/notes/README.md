@@ -36,11 +36,15 @@ them before designing:**
    **Before designing the bound: log signal-cli send latency on rp5 for a day.** Both the
    serialization residual and `send_timeout_seconds = 10.0` are provisional on that number.
    *Actionable since 2026-08-20* — `channel-integrity` is deployed, so the measurement can
-   start whenever. **Take the rp5 rebuild with it:** a post-archive fix (`51972fd`) raised the
-   effective per-operation `read` ceiling from 6.0s to the full configured 10.0s, and it is
-   committed but NOT deployed — rp5 still runs `0bfcc5b`, i.e. 6.0s. Deliberate: redeploying
-   for a ceiling nobody has observed being hit is churn when your measurement may change the
-   number anyway. So measure against 6.0s, decide the value, then rebuild once. Two things to fold in when you take it: multi-chunk delivery is confirmed
+   start whenever. **The rp5 rebuild is DONE — measure against 10.0s, not 6.0s.** `51972fd` raised the
+   effective per-operation `read` ceiling from 6.0s to the full configured 10.0s. It was
+   committed-but-undeployed when this note was written, so the note used to say "measure
+   against 6.0s, then rebuild once". That rebuild happened on **2026-08-20** as part of the
+   `reminders-core` deploy: rp5 went `0bfcc5b` → `bccc642` in one pull, which is exactly the
+   single rebuild the note was holding out for. rp5 now runs the full 10.0s ceiling, and
+   measuring at 10.0s is strictly better anyway — at 6.0s a slow send is truncated into a
+   timeout, so you would have been measuring Henk's give-up point rather than signal-cli's
+   latency distribution. Two things to fold in when you take it: multi-chunk delivery is confirmed
    working on the real bridge (the As-built record has the numbers), and that change's
    `partial`/`failed` log watch was archived **open**, so its grep is where any real send
    failure will first show up. Run both from the same logs. Two

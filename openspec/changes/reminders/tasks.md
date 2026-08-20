@@ -1,3 +1,20 @@
+> **STATUS: SUPERSEDED — DO NOT WORK THESE TASKS.** They belong to the original
+> single-change draft, which review split into three. `openspec list` shows this as
+> "0/36 tasks" because none were ever started here and none ever will be; that count is
+> not a backlog. The work has been done, elsewhere:
+>
+> | split | state |
+> |---|---|
+> | `channel-integrity` | shipped, deployed, archived `2026-08-20-channel-integrity` |
+> | `reminders-core` | shipped, deployed to rp5 2026-08-20, archived `2026-08-20-reminders-core` |
+> | `reminder-delivery` | **not written yet — this is the remaining work** |
+>
+> This directory is kept ONLY for `notes/README.md`, which carries the settled-decisions
+> list, the scope cuts, and the two prerequisites `reminder-delivery` inherits. Start there.
+> It is deliberately not archived: archiving implies completion, this was never implemented,
+> and burying it would break the references that `2026-08-20-reminders-core/notes/` makes to
+> that path.
+
 # Tasks — Reminders
 
 TDD throughout: each group starts by writing tests derived from the delta spec

@@ -1,7 +1,8 @@
 > **STATUS (superseded — do not implement as written).** Review established that this
-> change must split into three: `channel-integrity` (written, and a prerequisite — reminders
-> cannot know whether a message was delivered until it lands), `reminders-core` (store, time
-> resolution, tools, commands, audit) and `reminder-delivery` (scheduler and delivery).
+> change must split into three: `channel-integrity` (**shipped and archived**), `reminders-core`
+> (store, time resolution, tools, commands, audit — **shipped, deployed to rp5 2026-08-20 and
+> archived**) and `reminder-delivery` (scheduler and delivery — **the only part still to
+> write**).
 > Several decisions below were reversed — notably "there is deliberately no cancel tool" — and
 > roughly twenty sites in this change's artifacts are known stale.
 >

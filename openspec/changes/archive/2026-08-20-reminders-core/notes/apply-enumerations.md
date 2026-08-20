@@ -7,9 +7,10 @@
 > and they pass). Pre-change baseline was **553**, so this adds 716 tests.
 > `openspec validate --changes reminders-core --strict` passes.
 >
-> **Every task is done.** 3.5 was verified in the built image on 2026-08-20 — the output and
-> what each line settles are recorded under "3.5 — DONE" below, negative control included.
-> 9.5 (the deploy) is the owner's call and carries the runbook note below.
+> **Every task is done, and the change is DEPLOYED.** rp5 went `0bfcc5b` → `bccc642` on
+> 2026-08-20 (image `ba638f0466ea`); 3.5 was verified in the built image and 9.5 on the host.
+> Both records are below, with what each piece of evidence does and does not establish.
+> Ready to archive.
 >
 > **Read this before calling the deploy a no-op:** it is a no-op for *reminders* — the flag
 > defaults to false, rp5's locally-modified `config.yaml` carries no `reminders` section and
@@ -461,7 +462,92 @@ shell can read the heredoc from stdin.)
 
 Record the actual output in this file when it runs, then tick task 3.5.
 
-## 9.5 — hard stop
+## 9.5 — DEPLOYED to rp5, 2026-08-20
+
+Image `sha256:ba638f0466ea`, container `henk-henk-1` recreated onto it at 12:59:43 CEST.
+Commits `0bfcc5b` → `bccc642`.
+
+**rp5 was two commits further back than this file assumed.** It was on `0bfcc5b`, not
+`51972fd`, so the pull also carried the per-phase timeout fix and the `channel-integrity`
+archive. That is the single rebuild `reminders/notes/README.md` was holding out for, and it is
+now spent — that file's "measure send latency against 6.0s" premise has been corrected there.
+
+**The deploy landed** — all three of the README's silent-no-op tells came out the right way:
+`COPY henk ./henk` was NOT cached, `pip install` re-ran (13.9s, pulling `tzdata`), and a new
+image sha was written. Clocks were compared in one command (`local 13:53:54 CEST` /
+`rp5 13:53:54 CEST`, identical) rather than reasoned about, because the container's create time
+was the evidence that it had been recreated rather than merely left running.
+
+### What startup proved, and what it could not
+
+```
+10:59:45 INFO henk starting henk with config=/app/config.yaml
+10:59:45 INFO httpx GET http://vps:2586/henk-events/json?since=ALP4xJtpU0tL "200 OK"
+11:00:30 INFO henk.events.intake intake liveness: first proof-of-life frame
+```
+
+No `ConfigError`: rp5's locally-modified config, carrying **neither** `reminders` nor
+`owner.timezone`, loads under the new validation. Intake resumed from its durable checkpoint.
+
+What startup could *not* prove, and the reason the checklist below was not optional: **the
+store opens lazily**, so 54 minutes after the deploy the reminders DDL and the drift check had
+still not run against rp5's real database. The first store-touching command is the test, not
+process start. Worth remembering for any future store change — a clean startup log says
+nothing about the store.
+
+### The store half, verified in production
+
+The risk this deploy actually carried. `reminders.enabled` is absent so nothing reminder-shaped
+runs, but **the autocommit port is not behind a flag** and changes how every memory and inbox
+write commits. Exercised over Signal, every reply as expected:
+
+| Command | Reply | What it proves |
+|---|---|---|
+| `/memories` | existing facts listed | the store opened — so the DDL ran and the **drift check passed on the real db** |
+| `/remember …` | `Got it, I'll remember: …` | `MemoryStore.add` commits through `transaction()` |
+| `/capture …` | `Captured as #4: …` | the inbox insert path |
+| `/inbox` → `/inbox done 4` | listed, then `Done: #4 …` | the multi-statement UPDATE + read-back in one transaction |
+| `/forget …` | `Forgot 1 memory: …` | bulk delete inside a transaction |
+| `/remind +2h test` | "Reminders aren't configured in this deployment…" | the kill switch, recognized-and-refusing rather than falling through to the model |
+| `/reminders` | same | as above |
+
+The drift check deserves the explicit note: `_check_reminders_columns` runs inside
+`Store.connection()` *before* any repository query, so a column mismatch would have failed all
+four store commands rather than one. Four succeeding is what establishes that the 13-column
+table was created correctly on a database that previously had only `memories` and `inbox`.
+This was also simulated before the deploy against exactly that database shape.
+
+Audit receipts, from the volume:
+
+```
+{"schema_version": 4, "record_type": "authorization", "tool": "/remember",    "tier": null, "outcome": "authorized", "turn_type": "command", "initiated_by": "owner-command", "detail": "stored a pinned memory (id 4)"}
+{"schema_version": 4, "record_type": "authorization", "tool": "/capture",     "tier": null, "outcome": "authorized", "turn_type": "command", "initiated_by": "owner-command", "detail": "captured inbox item 4"}
+{"schema_version": 4, "record_type": "authorization", "tool": "/inbox done",  "tier": null, "outcome": "authorized", "turn_type": "command", "initiated_by": "owner-command", "detail": "marked inbox item 4 done"}
+{"schema_version": 4, "record_type": "authorization", "tool": "/forget",      "tier": null, "outcome": "authorized", "turn_type": "command", "initiated_by": "owner-command", "detail": "removed 1 memories matching '…'"}
+```
+
+`schema_version: 4` on every one, `tier: null` and `turn_type: "command"` as owner commands
+require, and **no `reminder` records** — correct, because no reminder transition occurred.
+Prior v1–v3 records in the same file are untouched and still validate against their own
+committed documents.
+
+Log state 58 minutes in: **11 lines, zero ERROR, zero WARNING, zero `StoreError`**, and every
+command reply sent `201 Created`.
+
+### Standing watch
+
+Inherited by whoever picks up `reminder-delivery`, and cheap to run from the same logs as
+`channel-integrity`'s still-open `partial`/`failed` watch:
+
+```bash
+ssh rp5 'sudo -n docker logs henk-henk-1 2>&1 | grep -iE "StoreError|could not (store|read|update|delete|count)|sqlite3\.|database is locked"'
+```
+
+Expected empty. The autocommit port is the one part of this change that is live on rp5 with no
+flag behind it, so this is where a latent problem in it would first appear. Rollback for that
+half is reverting the image; the previous image is deliberately not pruned.
+
+## 9.5 — hard stop (satisfied above)
 
 **No deploy to rp5.** Owner go required. When it comes, the deploy is expected to be a
 behavioural no-op (`reminders.enabled` defaults to false and rp5's locally-modified
