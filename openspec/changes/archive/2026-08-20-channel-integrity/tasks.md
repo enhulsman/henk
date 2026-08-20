@@ -140,8 +140,9 @@ Two standing rules for this change:
       `config.yaml`. Deploy, confirm nothing owner-visible changed beyond non-ASCII replies
       splitting slightly more, and watch for `partial`/`failed` log lines for a few days. That
       watch is the delivery outcome's only consumer until a later change gives it a durable one
-      (design Risks), so it is a task rather than a suggestion. **Deployed 2026-08-20; the
-      multi-day watch is deliberately left open — see As-built.**
+      (design Risks), so it is a task rather than a suggestion. **Deployed 2026-08-20; single- and
+      multi-chunk delivery both verified; the multi-day watch is deliberately left open — see
+      As-built.**
 - [x] 4.6 `/opsx:archive` with the deploy verification recorded
 
 ## As-built (deployed to rp5 2026-08-20, image rebuilt from `0bfcc5b`)
@@ -162,18 +163,30 @@ the test suite.
   minute earlier, and NOT the "silently did nothing" tell the README warns about. Startup
   logged `GET …/henk-events/json?since=<id>`, proving it attached to the real
   `henk_henk_audit` volume.
-- **The reply path works under the new contract, single-chunk only.** A homelab-status
-  question, `/memories` and `/inbox all` all replied normally; the log grep for
-  `not delivered|send failed on chunk|Traceback` was empty. Every reply fit one chunk, so the
-  outcome plumbing and the new total timeout are exercised against the real bridge but
-  **multi-chunk delivery is not** — `/memories` was empty and `/inbox all` held one item, and
-  neither reaches 2000 bytes. Multi-chunk splitting remains covered only by tests, against a
-  fake bridge.
-- **The byte-split change is not hand-observable at this limit.** Forcing a split with
-  non-ASCII text needs roughly 500 emoji in one reply, which cannot be reliably elicited. For
-  ASCII, byte length equals character length, so there is nothing owner-visible to confirm —
-  which is itself the "nothing changed beyond non-ASCII replies splitting slightly more" check
-  passing.
+- **The reply path works under the new contract, single- AND multi-chunk.** A homelab-status
+  question, `/memories` and `/inbox all` all replied normally and each fit one chunk; the log
+  grep for `not delivered|send failed on chunk|Traceback` was empty. A deliberately long reply
+  (Henk enumerating its seven tools) then exercised **multi-chunk delivery against the real
+  bridge**: two Signal messages, in order, cut at a paragraph boundary, no gap at the seam and
+  no failure banner. So splitting is no longer covered only by tests against a fake bridge.
+- **The production split reproduces exactly under the shipped splitter.** Feeding that reply
+  back through `split_message(text, 2000)` locally yields 2 chunks of 1907 and 373 bytes, and
+  the first chunk is byte-identical to what Henk actually sent. Deployed behaviour and the
+  unit-tested code agree.
+- **That reply confirms the no-regression half, NOT the bug-fix half — stated so the evidence
+  is not over-read.** It is 2252 characters but 2280 bytes (14 em-dashes at 3 bytes each), and
+  the cut landed on a paragraph boundary at character 1881 — the same boundary the old
+  character-measured code would have chosen, because paragraphs sit ~250 characters apart,
+  far coarser than the 28-byte divergence. The overrun this change fixes only bites when a
+  single paragraph or line is long enough that the window edge itself becomes the cut, which
+  needs denser multi-byte text than prose with em-dashes. That case stays test-only, per the
+  next bullet.
+- **The byte-overrun case is not hand-observable at this limit.** Forcing a cut at the window
+  edge with dense multi-byte text needs roughly 500 emoji in one reply, which cannot be
+  reliably elicited from a model. For ASCII (and for prose with occasional em-dashes, as
+  above) the boundary search reaches the same cut under either measurement, so there is
+  nothing owner-visible to confirm — which is itself the "nothing changed beyond non-ASCII
+  replies splitting slightly more" check passing.
 - **The multi-day `partial`/`failed` watch is OPEN, by owner decision.** The change is archived
   without it. Rationale accepted: if the failure case arrives it is findable from these specs
   and reopenable. The watch command is
