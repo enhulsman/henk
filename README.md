@@ -20,6 +20,17 @@ they act without asking, and every call leaves a durable receipt in the audit lo
 Both are **owner-turn-only**: they are refused during incident triage and in any
 conversation an incident has touched.
 
+As of **reminders-core + reminder-delivery** Henk keeps time. `/remind +2h call
+the plumber` stores a reminder against a resolved absolute instant — DST-correct,
+with the resolved time echoed back so a mis-read one is visible in the same reply
+— and a polling scheduler delivers it verbatim when it comes due, with no session,
+no model turn and no tokens. Downtime is handled rather than lost: a reminder
+missed while Henk was down is delivered late stating its original due time if it
+is still within the grace window, and named in a catch-up summary if it is not.
+Duplicate delivery is the accepted failure mode; silent loss is not. The
+capability ships **disabled** (`reminders.enabled`), because a build that accepts
+a promise it cannot keep is worse than one that declines it.
+
 See `openspec/specs/` (and archived changes under `openspec/changes/archive/`)
 for the full design; this README is the operator runbook.
 
@@ -105,6 +116,17 @@ re-fires to audit-only; a daily **cap** gates the Signal send only — cap-overf
 incidents still triage, publish a handoff, and get an audit record, and the next
 announceable message notes how many were suppressed.
 
+**Unprompted messages are exactly two classes, and nothing else** (the cadence
+amendment `reminder-delivery` settled): announceable incidents, capped and
+condition-triggered as above; and **owner-scheduled reminder deliveries**, which
+are not a timer in the banned sense — a reminder message exists because the owner
+asked for that message, at that time, in their own words, so it is owner-initiated
+content whose delivery moment happens to be deferred. Reminder deliveries and
+their catch-up summaries do **not** consume the incident cap; they are bounded
+instead by the reminders capability's own pending cap. System-scheduled digests,
+heartbeats and "all is well" messages remain banned in so many words — with
+nothing scheduled and nothing wrong, Henk sends nothing at all.
+
 **Triage arc (contract):** every unprompted incident message ends with
 (a) a diagnosis + explicit confidence, (b) a suggested fix, (c) a pickup path
 referencing the published handoff. The app layer checks arc compliance after
@@ -167,8 +189,9 @@ existing `henk_audit` volume (already in the rp5 backup allowlist).
 | `henk/agent/` | Agent core (typed turns, session lifecycle, serial queue, reset/idle, gate framing), owner-command dispatch, memory recall, triage framing + arc check, permission decision, SDK wrapper |
 | `henk/events/` | Event intake (ntfy subscribe, since-replay), per-source identity derivation, debounce/cooldown/cap pipeline, coordinator |
 | `henk/audit/` | Append-only JSONL audit writer, decision-time mutation receipts, + the versioned record **JSON Schema** (the transferable artifact) |
-| `henk/store/` | One SQLite file on the audit volume: capped memory repository + capture inbox behind the swappable `InboxStore` seam |
-| `henk/tools/` | `homelab_health`, `todo_read`, `notify`, `publish_handoff`, `store_memory`, `capture`, `inbox_read` (+ deferred `taiga_read`) and the production registry |
+| `henk/store/` | One SQLite file on the audit volume: capped memory repository, capture inbox behind the swappable `InboxStore` seam, reminders repository + the explicit transaction boundary |
+| `henk/reminders/` | Time resolution (DST-correct, zone-explicit), the polling delivery scheduler, and the delivered-reminder note |
+| `henk/tools/` | `homelab_health`, `todo_read`, `notify`, `publish_handoff`, `store_memory`, `capture`, `inbox_read`, `remind`, `cancel_reminder`, `reminders_read` (+ deferred `taiga_read`) and the production registry |
 | `henk/app.py`, `henk/runtime.py`, `henk/__main__.py` | Composition, production wiring, entrypoint |
 | `config.yaml` | Non-secret settings | `.env` | Secrets (git-ignored) |
 | `~/.claude-config/bin/henk-pickup` | Pull-based CLI to fetch handoffs from any tailnet host (lives in the claude-config repo) |
@@ -203,6 +226,21 @@ existing `henk_audit` volume (already in the rp5 backup allowlist).
   `fact_length_limit` (500), `recall_render_limit` (8000 chars ≈ 2k tokens — when
   it bites, the oldest facts are left out of the *render* with a count and nothing
   is deleted), `inbox_page_size` (20).
+- `reminders.*` — `enabled` (**defaults to false**, and that is the feature: a
+  build that confidently accepts "remind me at six" and then says nothing at six
+  has spent the owner's trust on a promise it cannot keep). When true it also
+  requires `owner.timezone` as a Region/Location zone key — no default and no UTC
+  fallback, because a hardcoded zone bakes a personal fact into a public repo and
+  a fallback fires every reminder an hour or two off while looking healthy.
+  Bounds: `max_pending` (100), `text_length_limit` (500), `horizon_days` (365),
+  `clock_skew_tolerance_seconds` (120), `page_size` (20). Delivery bounds:
+  `poll_interval_seconds` (30), `retry_floor_seconds` (900),
+  `crash_attempt_limit` (3 — attempts the process did not *survive*, distinct
+  from the bridge's per-chunk HTTP retry budget), `late_grace_seconds` (86400),
+  `late_delivery_threshold_seconds` (300), `report_horizon_seconds` (86400),
+  `tick_delivery_limit` (10), `note_window_seconds` (43200), `note_max_items`
+  (10). All validated at load, whether or not the flag is on; every key here only
+  **narrows** — there is deliberately none for tier, turn scope, or recipient.
 - `audit.path` — where the audit log lives. Falls back to `events.audit_path` when
   absent, so a deployed config predating this key keeps working. Audit is now
   constructed unconditionally: `events.enabled: false` no longer disables receipts.
@@ -238,13 +276,24 @@ publish on `henk-handoffs`.
 | `store_memory` | **mutating** | standing / owner-turn-only | one `agent`-type fact into the local SQLite store (cap 20, FIFO); over-limit text is refused, never truncated |
 | `capture` | **mutating** | standing / owner-turn-only | appends one item to the local capture inbox (no cap, no eviction); durable before the result says so |
 | `inbox_read` | read-only | — | the oldest 20 open inbox items plus a count of any newer |
+| `remind` | **mutating** | standing / owner-turn-only | one reminder into the local SQLite store (pending cap 100, refused naming the number); the reply echoes the **resolved** due time with its weekday, so a mis-read time is visible immediately |
+| `cancel_reminder` | **mutating** | standing / owner-turn-only | sets one pending reminder to `cancelled`; nothing is ever deleted, so what was asked for survives |
+| `reminders_read` | read-only | — | pending reminders, soonest first (page 20) |
 
-The two standing grants are argued on **containment**, not on saved attention:
-both are append-only writes into Henk-local stores that cannot leave the
-container, both are owner-turn-only, both are receipted, and both are reversible
-by the owner (`/forget`, `/inbox done`). When the planned personal-inbox service
-replaces the inbox backend, `capture`'s tier has to be re-litigated — "cannot
-leave the container" does not survive that swap.
+The reminder tools are registered only when `reminders.enabled` is true; with the
+capability off they are absent from the toolset entirely and the two commands
+below reply that reminders are not configured.
+
+The standing grants are argued on **containment**, not on saved attention: all
+are append-only writes into Henk-local stores that cannot leave the container,
+all are owner-turn-only, all are receipted, and all are reversible by the owner
+(`/forget`, `/inbox done`, `/reminders cancel`). When the planned personal-inbox
+service replaces the inbox backend, `capture`'s tier has to be re-litigated —
+"cannot leave the container" does not survive that swap.
+
+Rescheduling is deliberately **not** a tool: it is `cancel_reminder` + `remind`,
+two calls with two echoes, and the echoes are the safety mechanism. Reinstating
+is an owner command only, which is what keeps it subject to the pending cap.
 
 ### Owner commands (no agent turn, no tokens)
 
@@ -262,9 +311,18 @@ are refused:
 | `/inbox` | Oldest 20 open items + a count of any newer |
 | `/inbox all` | Every open item |
 | `/inbox done <id>` | Archive one item (it leaves the listings; it is never deleted) |
+| `/remind <when> <text>` | Schedule one reminder, echoing the **resolved** due time with its weekday |
+| `/reminders` | Pending reminders, soonest first, with their ids |
+| `/reminders cancel <id>` | Cancel one pending reminder (a status change, never a delete) |
+| `/reminders reinstate <id>` | Return a cancelled reminder to pending, subject to the pending cap |
 
-`/remember`, `/forget`, `/capture` and `/inbox done` write a receipt when they
-change something. Read-only commands and no-ops write none.
+`/remember`, `/forget`, `/capture`, `/inbox done`, `/remind` and both mutating
+`/reminders` verbs write a receipt when they change something. Read-only commands
+and no-ops write none.
+
+The reminder commands are present only when `reminders.enabled` is true; with the
+capability off they are recognized but reply that reminders are not configured —
+recognized rather than unknown, so the reply is honest instead of a silent no-op.
 
 `taiga_read` is implemented and tested but **deferred** — the Taiga
 instance holds mixed personal/work data and needs a dedicated project-scoped
