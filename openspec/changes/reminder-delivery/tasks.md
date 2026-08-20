@@ -211,25 +211,25 @@ notes — which is deliberately the cheapest moment a spec edit will ever have.
 
 ## 10. Verification
 
-- [ ] 10.1 Full suite green, including `pytest -m dst_sweep`. Record pre- and post-change
+- [x] 10.1 Full suite green, including `pytest -m dst_sweep`. Record pre- and post-change
       counts. Enumerate every edited existing test with its reason — expected: exactly the
       three 3.3 expiries; anything else must be justified. Produce the scenario→test table
       (every scenario in every delta names at least one test), like reminders-core's 9.2
       table.
 - [x] 10.2 `openspec validate --changes reminder-delivery --strict` passes.
-- [ ] 10.3 Settled-list check against the implementation (the reminders README list plus this
+- [x] 10.3 Settled-list check against the implementation (the reminders README list plus this
       change's D4 asymmetry), recorded like reminders-core's 9.2 table. Include the anchor
       sweep: for every numeric or ordering claim in the deltas (selector conjunct, horizon
       anchor, composition order, notice recognition), name the requirement or config value
       that makes it true — a claim true only because of an unwritten code fact is a defect
       of the class that produced three findings in review.
-- [ ] 10.4 Publication safety: `.githooks/pre-commit` pattern layer over every added line; no
+- [x] 10.4 Publication safety: `.githooks/pre-commit` pattern layer over every added line; no
       tailnet IPs, tokens, or real phone numbers; commit split with each commit verified
       green in isolation by export-and-overlay, not import-graph reasoning.
 
 ## 11. Deploy and enable (hard stop — owner go required)
 
-- [ ] 11.1 Re-run the latency harvest (`notes/send-latency-measurement.md`) and both standing
+- [~] 11.1 Re-run the latency harvest (`notes/send-latency-measurement.md`) and both standing
       watches (channel-integrity `partial`/`failed`; reminders-core store-error grep) over
       the extended window; **record each container's start time beside its grep so the
       coverage window is stated, not inferred** (docker logs reset on recreation). Record

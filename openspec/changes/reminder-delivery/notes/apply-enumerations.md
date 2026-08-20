@@ -2,14 +2,40 @@
 
 > ## State, and what is left — read this first
 >
-> **In progress.** Started 2026-08-20. Pre-change suite baseline: **1269 passed, 12
-> deselected** (the 12 are the opt-in `dst_sweep` zones).
-> `openspec validate --changes reminder-delivery --strict` passes.
+> **Groups 1–10 are COMPLETE and green. Group 11 stops at 11.1.** Applied 2026-08-20.
 >
-> Group 1 (the model rewrite — the gate) is **DONE**, and it moved the spec: three text
-> defects found, all three fixed in the deltas and the design **before group 2 existed**,
-> which is what task 1.1's "cheapest moment a spec edit will ever have" means in practice.
-> The findings are recorded below with the property that produced each.
+> | | |
+> |---|---|
+> | suite | **1503 passed, 12 deselected** (baseline 1269 → **+234**) |
+> | `pytest -m dst_sweep` | 12 passed |
+> | `openspec validate --strict` | passes |
+> | commits | **11**, every one verified green **in isolation** (10.4) |
+> | tasks | 32 complete, 1 partial (11.1), 5 remaining (all gated on the owner) |
+>
+> **What is left, and why none of it is code:**
+>
+> - **11.1 is partial.** Both standing watches are empty and the latency harvest was
+>   re-run (unchanged — there have been no sends since it was first taken). The one
+>   measurement it asks for and could NOT be taken is rp5's open inbox item count: it
+>   needs `docker exec`, which rp5 puts behind PASSWD sudo, and this session has no tty.
+>   The exact command is recorded below. It prices a recommended follow-up and does not
+>   gate anything.
+> - **11.2 was not attempted, and not because of caution.** `sudo -n docker compose`
+>   returns "a password is required", so the rebuild is unreachable from here. Two further
+>   blockers, each sufficient alone: the eleven commits are unpushed (publishing to a
+>   publication-bound repo is the owner's call), and one of 11.2's own checks — confirming
+>   a long reply's chunks still arrive in order — needs a human reading a Signal thread.
+>   That check matters, because the send lock is this deploy's **only** unflagged
+>   behaviour change.
+> - **11.3–11.6** are the hard stop and what follows it: the rp5 `config.yaml` edit
+>   (`owner.timezone` + `reminders.enabled: true`), the live end-to-end pass, the README's
+>   deferred tools-table pass, and archive.
+>
+> **Four findings moved the spec or the schema during this apply**, three of them from the
+> model before any code existed. Each is written up below with the property that produced
+> it: the grace requirement's unqualified SHALL (falsified by a reachable crash loop), two
+> wrong numbers for the report horizon's per-row attempt bound, and a collision between
+> the design's `detail: "partial"` and an existing no-free-text guard.
 
 Produced at `/opsx:apply` time by re-running the checks the task list requires, because the
 suite moves. A later reviewer should be able to check each list against the diff.
@@ -809,3 +835,189 @@ repo-specific shapes plus the general ones:
 
 The pre-commit hook (`core.hooksPath=.githooks`) ran clean on every commit; no
 `--no-verify` was used at any point, and no finding needed rewording.
+
+---
+
+## Group 11 — pre-deploy measurements (11.1)
+
+Taken 2026-08-20 ~17:26 CEST over Tailscale SSH, read-only throughout.
+
+### Container start times, stated beside each grep
+
+The task asked for these explicitly, and the reason is that `docker logs` resets when a
+container is recreated — so a grep's *coverage window* is the container's uptime, not the
+change's. Without the start time an empty grep looks far stronger than it is.
+
+| container | started | uptime | what its log covers |
+|---|---|---|---|
+| `henk-henk-1` | 2026-08-20 12:59:43 CEST | **~4.5 h** | both henk-side watches |
+| `henk-signal-cli-rest-api-1` | 2026-07-22 16:12:36 CEST | **~4 weeks** | the latency harvest |
+| `henk-tailscale-1` | 2026-07-22 16:12:36 CEST | ~4 weeks | — |
+
+So the henk-side watches are **weak evidence** (4.5 hours, and the container was recreated
+at today's reminders-core deploy); the bridge-side month is the strong half. That is the
+same caveat the measurement note already carried, now with the number attached.
+
+### Both standing watches — empty
+
+| watch | command | result | coverage |
+|---|---|---|---|
+| channel-integrity `partial`/`failed`/`giving up` | `docker logs henk-henk-1 \| grep -aiE "partial\|not delivered\|giving up\|outcome="` | **0 matches** | ~4.5 h |
+| reminders-core store errors | same log, `grep -acE "StoreError\|could not (store\|read\|update\|count)\|database is locked\|sqlite"` | **0 matches** | ~4.5 h |
+| any `ERROR` line at all | same log | **0** (15 log lines total) | ~4.5 h |
+
+Fifteen log lines total is itself the story: the container has been up 4.5 hours and done
+essentially nothing, because nobody has talked to Henk since the deploy. Anything
+non-empty would have been real; nothing was, but very little was possible.
+
+### The latency harvest, re-run — unchanged, and honestly so
+
+```
+n = 82     window 2026/07/22 15:55:51 -> 2026/08/20 11:57:46
+status codes: {201: 82}
+min 118ms  median 162ms  mean 295ms
+p75 258  p90 730  p95 812  p99 1087  MAX 1087ms
+over 1s: 2   over 2s: 0   over 6s: 0   over 10s: 0
+```
+
+**Byte-identical to `notes/send-latency-measurement.md`.** The window did not extend
+because there have been **no sends at all** since the note was taken this morning — so the
+re-run confirms the recorded numbers rather than adding to them. Stated plainly because
+"re-ran the harvest" could otherwise be read as "extended the window", and it did not.
+The design's `~1.1 s` per-chunk figure and the `send_timeout_seconds = 10.0` headroom
+(~9×) both stand on exactly the evidence already recorded.
+
+### rp5's listening sockets — the BEFORE snapshot for 11.2
+
+**41 listening sockets** captured via `sudo -n ss -H -tulnp`, stored redacted in the apply
+scratchpad. Not reproduced here: the raw output contains rp5's tailnet IPv4 and IPv6
+addresses, which this repo does not carry (redacted to `RP5-TS-IP` / `RP5-TS-IP6` before
+anything was written toward the repo, and the redaction asserted clean). Task 11.2
+compares the count and the port set after the deploy; the secure-deployment scenario is
+"unchanged", so the comparison is what matters rather than the list.
+
+### The one measurement 11.1 asked for and could NOT be taken
+
+**rp5's open inbox item count** — which prices design D6's unbounded-`/inbox all`
+exposure as a number rather than a guess — needs to read the SQLite store, and every route
+to it requires a password:
+
+```
+(ALL) NOPASSWD: /usr/bin/docker ps|logs|images|stats|info, /usr/bin/ss, /usr/bin/ip …
+(ALL) PASSWD:   /usr/bin/docker *          <-- exec and inspect land here
+```
+
+`docker exec` and `docker inspect` are deliberately **not** in the read-only NOPASSWD
+allowlist, which is correct — `exec` is not read-only — and this session has no tty for a
+sudo prompt. The same constraint blocked reminders-core's task 3.5.
+
+The command to run from a real terminal, read-only (`mode=ro`):
+
+```bash
+ssh rp5 'sudo docker exec henk-henk-1 python3 -c "
+import sqlite3
+c = sqlite3.connect(\"file:/data/audit/henk-store.db?mode=ro\", uri=True)
+print(\"inbox open   \", c.execute(\"SELECT COUNT(*) FROM inbox WHERE status=?\",(\"open\",)).fetchone()[0])
+print(\"inbox bytes  \", c.execute(\"SELECT COALESCE(SUM(LENGTH(text)),0) FROM inbox WHERE status=?\",(\"open\",)).fetchone()[0])
+print(\"reminders    \", c.execute(\"SELECT COUNT(*) FROM reminders\").fetchone()[0])
+"'
+```
+
+**What is still known without it:** the exposure is a *hold-time* concern, not a
+correctness one. D6 already states the healthy-path hold is unbounded in chunk count until
+`/inbox all` gains a render bound, and the reminder's consequence is bounded regardless —
+the retry floor re-attempts and the grace window bounds the outcome. So this number
+prices a **recommended follow-up** to `capture-inbox`, and its absence does not gate the
+deploy. It should be taken before that follow-up is scoped.
+
+## Group 11 — 11.2 NOT DONE, and why it is not a judgement call
+
+The task list says 11.3 is the hard stop and 11.2 is the last step before it. **11.2 could
+not be executed from this session**, and the reason is the host's own access control
+rather than caution:
+
+```
+$ ssh rp5 'sudo -n docker compose version'
+sudo: a password is required
+```
+
+`docker compose` resolves to `/usr/bin/docker *`, which rp5's sudoers puts behind
+**PASSWD**. Only `docker ps|logs|images|stats|info`, `ss` and `ip` are NOPASSWD, and this
+session has no tty for a prompt. So the rebuild is unreachable, exactly as `docker exec`
+was for the inbox count above.
+
+Two further blockers, either of which would be sufficient on its own:
+
+1. **The commits are not pushed.** rp5 deploys by pulling `origin/main`; this session has
+   eleven unpushed commits. Pushing to a public-identity, publication-bound repo is the
+   owner's call, not a step to slip into a verification task.
+2. **One of 11.2's own checks needs a human on Signal.** "Exercise one long reply to
+   confirm chunks still arrive in order" requires a real conversation with Henk from the
+   owner's account. The send lock is the *only* unflagged behaviour change in this deploy,
+   so that check is the deploy's main event — and it is not automatable from here.
+
+### What 11.2 needs, in order, from a real terminal
+
+```bash
+# 1. publish (owner's call)
+git push origin main
+
+# 2. rp5: pull and rebuild once
+ssh rp5 'cd /home/pi/Coding/henk && git pull && sudo docker compose up -d --build'
+#    NOTE: rp5's config.yaml is LOCALLY MODIFIED by design. If the pull refuses,
+#    that is the protection working — see the memory on rp5's local config.
+
+# 3. the three silent-no-op tells (reminders is still absent from rp5's config)
+ssh rp5 'sudo -n docker logs henk-henk-1 2>&1 | tail -30'   # no ConfigError
+#    then over Signal: `/remind +2m x` and `/reminders` must BOTH reply
+#    "not configured"; no reminder tool registers; no time header is composed.
+
+# 4. the only live behaviour change: the send lock
+#    over Signal: `/memories` (or any multi-chunk reply) — chunks must arrive
+#    contiguous and in order. This is the check that matters.
+
+# 5. listening sockets unchanged (secure-deployment scenario)
+ssh rp5 'sudo -n ss -H -tulnp | awk "{print \$1, \$5}" | sort -u | wc -l'
+#    BEFORE this deploy: 41   (full redacted list in the apply scratchpad)
+```
+
+**Everything before group 11 is complete and green.** The code is inert on rp5 either
+way: rp5's `config.yaml` carries no `reminders` section, so the scheduler cannot start
+even once the image is rebuilt — which is why the deploy is safe to do unattended *as a
+deploy*, and why its one real risk (the send lock) is the thing that needs a human to
+look at a Signal thread.
+
+### 10.4 The commit split, each commit green **in isolation**
+
+Verified by **export-and-overlay**, not by reasoning about the import graph. For each of
+the eleven commits, `git archive <sha>` was extracted into a clean directory and the suite
+run there with the repo's interpreter. Before each run the harness asserts that `henk`
+resolves to the **exported** tree rather than the working copy — without that check every
+result below would be meaningless, since a stray `PYTHONPATH` would silently test HEAD
+eleven times and report eleven greens.
+
+Import-graph reasoning would have missed the thing that actually breaks a split: a test
+landing one commit before the code it exercises, or an assertion still pointing at a guard
+that expires in the next commit. Commit 3 is the case in point — it *drops* the count from
+1306 to 1302, because retiring three inertness guards removes six tests and adds two. A
+split that had put those expiries in the same commit as the repository writes would have
+hidden whether the retirement stood on its own.
+
+| # | commit | subject | suite in isolation |
+|---|---|---|---|
+| 1 | `d6932a4` | docs(openspec): model the cut delivery design, fix three text defects | **1269** passed |
+| 2 | `68afc0d` | feat(reminders): add the delivery configuration knobs | **1306** passed |
+| 3 | `3c281e7` | test(reminders): retire the inertness guards for delivery | **1302** passed |
+| 4 | `0e46a15` | feat(reminders): add the delivery selector and outcome writes | **1345** passed |
+| 5 | `8719f6d` | fix(channel): serialize outbound sends so chunks cannot interleave | **1356** passed |
+| 6 | `fa41b7a` | fix(audit): pin a reminder record's detail to a closed vocabulary | **1357** passed |
+| 7 | `ac40070` | feat(reminders): add the polling delivery scheduler | **1444** passed |
+| 8 | `631c5f4` | test(reminders): cover the delivery path's audit receipts | **1459** passed |
+| 9 | `22f6f68` | feat(reminders): tell Henk about the reminders he just sent | **1478** passed |
+| 10 | `3813736` | feat(reminders): run the delivery scheduler beside the core worker | **1492** passed |
+| 11 | `0b7e5fc` | test(reminders): cover the cross-capability delivery contracts | **1503** passed |
+
+**ALL COMMITS GREEN IN ISOLATION.** The monotonic climb — 1269 → 1306 → 1302 → 1345 →
+1356 → 1357 → 1444 → 1459 → 1478 → 1492 → 1503 — is the split's own evidence: every
+commit is a complete, self-consistent state of the repository, and the one non-monotonic
+step has a stated reason.
