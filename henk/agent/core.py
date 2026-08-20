@@ -42,6 +42,7 @@ from henk.agent.triage import (
     extract_diagnosis,
 )
 from henk.agent.turns import CheckpointMarker, EventTurn, OwnerTurn, Turn
+from henk.channel.base import SendOutcome
 from henk.gate.approval import EXECUTING_OUTCOMES, TurnContext
 from henk.tools.base import ToolClass, TurnType
 
@@ -51,6 +52,11 @@ logger = logging.getLogger("henk.agent")
 #: the string values the records carry, not the enum, since that is what an audit
 #: reader sees.
 _EXECUTED_OUTCOMES = frozenset(o.value for o in EXECUTING_OUTCOMES)
+
+def _label(outcome: object) -> str:
+    """The outcome as an audit/log reader sees it (the string value, not the enum)."""
+    return getattr(outcome, "value", str(outcome))
+
 
 RESET_COMMAND = "/new"
 RESET_CONFIRMATION = "Session reset."
@@ -68,8 +74,20 @@ DEGRADED_DURABILITY_NOTICE = (
 )
 
 
+#: Owner-facing notice when a triage message is cut off mid-delivery. The triage
+#: send is the one proactive path that chunks, so it is the one that needs a
+#: notice — and the adapter's standing text ("part of this reply") is wrong for
+#: something the owner never asked for. Unrelated to ``_with_suppressed_note``,
+#: which reports incidents dropped by the alert cap, not undelivered chunks.
+TRIAGE_FAILURE_NOTICE = "[⚠ part of this alert could not be delivered]"
+
+
 class _Sender:
-    async def send(self, text: str) -> None: ...
+    async def send(self, text: str) -> SendOutcome: ...
+
+    async def send_proactive(
+        self, text: str, *, failure_notice: str | None = None
+    ) -> SendOutcome: ...
 
 
 @dataclass
@@ -212,20 +230,49 @@ class AgentCore:
         else:
             await self._process_owner(turn.text)
 
+    # --- Outbound sends (reply path vs proactive path) --------------------
+
+    async def _reply(self, text: str) -> SendOutcome:
+        """Send on the reply path, logging a non-delivered outcome.
+
+        The log line is the delivery outcome's only consumer for now, which is
+        why every reply goes through here: the signal has to be exercised in
+        production from day one, not just by tests.
+        """
+        outcome = await self._channel.send(text)
+        if outcome != SendOutcome.DELIVERED:
+            logger.error("reply not delivered (outcome=%s)", _label(outcome))
+        return outcome
+
+    async def _send_proactively(
+        self, text: str, *, what: str, failure_notice: str | None = None
+    ) -> SendOutcome:
+        """Send on the agent-initiated path, logging a non-delivered outcome.
+
+        ``what`` names the message, since a proactive non-delivery is not visible
+        to the owner the way a missing reply is — the log line is all there is.
+        """
+        outcome = await self._channel.send_proactive(
+            text, failure_notice=failure_notice
+        )
+        if outcome != SendOutcome.DELIVERED:
+            logger.error("%s not delivered (outcome=%s)", what, _label(outcome))
+        return outcome
+
     # --- Owner turns (reply path, no triage framing) ----------------------
 
     async def _process_owner(self, text: str) -> None:
         if text.strip() == RESET_COMMAND:
             await self._close_session()
             self._last_activity = None
-            await self._channel.send(RESET_CONFIRMATION)
+            await self._reply(RESET_CONFIRMATION)
             return
 
         command_reply = self._handle_command(text)
         if command_reply is not None:
             # Handled app-side: no session, no agent turn, no tokens, and no gate
             # involvement (the gate governs model-initiated calls).
-            await self._channel.send(command_reply)
+            await self._reply(command_reply)
             return
 
         await self._ensure_session("owner-message")
@@ -237,14 +284,14 @@ class AgentCore:
             logger.exception("agent turn failed")
             if self._acc is not None:
                 self._acc.outcome = "error"
-            await self._channel.send(self._error_reply)
+            await self._reply(self._error_reply)
             self._last_activity = self._clock()
             return
         if self._acc is not None:
             self._acc.turn_count += 1
         self._last_activity = self._clock()
         if reply:
-            await self._channel.send(reply)
+            await self._reply(reply)
 
     # --- Event turns (proactive triage path) ------------------------------
 
@@ -300,7 +347,11 @@ class AgentCore:
         # Proactive send only for announceable incidents; cap-overflow triage
         # still ran (and its handoff + audit record are already durable).
         if turn.announceable and reply:
-            await self._channel.send(self._with_suppressed_note(reply, turn))
+            await self._send_proactively(
+                self._with_suppressed_note(reply, turn),
+                what="triage message",
+                failure_notice=TRIAGE_FAILURE_NOTICE,
+            )
 
     async def _flush_event_triage(self, turn: EventTurn) -> None:
         """Write the event triage's record, wire recurrence, advance the cursor.
@@ -322,7 +373,11 @@ class AgentCore:
             # Latch BEFORE the await so a send failure can't leave it unset.
             self._checkpoint_blocked = True
             try:
-                await self._channel.send(DEGRADED_DURABILITY_NOTICE)
+                # Single chunk: nothing to be cut off, so no failure notice.
+                await self._send_proactively(
+                    DEGRADED_DURABILITY_NOTICE,
+                    what="degraded-durability notice",
+                )
             except Exception:  # pragma: no cover - best effort; must not crash triage
                 logger.warning("failed to send degraded-durability notice", exc_info=True)
         if ok and turn.offset:

@@ -21,7 +21,7 @@ from henk.agent.sdk_session import SdkSessionFactory
 from henk.app import App, Dispatcher
 from henk.audit import AuditLog, MutationReceipts, read_audit_records
 from henk.channel.allowlist import AllowlistFilter
-from henk.channel.base import ChannelAdapter
+from henk.channel.base import ChannelAdapter, SendOutcome
 from henk.channel.signal import SignalAdapter, SignalCliRestBridge
 from henk.config import Config
 from henk.events.checkpoint import OffsetCheckpoint
@@ -64,6 +64,11 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
     stream connect lazily on first receive, and the SDK session is created
     per-conversation on demand.
     """
+    # NOTE: this shared tool client carries no explicit timeout, so it takes
+    # httpx's 5s PER-PHASE default. That is the same defect the Signal bridge's
+    # explicit total fixes, left in place deliberately: the tool endpoints have
+    # their own per-endpoint `timeout_seconds` in config and no measured budget
+    # here, so choosing one is a separate change rather than a silent guess.
     client = httpx.AsyncClient()
     # One store, shared: the tools, the owner commands and recall must all read and
     # write the same repositories, or `/remember` and `store_memory` would disagree
@@ -71,7 +76,14 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
     stores = build_stores(config.store)
     registry = build_production_registry(config, client, stores=stores)
 
-    bridge = SignalCliRestBridge(config.signal.bridge_url, config.signal.account)
+    # Every timeout comes from config, none from a constructor default: an
+    # unsupplied default is how the receive path's 30s went unchosen.
+    bridge = SignalCliRestBridge(
+        config.signal.bridge_url,
+        config.signal.account,
+        send_timeout=config.signal.send_timeout_seconds,
+        open_timeout=config.signal.open_timeout_seconds,
+    )
     adapter = SignalAdapter(
         bridge,
         account=config.signal.account,
@@ -192,7 +204,14 @@ def _build_coordinator(
     )
 
     async def _notify_since_rejected() -> None:
-        await channel.send(SINCE_REJECTED_NOTICE)
+        # Proactive: an unprompted operator alert, not a reply. Single chunk, so
+        # there is nothing to be cut off and no failure notice to supply.
+        outcome = await channel.send_proactive(SINCE_REJECTED_NOTICE)
+        if outcome != SendOutcome.DELIVERED:
+            logger.error(
+                "since-rejected notice not delivered (outcome=%s)",
+                getattr(outcome, "value", outcome),
+            )
 
     # Seed intake from the durable checkpoint so the first subscribe resumes with
     # since=<offset> and replays events published while Henk was stopped (D1). If

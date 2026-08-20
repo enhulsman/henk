@@ -9,17 +9,39 @@ import httpx
 import pytest
 
 from henk.agent.session import AgentSession, SessionStats, ToolCallRecord
-from henk.channel.base import InboundMessage
+from henk.channel.base import InboundMessage, SendOutcome
 
 
 class FakeChannel:
-    """Records everything sent; used as a channel-adapter test double."""
+    """Records everything sent; used as a channel-adapter test double.
+
+    ``sent`` is the ordered, text-only history appended by BOTH send operations,
+    so assertions about what the owner saw are indifferent to which path carried
+    it. ``calls`` is the same history with the path and the caller-supplied
+    failure notice attached, for assertions that are specifically about the
+    reply-vs-proactive distinction.
+
+    Both operations report ``DELIVERED``: this is a cooperative double, and a
+    test that needs a failing send must exercise the real adapter over a failing
+    bridge (that is the defect this contract exists to surface).
+    """
 
     def __init__(self) -> None:
         self.sent: list[str] = []
+        #: (kind, text, failure_notice) where kind is "reply" or "proactive".
+        self.calls: list[tuple[str, str, str | None]] = []
 
-    async def send(self, text: str) -> None:
+    async def send(self, text: str) -> SendOutcome:
         self.sent.append(text)
+        self.calls.append(("reply", text, None))
+        return SendOutcome.DELIVERED
+
+    async def send_proactive(
+        self, text: str, *, failure_notice: str | None = None
+    ) -> SendOutcome:
+        self.sent.append(text)
+        self.calls.append(("proactive", text, failure_notice))
+        return SendOutcome.DELIVERED
 
 
 class RecordingSession:

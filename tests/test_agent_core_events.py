@@ -153,3 +153,54 @@ async def test_new_after_triage_discards_incident_context():
     await core.process("hello")                           # fresh session B
     assert factory.create_count == 2
     assert factory.created[1].contents == ["hello"]      # no incident context
+
+
+# --- Reply vs proactive at the call sites (channel-integrity, tasks 2.5-2.7) ---
+
+# `channel.calls` records (kind, text, failure_notice). The triage output is the
+# one proactive path that chunks, so it is the one that supplies its own notice:
+# the adapter's standing banner says "part of this reply" for something that was
+# never a reply.
+
+
+async def test_triage_output_goes_out_proactively_with_its_own_notice():
+    from henk.agent.core import TRIAGE_FAILURE_NOTICE
+
+    channel = FakeChannel()
+    factory = EventSessionFactory()
+    core = AgentCore(factory, channel, clock=make_clock([0]))
+    await core.process(_turn(_item("Gatus: svc/api"), announceable=True))
+    assert len(channel.calls) == 1
+    kind, text, notice = channel.calls[0]
+    assert kind == "proactive"
+    assert "Diagnosis" in text
+    assert notice == TRIAGE_FAILURE_NOTICE
+
+
+async def test_owner_reply_uses_the_reply_path_with_no_caller_notice():
+    channel = FakeChannel()
+    factory = EventSessionFactory()
+    core = AgentCore(factory, channel, clock=make_clock([0]))
+    await core.process("hello")
+    assert [(kind, notice) for kind, _, notice in channel.calls] == [("reply", None)]
+
+
+async def test_reply_path_logs_a_distinguishable_error_when_not_delivered(caplog):
+    import logging
+
+    from henk.channel.base import SendOutcome
+
+    class FailingChannel(FakeChannel):
+        async def send(self, text: str) -> SendOutcome:
+            await super().send(text)
+            return SendOutcome.FAILED
+
+    channel = FailingChannel()
+    factory = EventSessionFactory()
+    core = AgentCore(factory, channel, clock=make_clock([0]))
+    with caplog.at_level(logging.ERROR, logger="henk.agent"):
+        await core.process("hello")
+    assert any(
+        "not delivered" in r.message and "failed" in r.getMessage()
+        for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]

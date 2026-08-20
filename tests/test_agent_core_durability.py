@@ -316,3 +316,19 @@ async def test_handoff_id_pushed_to_recurrence_sink(tmp_path):
     )
     await core.process(_turn(_item("Gatus: svc/api")))
     assert calls == [("gatus:svc/api", "hf-9")]  # wired for the next batch's recurrence
+
+
+async def test_degraded_durability_notice_is_proactive_with_no_caller_notice():
+    # An unprompted operator alert, single-chunk: proactive, and the adapter must
+    # not append a "part of this reply" banner to something that was not a reply.
+    channel = FakeChannel()
+    audit = FlakyAudit([False])
+    cp = RecordingCheckpoint()
+    factory = EventSessionFactory(stats=handoff_stats("hf"))
+    core = AgentCore(factory, channel, clock=make_clock([0, 0, 1, 1]),
+                     audit=audit, checkpoint=cp)
+    await core.process(_turn(_item("Gatus: svc/a", eid="a"), announceable=False,
+                             offset="e1"))
+    assert [(kind, notice) for kind, _, notice in channel.calls] == [
+        ("proactive", None)
+    ]

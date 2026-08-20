@@ -7,6 +7,7 @@ import dataclasses
 import httpx
 
 from henk.app import App
+from henk.channel.base import SendOutcome
 from henk.config import Config
 from henk.events.intake import SINCE_REJECTED_NOTICE
 from henk.runtime import build_runtime
@@ -80,25 +81,32 @@ async def test_receipts_are_wired_from_the_gate_to_the_core():
 async def test_since_rejected_notice_reaches_the_channel():
     # The wiring, not the intake logic, is under test: `on_since_rejected` must
     # actually deliver text to the owner's channel. Without this, a signature
-    # change to `ChannelAdapter.send` would be swallowed by intake's best-effort
+    # change to the adapter's send would be swallowed by intake's best-effort
     # `except` and the alert would silently degrade to a log line — precisely
     # the silence design D8 exists to eliminate.
+    #
+    # It patches `send_proactive`, which is the operation this notice must use:
+    # it is an unprompted operator alert, not a reply. Patching `send` instead
+    # would leave the patch off the code path entirely — the real bridge would be
+    # hit and this test would go silently dead.
     config = Config.load(SAMPLE, env={})
     app, client = build_runtime(config)
     try:
-        sent: list[str] = []
+        sent: list[tuple[str, str | None]] = []
 
-        async def capture(text: str) -> None:
-            sent.append(text)
+        async def capture(text: str, *, failure_notice: str | None = None):
+            sent.append((text, failure_notice))
+            return SendOutcome.DELIVERED
 
         intake = app._coordinator._intake
         assert intake._on_since_rejected is not None, "notice callback not wired"
 
         # Swap only the transport-facing send so nothing connects.
-        app._adapter.send = capture  # type: ignore[method-assign]
+        app._adapter.send_proactive = capture  # type: ignore[method-assign]
         await intake._on_since_rejected()
 
-        assert sent == [SINCE_REJECTED_NOTICE]
+        # Single-chunk notice: no caller-supplied failure notice to append.
+        assert sent == [(SINCE_REJECTED_NOTICE, None)]
     finally:
         await client.aclose()
 
@@ -158,5 +166,19 @@ async def test_store_config_reaches_the_repositories():
         assert memories.length_limit == 42
         assert memories.cap("agent") == 7
         assert app._core._recall._limit == 99
+    finally:
+        await client.aclose()
+
+
+async def test_signal_bridge_takes_every_timeout_from_config():
+    # The bridge must not fall back to a constructor default the wiring never
+    # supplies — that is how `open_timeout` went unconfigured for three releases.
+    config = Config.load(SAMPLE, env={})
+    app, client = build_runtime(config)
+    try:
+        bridge = app._adapter._bridge
+        assert bridge._send_timeout == config.signal.send_timeout_seconds
+        assert bridge._open_timeout == config.signal.open_timeout_seconds
+        assert app._adapter._safe_length == config.signal.safe_length
     finally:
         await client.aclose()

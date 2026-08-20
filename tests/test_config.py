@@ -251,3 +251,52 @@ def test_audit_path_present_even_with_events_absent():
     config = Config.from_dict(_minimal_raw("+1"), env={})
     assert config.audit.path
     assert config.events.enabled is False
+
+
+# --- signal safe_length floor (channel-integrity, task 1.1) ---------------
+
+
+def test_safe_length_below_one_code_point_is_refused_at_load():
+    # The splitter measures UTF-8 bytes; below 4 no code point fits, so the
+    # limit must be refused here rather than making no progress at send time.
+    for bad in (0, 1, 3):
+        raw = _minimal_raw("+1")
+        raw["signal"]["safe_length"] = bad
+        with pytest.raises(ConfigError):
+            Config.from_dict(raw, env={})
+
+
+def test_safe_length_exactly_one_code_point_is_accepted():
+    raw = _minimal_raw("+1")
+    raw["signal"]["safe_length"] = 4
+    assert Config.from_dict(raw, env={}).signal.safe_length == 4
+
+
+# --- signal transport timeouts (channel-integrity, task 3.1) --------------
+
+
+def test_signal_timeouts_have_effective_defaults_when_absent():
+    # rp5's config.yaml is locally modified and will not carry the new keys, so
+    # the *effective* values come from the loader — which reads inline literals
+    # for this section, not the dataclass defaults. Pin both.
+    raw = _minimal_raw("+1")
+    assert set(raw["signal"]) == {"bridge_url", "account"}
+    signal = Config.from_dict(raw, env={}).signal
+    assert signal.send_timeout_seconds == 10.0
+    assert signal.open_timeout_seconds == 30.0
+    assert signal.safe_length == 2000
+
+
+def test_signal_timeouts_are_read_from_the_config_when_present():
+    raw = _minimal_raw("+1")
+    raw["signal"]["send_timeout_seconds"] = 15.5
+    raw["signal"]["open_timeout_seconds"] = 45.0
+    signal = Config.from_dict(raw, env={}).signal
+    assert signal.send_timeout_seconds == 15.5
+    assert signal.open_timeout_seconds == 45.0
+
+
+def test_sample_config_declares_the_signal_timeouts():
+    signal = Config.load(SAMPLE, env={}).signal
+    assert signal.send_timeout_seconds == 10.0
+    assert signal.open_timeout_seconds == 30.0

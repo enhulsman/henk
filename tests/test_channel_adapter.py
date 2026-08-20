@@ -8,8 +8,12 @@ from pathlib import Path
 import pytest
 
 from henk.channel.allowlist import AllowlistFilter
-from henk.channel.base import split_message
-from henk.channel.signal import SignalAdapter, SignalBridgeError
+from henk.channel.base import SendOutcome, split_message
+from henk.channel.signal import (
+    REPLY_FAILURE_NOTICE,
+    SignalAdapter,
+    SignalBridgeError,
+)
 from tests.conftest import FakeBridge, inbound
 
 OWNER = "+31600000000"
@@ -188,31 +192,75 @@ async def test_send_failure_is_surfaced_not_silently_truncated():
 # and splits long messages in order like any reply.
 
 
-def test_send_exposes_no_arbitrary_recipient():
+#: Parameter names that would let a caller aim a send at anyone but the owner.
+#: The exact-list assertions below catch an *added* parameter of any name; this
+#: denylist catches a *rename* that keeps the arity. Neither subsumes the other.
+RECIPIENT_DENYLIST = {
+    "recipient",
+    "to",
+    "number",
+    "sender",
+    "phone",
+    "uuid",
+    "account",
+}
+
+#: Every send operation on the contract and on the Signal adapter, with the exact
+#: parameter list it is allowed to expose.
+SEND_OPERATIONS = {
+    "send": ["text"],
+    "send_proactive": ["text", "failure_notice"],
+}
+
+
+def test_no_send_operation_exposes_an_arbitrary_recipient():
     import inspect
 
     from henk.channel.base import ChannelAdapter
 
-    # Neither the contract nor the Signal adapter accepts a recipient argument.
-    for send in (ChannelAdapter.send, SignalAdapter.send):
-        params = [p for p in inspect.signature(send).parameters if p != "self"]
-        assert params == ["text"]
+    for name, expected in SEND_OPERATIONS.items():
+        for owner_type in (ChannelAdapter, SignalAdapter):
+            operation = getattr(owner_type, name)
+            params = [
+                p for p in inspect.signature(operation).parameters if p != "self"
+            ]
+            assert params == expected, f"{owner_type.__name__}.{name}"
+            leaked = RECIPIENT_DENYLIST & set(params)
+            assert not leaked, f"{owner_type.__name__}.{name} exposes {leaked}"
 
 
 async def test_proactive_send_reaches_owner_without_inbound():
     bridge = FakeBridge()  # nothing ever received
     adapter = SignalAdapter(bridge, account="+31611111111", owner=OWNER)
-    await adapter.send("unprompted triage message")
+    outcome = await adapter.send_proactive("unprompted triage message")
+    assert outcome is SendOutcome.DELIVERED
     assert bridge.sends == [(OWNER, "unprompted triage message")]
 
 
 async def test_long_proactive_message_split_in_order():
     bridge = FakeBridge()
     adapter = SignalAdapter(bridge, account="+31611111111", owner=OWNER, safe_length=30)
-    await adapter.send("x" * 20 + "\n\n" + "y" * 20)
+    await adapter.send_proactive("x" * 20 + "\n\n" + "y" * 20)
     assert len(bridge.sends) == 2
     assert "".join(text for _, text in bridge.sends) == "x" * 20 + "\n\n" + "y" * 20
     assert all(recipient == OWNER for recipient, _ in bridge.sends)
+
+
+async def test_reply_carries_the_adapters_notice_and_proactive_carries_none():
+    # The adapter's standing banner says "part of this reply", which is simply
+    # wrong for something that was never a reply — so a proactive send whose
+    # caller supplied no notice is silent to the owner.
+    reply_bridge = SelectiveBridge(fail_marker="payload")
+    reply_outcome = await _adapter(reply_bridge).send("payload")
+    assert reply_outcome is SendOutcome.FAILED
+    assert [text for _, text in reply_bridge.sends] == [REPLY_FAILURE_NOTICE]
+
+    quiet_bridge = SelectiveBridge(fail_marker="payload")
+    quiet_outcome = await _adapter(quiet_bridge).send_proactive("payload")
+    assert quiet_outcome is SendOutcome.FAILED
+    assert quiet_bridge.sends == []
+    # Only the payload's own attempts were made — no notice was even tried.
+    assert all("payload" in text for _, text in quiet_bridge.attempts)
 
 
 # --- Swappable channel-adapter contract (encapsulation) -------------------
@@ -266,3 +314,316 @@ def test_unbreakable_line_hard_split():
 
 def test_empty_message_yields_nothing():
     assert split_message("", 100) == []
+
+
+# --- Byte-measured splitting (channel-integrity, task 1.1) ----------------
+
+# The limit is a *byte* budget, because bytes bound both the wire size and any
+# client-side character limit while a character count bounds neither. The ASCII
+# tests above are unchanged on purpose: for ASCII, byte length == character
+# length, so they assert the same thing under either measurement.
+
+
+def _blen(text: str) -> int:
+    return len(text.encode("utf-8"))
+
+
+def test_ascii_split_is_identical_under_byte_measurement():
+    # Regression anchor for "ASCII behaviour unchanged": character-measured and
+    # byte-measured splitting must agree exactly on pure ASCII.
+    paras = "\n\n".join(f"paragraph {i} " + "x" * 40 for i in range(20))
+    chunks = split_message(paras, 100)
+    assert all(len(c) == _blen(c) for c in chunks)
+    assert all(len(c) <= 100 for c in chunks)
+
+
+def test_multibyte_text_near_the_limit_respects_the_byte_limit():
+    # Each "é" is 2 UTF-8 bytes; a character-measured splitter would emit chunks
+    # of ~2x the limit here.
+    text = " ".join("é" * 20 for _ in range(30))
+    chunks = split_message(text, 100)
+    assert len(chunks) > 1
+    assert all(_blen(c) <= 100 for c in chunks), [_blen(c) for c in chunks]
+    assert "".join(chunks) == text
+
+
+def test_emoji_text_respects_the_byte_limit():
+    # Emoji are 4 UTF-8 bytes each: the worst case for a character count.
+    text = "\n\n".join("🙂" * 30 for _ in range(10))
+    chunks = split_message(text, 100)
+    assert len(chunks) > 1
+    assert all(_blen(c) <= 100 for c in chunks), [_blen(c) for c in chunks]
+    assert "".join(chunks) == text
+
+
+def test_split_never_divides_a_code_point():
+    # Every chunk must be independently encodable/decodable: a cut inside a code
+    # point cannot survive an encode/decode round trip.
+    text = "🙂é" * 200
+    chunks = split_message(text, 17)  # deliberately not a multiple of 4 or 6
+    for chunk in chunks:
+        assert chunk.encode("utf-8").decode("utf-8") == chunk
+        assert _blen(chunk) <= 17
+    assert "".join(chunks) == text
+
+
+def test_unbreakable_multibyte_token_hard_splits_without_corruption():
+    text = "🙂" * 60  # one token, no boundary anywhere, 240 bytes
+    chunks = split_message(text, 30)
+    assert len(chunks) > 1
+    assert all(_blen(c) <= 30 for c in chunks)
+    assert "".join(chunks) == text
+    # 30 bytes holds 7 whole emoji (28 bytes); the 8th would overflow.
+    assert all(len(c) <= 7 for c in chunks)
+
+
+def test_limit_below_one_code_point_is_refused_not_looped():
+    # Below 4 bytes no code point fits, the two guarantees (never split a code
+    # point / reproduce the input) are jointly unsatisfiable, and a shrink loop
+    # would find a zero-length cut and never advance on the send path.
+    for limit in (0, -1, 1, 2, 3):
+        with pytest.raises(ValueError):
+            split_message("🙂ok", limit)
+
+
+def test_limit_exactly_one_code_point_is_accepted():
+    assert split_message("🙂🙂", 4) == ["🙂", "🙂"]
+
+
+# --- Delivery outcome (channel-integrity, task 2.1) -----------------------
+
+# `failed` means "delivery was not confirmed", never "nothing arrived": the
+# bridge raises on any transport fault, including a response lost after the
+# message was accepted and sent. A `partial` is never reported as success.
+
+
+class SelectiveBridge:
+    """A SignalBridge double that refuses any chunk containing ``fail_marker``.
+
+    ``attempts`` records every call including refused ones, so a single-attempt
+    notice is distinguishable from a retried chunk.
+    """
+
+    def __init__(self, fail_marker: str | None = None) -> None:
+        self.fail_marker = fail_marker
+        self.sends: list[tuple[str, str]] = []
+        self.attempts: list[tuple[str, str]] = []
+
+    async def receive(self):
+        if False:
+            yield {}
+
+    async def send(self, recipient, text):
+        self.attempts.append((recipient, text))
+        if self.fail_marker is not None and self.fail_marker in text:
+            raise SignalBridgeError("refused")
+        self.sends.append((recipient, text))
+
+
+async def _nosleep(_):
+    return None
+
+
+def _adapter(bridge, **kwargs):
+    kwargs.setdefault("safe_length", 30)
+    kwargs.setdefault("max_send_attempts", 3)
+    return SignalAdapter(
+        bridge, account="+31611111111", owner=OWNER, sleep=_nosleep, **kwargs
+    )
+
+
+#: 3 chunks at safe_length 30, the third carrying the failure marker.
+THREE_CHUNKS = "a" * 25 + "\n\n" + "b" * 25 + "\n\n" + "FAILME"
+
+
+async def test_healthy_send_reports_delivered():
+    bridge = SelectiveBridge()
+    outcome = await _adapter(bridge).send(THREE_CHUNKS)
+    assert outcome is SendOutcome.DELIVERED
+    assert len(bridge.sends) == 3
+    assert "".join(text for _, text in bridge.sends) == THREE_CHUNKS
+
+
+async def test_send_that_never_succeeds_reports_failed():
+    bridge = SelectiveBridge(fail_marker="a")  # every chunk contains "a"
+    outcome = await _adapter(bridge).send("a" * 10)
+    assert outcome is SendOutcome.FAILED
+    assert bridge.sends == []
+
+
+async def test_partial_delivery_reports_partial_and_never_success():
+    bridge = SelectiveBridge(fail_marker="FAILME")
+    outcome = await _adapter(bridge).send(THREE_CHUNKS)
+    assert outcome is SendOutcome.PARTIAL
+    assert outcome is not SendOutcome.DELIVERED
+    # The first two chunks landed; the third was abandoned, not reordered past.
+    assert [text for _, text in bridge.sends][:2] == [
+        "a" * 25 + "\n\n",
+        "b" * 25 + "\n\n",
+    ]
+    assert "FAILME" not in [text for _, text in bridge.sends]
+
+
+async def test_empty_send_is_not_delivered_and_emits_no_notice():
+    bridge = SelectiveBridge()
+    outcome = await _adapter(bridge).send("")
+    assert outcome is not SendOutcome.DELIVERED
+    # Nothing sent at all: no chunk was attempted, so a notice claiming a
+    # delivery failure would be a lie.
+    assert bridge.attempts == []
+    assert bridge.sends == []
+
+
+async def test_caller_ignoring_the_outcome_behaves_exactly_as_before():
+    # The outcome is additive. A caller that discards it observes the same
+    # deliveries and the same non-raising behaviour on both paths.
+    healthy = SelectiveBridge()
+    await _adapter(healthy).send("pong")
+    assert healthy.sends == [(OWNER, "pong")]
+
+    broken = SelectiveBridge(fail_marker="pong")
+    await _adapter(broken).send("pong")  # must not raise
+    # The undeliverable chunk is not delivered, and the owner-facing notice that
+    # followed it before this change still follows it.
+    assert "pong" not in [text for _, text in broken.sends]
+    assert any("could not be delivered" in text for _, text in broken.sends)
+
+
+# --- The failure notice (channel-integrity, task 2.4) ---------------------
+
+# The condition is "any outcome other than `delivered`, where at least one chunk
+# was attempted" — not "partial". It is one attempt, emitted inside the same send
+# sequence immediately after the delivered chunks, and it never alters the
+# reported outcome.
+
+
+class FailAfterBridge:
+    """Succeeds for the first N sends, then refuses everything.
+
+    ``attempts`` records refused calls too, which is what makes a single-attempt
+    notice distinguishable from a chunk that consumed the retry budget.
+    """
+
+    def __init__(self, succeed_first: int) -> None:
+        self.succeed_first = succeed_first
+        self.attempts: list[str] = []
+        self.sends: list[str] = []
+
+    async def receive(self):
+        if False:
+            yield {}
+
+    async def send(self, recipient, text):
+        self.attempts.append(text)
+        if len(self.attempts) > self.succeed_first:
+            raise SignalBridgeError("down")
+        self.sends.append(text)
+
+
+CALLER_NOTICE = "[⚠ part of this alert could not be delivered]"
+
+
+async def test_caller_notice_follows_delivered_chunks_as_a_single_attempt():
+    bridge = FailAfterBridge(succeed_first=1)
+    outcome = await _adapter(bridge).send_proactive(
+        THREE_CHUNKS, failure_notice=CALLER_NOTICE
+    )
+    assert outcome is SendOutcome.PARTIAL
+    assert bridge.sends == ["a" * 25 + "\n\n"]  # only chunk 1 landed
+    # Chunk 2 consumed the full retry budget (3); the notice got exactly one
+    # attempt, and it came last — inside the same sequence, after the chunks.
+    assert bridge.attempts[-1] == CALLER_NOTICE
+    assert bridge.attempts.count(CALLER_NOTICE) == 1
+    assert len(bridge.attempts) == 1 + 3 + 1
+
+
+async def test_the_notice_never_alters_the_reported_outcome():
+    # The notice fails too here. The outcome must still describe only the reply's
+    # own chunks.
+    bridge = FailAfterBridge(succeed_first=1)
+    outcome = await _adapter(bridge).send(THREE_CHUNKS)
+    assert outcome is SendOutcome.PARTIAL
+    assert bridge.attempts[-1] == REPLY_FAILURE_NOTICE
+    assert bridge.sends == ["a" * 25 + "\n\n"]
+
+
+async def test_wholly_failed_single_chunk_reply_still_gets_the_notice():
+    # The most common failure shape, and the one a `partial`-only condition would
+    # silently drop.
+    bridge = FailAfterBridge(succeed_first=0)
+    outcome = await _adapter(bridge).send("one short reply")
+    assert outcome is SendOutcome.FAILED
+    assert bridge.attempts == ["one short reply"] * 3 + [REPLY_FAILURE_NOTICE]
+
+
+# --- Explicit bridge timeouts (channel-integrity, task 3.1) ---------------
+
+# The bridge used to build `httpx.AsyncClient()` with no timeout, taking httpx's
+# 5s default — which applies PER TRANSPORT PHASE, so one POST could run to
+# roughly 3x the number a reader would assume. A send that the bridge accepted
+# and sent then reads as failed and is retried: duplicate delivery, from a value
+# nobody chose and a ceiling nobody computed.
+
+
+def _bridge(send_timeout=12.0, open_timeout=25.0):
+    from henk.channel.signal import SignalCliRestBridge
+
+    return SignalCliRestBridge(
+        "http://signal-cli-rest-api:8080",
+        "+31611111111",
+        send_timeout=send_timeout,
+        open_timeout=open_timeout,
+    )
+
+
+def test_bridge_client_timeout_comes_from_configuration():
+    # Every phase httpx can spend time in is bounded. An unset phase silently
+    # falls back to httpx's own 5s default, which is the defect being fixed.
+    phases = _bridge(send_timeout=12.0)._build_client().timeout
+    assert phases.connect is not None
+    assert phases.read is not None
+    assert phases.write is not None
+    assert phases.pool is not None
+
+
+def test_bridge_budget_is_a_total_not_a_per_phase_limit():
+    total = 12.0
+    phases = _bridge(send_timeout=total)._build_client().timeout
+    allotted = [phases.connect, phases.read, phases.write, phases.pool]
+    # Summing to the total is what makes it a total: a request that stalls
+    # within every individual phase limit still cannot exceed the configured
+    # budget, whereas httpx's per-phase default admits a multiple of it.
+    assert sum(allotted) == pytest.approx(total)
+    assert all(0 < phase < total for phase in allotted)
+
+
+def test_bridge_total_scales_with_the_configured_value():
+    phases = _bridge(send_timeout=4.0)._build_client().timeout
+    total = phases.connect + phases.read + phases.write + phases.pool
+    assert total == pytest.approx(4.0)
+
+
+def test_no_bridge_code_path_constructs_a_client_without_a_timeout():
+    # An AST scan, because a second construction site is exactly the way this
+    # guarantee would regress: the budget lives in one factory, and nothing else
+    # in the module may build a client.
+    import ast
+
+    source = Path(__file__).resolve().parent.parent / SIGNAL_MODULE
+    tree = ast.parse(source.read_text())
+    constructions = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "AsyncClient"
+    ]
+    assert len(constructions) == 1, [c.lineno for c in constructions]
+    for call in constructions:
+        keywords = {kw.arg for kw in call.keywords}
+        assert "timeout" in keywords, (call.lineno, keywords)
+
+
+def test_receive_connection_timeout_comes_from_configuration():
+    # Previously a constructor default the wiring never supplied.
+    assert _bridge(open_timeout=25.0)._open_timeout == 25.0

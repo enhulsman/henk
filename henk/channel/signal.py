@@ -17,9 +17,19 @@ import json
 import logging
 from typing import AsyncIterator, Awaitable, Callable, Optional, Protocol
 
-from henk.channel.base import DEFAULT_SAFE_LENGTH, InboundMessage, split_message
+from henk.channel.base import (
+    DEFAULT_SAFE_LENGTH,
+    InboundMessage,
+    SendOutcome,
+    split_message,
+)
 
 logger = logging.getLogger("henk.channel.signal")
+
+#: The adapter's standing owner-facing notice for a reply that was cut off. Only
+#: correct for the reply path — a proactive send's notice is its caller's, since
+#: the adapter cannot know what was being sent (design D2).
+REPLY_FAILURE_NOTICE = "[⚠ part of this reply could not be delivered]"
 
 
 class SignalBridgeError(Exception):
@@ -93,13 +103,35 @@ class SignalAdapter:
                 attempt = 0
                 await self._sleep(self._backoff_base)
 
-    async def send(self, text: str) -> None:
+    async def send(self, text: str) -> SendOutcome:
+        """Reply path: the adapter's own standing notice describes a failure."""
+        return await self._send_serialized(text, failure_notice=REPLY_FAILURE_NOTICE)
+
+    async def send_proactive(
+        self, text: str, *, failure_notice: str | None = None
+    ) -> SendOutcome:
+        """Agent-initiated path: the caller owns the owner-facing notice."""
+        return await self._send_serialized(text, failure_notice=failure_notice)
+
+    async def _send_serialized(
+        self, text: str, *, failure_notice: str | None
+    ) -> SendOutcome:
+        """The one send sequence both operations share (design D3).
+
+        Shared rather than one wrapper calling the other: re-entering the other
+        operation would deadlock outright once a send mutex exists, and the notice
+        must be emitted from inside the same sequence as the chunks it describes.
+        """
         chunks = split_message(text, self._safe_length)
+        if not chunks:
+            # No chunk was attempted, so nothing was delivered — and no notice:
+            # a banner claiming a delivery failure here would be false.
+            return SendOutcome.FAILED
         for index, chunk in enumerate(chunks):
             if not await self._send_chunk(chunk):
                 # A chunk failed permanently. Do NOT silently truncate: stop
-                # (later chunks would arrive out of order) and make a best-effort
-                # attempt to tell the owner the reply was cut off.
+                # (later chunks would arrive out of order) and tell the owner the
+                # message was cut off, if this path has a notice to give.
                 remaining = len(chunks) - index
                 logger.error(
                     "send failed on chunk %d/%d; %d chunk(s) undelivered",
@@ -107,13 +139,27 @@ class SignalAdapter:
                     len(chunks),
                     remaining,
                 )
-                await self._send_chunk(
-                    "[⚠ part of this reply could not be delivered]"
-                )
-                return
+                if failure_notice is not None:
+                    # A single attempt, never the retry budget: a bridge that
+                    # just refused three attempts will not take a fourth, and the
+                    # notice's own failure is not worth more of the caller's
+                    # latency. Its outcome is deliberately discarded — the notice
+                    # never alters what this send reports.
+                    await self._send_chunk(failure_notice, attempts=1)
+                # The condition is "not delivered, having attempted a chunk" —
+                # not "partial". A wholly-failed single-chunk send is the most
+                # common failure shape, and a partial-only condition would drop
+                # the notice exactly there.
+                return SendOutcome.PARTIAL if index else SendOutcome.FAILED
+        return SendOutcome.DELIVERED
 
-    async def _send_chunk(self, chunk: str) -> bool:
-        """Send one chunk with backoff. Returns True if delivered, False if given up."""
+    async def _send_chunk(self, chunk: str, *, attempts: int | None = None) -> bool:
+        """Send one chunk with backoff. Returns True if delivered, False if given up.
+
+        ``attempts`` overrides the configured retry budget (the failure notice
+        gets exactly one try).
+        """
+        budget = self._max_send_attempts if attempts is None else attempts
         attempt = 0
         while True:
             try:
@@ -121,7 +167,7 @@ class SignalAdapter:
                 return True
             except SignalBridgeError as exc:
                 attempt += 1
-                if attempt >= self._max_send_attempts:
+                if attempt >= budget:
                     logger.error("giving up sending after %d attempts: %s", attempt, exc)
                     return False
                 delay = min(
@@ -158,6 +204,29 @@ class SignalAdapter:
         )
 
 
+#: How the total request budget is divided across httpx's four transport phases,
+#: as fractions so the configured total stays the single knob.
+#:
+#: All four are named on purpose. httpx applies a timeout PER PHASE, so any phase
+#: left unset falls back to httpx's own 5s default — an unbounded segment inside
+#: a guarantee whose whole point is totality. That is exactly the bug this
+#: replaces: an untimed client gave connect, write and read httpx's default of
+#: 5s *each*, so one POST could run to roughly 3x the number a reader would
+#: assume, and a send the bridge had already accepted and delivered came back as
+#: a failure to retry.
+#:
+#: The weighting suits a POST to a container on the same compose network: connect
+#: and write are cheap, ``read`` carries signal-cli's own send latency. If the
+#: allocation proves wrong in practice, the allocation is the knob — not the
+#: mechanism (design Open Questions).
+_TIMEOUT_PHASE_SHARES = {
+    "connect": 0.15,
+    "write": 0.15,
+    "pool": 0.10,
+    "read": 0.60,
+}
+
+
 class SignalCliRestBridge:
     """Concrete ``SignalBridge`` over signal-cli-rest-api in json-rpc mode.
 
@@ -166,12 +235,42 @@ class SignalCliRestBridge:
     ``SignalBridgeError`` so the adapter's backoff loop handles them. The
     websocket dependency is imported lazily so importing this module never
     requires it (tests drive the adapter through ``FakeBridge`` instead).
+
+    Both timeouts are required rather than defaulted: ``open_timeout`` used to
+    carry a constructor default the wiring never supplied, which is how the
+    receive path ended up with a number nobody chose.
     """
 
-    def __init__(self, base_url: str, account: str, *, open_timeout: float = 30.0):
+    def __init__(
+        self,
+        base_url: str,
+        account: str,
+        *,
+        send_timeout: float,
+        open_timeout: float,
+    ):
         self._base_url = base_url.rstrip("/")
         self._account = account
+        self._send_timeout = send_timeout
         self._open_timeout = open_timeout
+
+    def _build_client(self):
+        """The ONLY place an HTTP client is constructed, so the total is unskippable.
+
+        Deliberately not ``asyncio.wait_for`` around the POST: cancelling an
+        in-flight request manufactures the "may already have been delivered"
+        ambiguity the delivery outcome exists to describe rather than to create.
+        """
+        import httpx  # lazy
+
+        return httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                **{
+                    phase: self._send_timeout * share
+                    for phase, share in _TIMEOUT_PHASE_SHARES.items()
+                }
+            )
+        )
 
     async def receive(self) -> AsyncIterator[dict]:  # pragma: no cover - deploy path
         import websockets  # lazy: only needed at runtime
@@ -189,15 +288,13 @@ class SignalCliRestBridge:
             raise SignalBridgeError(f"receive websocket failed: {exc}") from exc
 
     async def send(self, recipient: str, text: str) -> None:  # pragma: no cover
-        import httpx  # lazy
-
         payload = {
             "message": text,
             "number": self._account,
             "recipients": [recipient],
         }
         try:
-            async with httpx.AsyncClient() as client:
+            async with self._build_client() as client:
                 resp = await client.post(f"{self._base_url}/v2/send", json=payload)
                 resp.raise_for_status()
         except Exception as exc:  # noqa: BLE001

@@ -14,6 +14,8 @@ from typing import Any, Mapping
 
 import yaml
 
+from henk.channel.base import MAX_CODE_POINT_BYTES
+
 
 #: The liveness deadline must be at least this whole multiple of the server's
 #: recorded keepalive interval — three consecutive missed keepalives. Stated as a
@@ -77,7 +79,18 @@ class AgentConfig:
 class SignalConfig:
     bridge_url: str  # e.g. http://signal-cli-rest-api:8080 (compose-internal only)
     account: str  # Henk's dedicated Signal number
+    #: Per-message budget in UTF-8 **bytes** (see ``henk.channel.base``). Floored
+    #: at MAX_CODE_POINT_BYTES at load: a smaller value admits no valid chunk.
     safe_length: int = 2000
+    #: TOTAL budget for one bridge HTTP request, decomposed across httpx's four
+    #: transport phases by the adapter. A chosen number, not a measured one:
+    #: deliberately generous against a container on the same compose network,
+    #: because the alternative (httpx's 5s per-phase default) turned an accepted
+    #: message into a reported failure and a retried duplicate.
+    send_timeout_seconds: float = 10.0
+    #: Connection timeout for the receive path's websocket. Preserves the value
+    #: that used to be a constructor default the wiring never supplied.
+    open_timeout_seconds: float = 30.0
 
 
 @dataclass(frozen=True)
@@ -383,7 +396,22 @@ class Config:
             signal=SignalConfig(
                 bridge_url=require_nonempty(signal_sec, "bridge_url", "signal"),
                 account=require_nonempty(signal_sec, "account", "signal"),
-                safe_length=int(signal_sec.get("safe_length", 2000)),
+                safe_length=_require_safe_length(signal_sec),
+                # Pinned here as well as on the dataclass: this section reads
+                # inline literals, so the dataclass default alone does not
+                # determine what production gets. rp5's config.yaml is locally
+                # modified and carries neither key, so these ARE the effective
+                # values there.
+                send_timeout_seconds=float(
+                    signal_sec.get(
+                        "send_timeout_seconds", SignalConfig.send_timeout_seconds
+                    )
+                ),
+                open_timeout_seconds=float(
+                    signal_sec.get(
+                        "open_timeout_seconds", SignalConfig.open_timeout_seconds
+                    )
+                ),
             ),
             gatus=endpoint("gatus"),
             prometheus=endpoint("prometheus"),
@@ -412,6 +440,25 @@ class Config:
         # describes Henk), so neither section's builder can see both.
         _validate_liveness_ordering(config)
         return config
+
+
+def _require_safe_length(signal_sec: Mapping[str, Any]) -> int:
+    """Refuse a safe length too small to hold a single code point.
+
+    The splitter measures UTF-8 bytes and guarantees both that it never divides a
+    code point and that concatenating its chunks reproduces the input. Below the
+    longest code point's encoding those are jointly unsatisfiable and the window
+    search would find a zero-length cut, so the value is refused here rather than
+    making no progress on the production send path.
+    """
+    value = int(signal_sec.get("safe_length", SignalConfig.safe_length))
+    if value < MAX_CODE_POINT_BYTES:
+        raise ConfigError(
+            f"signal.safe_length ({value}) must be at least "
+            f"{MAX_CODE_POINT_BYTES} bytes — the longest single code point's "
+            "UTF-8 encoding; a smaller limit admits no valid chunk"
+        )
+    return value
 
 
 def _validate_liveness_ordering(config: "Config") -> None:

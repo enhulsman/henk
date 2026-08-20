@@ -9,7 +9,12 @@ signal:
   # Compose-internal address of signal-cli-rest-api (no published ports).
   bridge_url: "http://signal-cli-rest-api:8080"
   account: "+31611111111" # Henk's dedicated Signal number
-  safe_length: 2000
+  safe_length: 2000 # per-message budget in UTF-8 BYTES, not characters
+  # TOTAL budget for one bridge request, split across httpx's transport phases.
+  # Explicit because httpx's implicit default is 5s PER PHASE — roughly 3x the
+  # apparent ceiling, and shorter than signal-cli's send latency under load.
+  send_timeout_seconds: 10.0
+  open_timeout_seconds: 30.0 # receive websocket connect
 
 agent:
   model: "claude-sonnet-5"
