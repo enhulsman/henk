@@ -191,21 +191,21 @@ notes — which is deliberately the cheapest moment a spec edit will ever have.
 
 ## 9. Cross-capability contracts (the deltas with no code of their own)
 
-- [ ] 9.1 Cadence (incident-triage delta): a reminder delivery leaves the announceable-
+- [x] 9.1 Cadence (incident-triage delta): a reminder delivery leaves the announceable-
       incident cap count unchanged; with reminders enabled and nothing due, a long simulated
       run sends zero unprompted messages (no digest, heartbeat, or "all is well" path
       exists to fire).
-- [ ] 9.2 Gate (approval-gate delta): a delivery while an approval is pending sends the
+- [x] 9.2 Gate (approval-gate delta): a delivery while an approval is pending sends the
       reminder, creates no approval record, and leaves the pending approval resolvable by
       the owner's next keyword; a delivered reminder's audit trail carries both the
       `scheduled` record and the delivery record (traceability scenario).
-- [ ] 9.3 Re-enablement (reminders delta): with stored reminders due while disabled,
+- [x] 9.3 Re-enablement (reminders delta): with stored reminders due while disabled,
       re-enabling delivers within-grace rows late (stating original due times) and misses +
       summarises beyond-grace rows — drive with two app instances sharing one store across a
       flag flip, and use a **stale** offset (due longer ago than grace + horizon, e.g.
       3+ days) so the test exercises the case where reportability arrives later than
       `due_at + grace`, not just the 25-hour one.
-- [ ] 9.4 Surface (secure-deployment delta): assert at test level that the scheduler module
+- [x] 9.4 Surface (secure-deployment delta): assert at test level that the scheduler module
       opens no socket, registers no handler, and ticks only from the in-process clock —
       the runtime inspection half lands in 11.2.
 
@@ -216,7 +216,7 @@ notes — which is deliberately the cheapest moment a spec edit will ever have.
       three 3.3 expiries; anything else must be justified. Produce the scenario→test table
       (every scenario in every delta names at least one test), like reminders-core's 9.2
       table.
-- [ ] 10.2 `openspec validate --changes reminder-delivery --strict` passes.
+- [x] 10.2 `openspec validate --changes reminder-delivery --strict` passes.
 - [ ] 10.3 Settled-list check against the implementation (the reminders README list plus this
       change's D4 asymmetry), recorded like reminders-core's 9.2 table. Include the anchor
       sweep: for every numeric or ordering claim in the deltas (selector conjunct, horizon

@@ -561,3 +561,251 @@ imports and calls and refuses `socket` / `http` / `httpx` / `websockets` / `sign
 `{"run", "tick"}` and drives the whole inbound path to confirm no message reaches the
 scheduler. The runtime half — comparing the container's listening sockets before and
 after — is task 11.2's.
+
+---
+
+## Group 9 — the cross-capability contracts
+
+Suite after: **1503** (+11). New: `tests/test_reminders_cross_capability.py`.
+
+Four capabilities gain requirements here without gaining any implementation. A
+requirement whose only evidence is that nobody wrote the offending code is a requirement
+that quietly stops being true, so each got a test that fails if someone writes it.
+
+**9.1 Cadence.** The cap is measured on either side of five deliveries and one summary
+and found unmoved, and a week of hourly ticks with one future reminder sends **zero**
+messages — the two-class enumeration only holds if the second class is genuinely empty
+when the owner scheduled nothing. Plus the structural counterpart to reminders-core's
+"no cadence amendment rode along": `PipelineConfig` has no reminder field, the pipeline
+module never says "reminder", and the scheduler never says `pipeline` / `cap_per_24h` /
+`announceable` / `EventTurn`. A knob there would make reminder volume a cadence concern,
+which is exactly what "they do not consume the cap" denies.
+
+**9.2 The gate.** One test carries three claims because they are one property seen three
+ways: a real `ApprovalGate` is driven to a genuinely pending approval, a reminder is then
+delivered, and afterwards the reminder arrived, no prompt was sent, no authorization
+record was written, and the approval is **still resolvable** — the owner's "yes" is
+accepted and the awaited decision comes back approved. That last part is what makes the
+exemption safe rather than merely convenient: a delivery that quietly consumed the
+pending slot would strand a mutation the owner had already been asked about. A second
+test delivers a reminder whose text is literally `"yes"` and confirms it cannot be
+mistaken for an approval — the gate classifies inbound text only, and there is nothing
+pending to attach it to. A third pins that the scheduler's constructor has no `gate`
+parameter and its source never mentions one.
+
+**9.3 Re-enablement.** Two store lifetimes over one file across a flag flip, with the
+**stale** offset the task demanded (three days, older than grace + horizon) rather than
+the easy 25-hour one: the within-grace row is delivered late stating its original due
+time, the stale row is missed and named in the summary, and the individual delivery
+precedes the summary. Crossed with the horizon's worst case in a third test — re-enabled
+after five days of downtime *and* a summary that only partly lands — where the row must
+still be named once. Under a pre-work horizon it would have been retired silently on that
+very tick. A fourth test asserts a disabled lifetime leaves every delivery column exactly
+as the owner left it, since re-enablement has to find the rows unchanged.
+
+**9.4 Surface.** Landed in group 8's file (see above). The runtime half is task 11.2's.
+
+---
+
+## Group 10 — verification
+
+### 10.1 Suite counts
+
+| | count |
+|---|---|
+| pre-change baseline (at `3fed4bd`) | **1269 passed, 12 deselected** |
+| post-change | **1503 passed, 12 deselected** |
+| added by this change | **+234** |
+| `pytest -m dst_sweep` | **12 passed, 1503 deselected** |
+
+### 10.1 Every edited existing test, with its reason
+
+Derived from the diff rather than from memory: for each test file touched since
+`3fed4bd`, the count of **deleted** lines is the signal — an added test changes nothing
+that existed before.
+
+| file | deleted lines | what came out |
+|---|---|---|
+| `tests/test_reminders_inert.py` | 59 | the **three** task-3.3 expiries, and nothing else |
+| `tests/test_audit_v4.py` | **1** | `"detail"` removed from one forbidden-key tuple |
+| `tests/test_channel_adapter.py` | 0 | purely additive (+273) |
+| `tests/test_config_reminders.py` | 0 | purely additive (+197) |
+| `tests/test_store_transaction.py` | 0 | purely additive (+162) |
+| the five new files | 0 | new |
+
+So: **the three expected expiries, plus exactly one other single-line edit**, which
+task 10.1 requires be justified. It is Finding 4 (group 5): the removed line asserted
+`detail` was absent from a reminder record, which the design's `detail: "partial"` makes
+impossible. It was not dropped but **replaced by a stronger constraint** — the v4
+document now pins a reminder record's `detail` to a closed enum, so the guarantee the old
+line protected (no free text on a reminder record) is enforced by the contract rather
+than by a test, and four smuggling attempts are asserted to be refused.
+
+Nothing else in any existing test was weakened, reworded, or relaxed.
+
+### 10.1 Scenario → test
+
+All **77** scenarios across the six deltas, with **130** test citations. Every cited name
+was machine-verified against `pytest --collect-only`, which caught two citations of mine
+that named tests that did not exist — the reason the table is generated and checked
+rather than hand-written.
+
+| capability | scenario | test(s) |
+|---|---|---|
+| reminders | Due reminder is delivered within a tick | `test_a_due_reminder_is_delivered_within_a_tick_verbatim_and_marked`<br>`test_a_due_reminder_is_delivered_within_a_tick_when_nothing_is_in_flight` |
+| reminders | A future reminder is never delivered early | `test_a_future_reminder_is_never_delivered_however_many_ticks_run`<br>`test_a_future_due_row_with_an_eligible_next_attempt_at_is_never_selected` |
+| reminders | A within-grace backlog is paced, not burst | `test_a_within_grace_backlog_is_paced_oldest_first_and_none_dropped`<br>`test_rows_beyond_the_tick_limit_are_not_attempt_charged_while_waiting` |
+| reminders | Scheduler survives a store error | `test_a_store_error_mid_tick_rolls_back_and_the_next_tick_succeeds`<br>`test_the_run_loop_survives_a_store_error` |
+| reminders | Restart needs no special pass | `test_the_pre_work_increment_survives_process_death_before_the_post_send_write`<br>`test_re_enabling_catches_up_under_the_ordinary_grace_rules` |
+| reminders | Reminder delivered on time | `test_a_due_reminder_is_delivered_within_a_tick_verbatim_and_marked`<br>`test_an_on_time_delivery_does_not_state_a_due_time` |
+| reminders | Text is not rewritten | `test_the_stored_text_is_never_rewritten`<br>`test_no_delivery_write_touches_the_owners_words_or_the_due_instant` |
+| reminders | Late delivery states its original due time | `test_a_late_delivery_states_its_original_due_time_and_records_late`<br>`test_the_lateness_boundary_is_the_configured_threshold` |
+| reminders | Cancelled reminders never deliver | `test_a_cancelled_reminder_is_never_delivered`<br>`test_a_cancelled_row_is_never_selected` |
+| reminders | Cancellation between selection and dispatch is honoured | `test_a_cancellation_between_selection_and_dispatch_is_skipped`<br>`test_status_of_sees_a_cancellation_committed_after_selection` |
+| reminders | Cancellation that loses the race is recorded honestly | `test_a_cancellation_after_dispatch_records_delivered`<br>`test_a_cancelled_then_delivered_row_carries_both_transitions` |
+| reminders | Persistent failure does not repeat the notice | `test_a_persistent_failure_carries_no_notice_on_floor_retries`<br>`test_the_failure_notice_names_the_due_time_and_says_not_fully_delivered`<br>`test_a_crash_retried_attempt_still_carries_the_notice` |
+| reminders | Delivery does not wait on a turn | `test_delivery_does_not_wait_on_a_turn` |
+| reminders | Delivery waits on an in-flight send but is never skipped | `test_delivery_waits_on_an_in_flight_send_but_is_never_skipped` |
+| reminders | A pending approval does not suppress delivery | `test_a_delivery_while_an_approval_is_pending_sends_and_prompts_nothing` |
+| reminders | An attempt that crashes mid-send is counted | `test_the_increment_is_visible_after_a_death_mid_send`<br>`test_the_pre_work_increment_survives_process_death_before_the_post_send_write` |
+| reminders | Channel failures do not accumulate attempts | `test_a_channel_failure_loop_never_grows_the_counter`<br>`test_every_post_send_write_clears_the_counter` |
+| reminders | Crash between send and mark redelivers, never silently discards | `test_a_send_then_death_redelivers_within_the_bound_never_silence`<br>`test_process_death_at_each_stage_loses_no_row` |
+| reminders | A crash loop terminates at the limit | `test_a_crash_loop_exits_to_abandoned_at_the_limit`<br>`test_an_abandoned_reminder_is_never_attempted_again` |
+| reminders | The exit is evaluated on the path it bounds | `test_both_pre_work_give_up_exits_commit_with_the_rest_of_the_scope`<br>`test_a_send_then_death_redelivers_within_the_bound_never_silence` |
+| reminders | Abandonment is surfaced, not silent | `test_an_abandoned_reminder_is_named_in_the_same_ticks_summary`<br>`test_the_summary_identifies_an_abandoned_row_as_a_failed_delivery` |
+| reminders | Transient failure retries after the floor | `test_a_failed_send_leaves_the_row_pending_on_the_floor`<br>`test_a_transient_failure_delivers_on_the_first_tick_after_the_floor` |
+| reminders | Partial reminder delivery is not re-sent | `test_a_partial_reminder_is_recorded_delivered_and_never_re_sent`<br>`test_a_partial_delivery_records_detail_partial` |
+| reminders | Downtime within grace delivers late | `test_downtime_within_grace_delivers_late`<br>`test_the_grace_boundary_is_the_configured_window` |
+| reminders | Downtime beyond grace is missed, not replayed | `test_beyond_grace_is_missed_and_summarised_not_replayed` |
+| reminders | Nothing overdue means silence | `test_nothing_overdue_means_no_message_of_any_kind`<br>`test_an_empty_store_sends_nothing_over_a_long_run` |
+| reminders | One summary names everything | `test_the_summary_identifies_an_abandoned_row_as_a_failed_delivery`<br>`test_mark_reported_writes_every_named_row_and_clears_their_counters` |
+| reminders | A failed summary marks nothing | `test_reported_at_is_written_only_when_the_summary_is_delivered` |
+| reminders | A partial summary marks nothing | `test_reported_at_is_written_only_when_the_summary_is_delivered` |
+| reminders | A large backlog is fully named | `test_the_summary_names_every_unreported_row_with_no_item_bound`<br>`test_report_selection_is_uncapped` |
+| reminders | Reported rows never resurface | `test_reported_rows_never_resurface`<br>`test_a_reported_row_is_never_selected_again` |
+| reminders | Report crash loop terminates | `test_a_report_crash_loop_gives_up_with_an_error_log` |
+| reminders | A persistently partial summary terminates at the horizon | `test_a_persistently_partial_summary_terminates_at_the_horizon`<br>`test_the_horizon_give_up_writes_no_new_audit_transition` |
+| reminders | A channel outage never forfeits the report | `test_a_channel_outage_never_forfeits_the_report` |
+| reminders | Stale rows are named before any give-up | `test_a_stale_row_is_named_in_an_attempted_summary_before_any_give_up`<br>`test_the_stale_row_is_named_even_when_the_summary_only_partly_lands` |
+| reminders | Exits survive restart | `test_every_exit_is_invisible_to_a_reopened_selector`<br>`test_every_exit_is_invisible_to_a_reopened_selector` |
+| reminders | Follow-up resolves against the delivered reminder | `test_the_follow_up_turn_carries_the_block`<br>`test_the_block_names_the_reminder_text_and_when_it_was_sent` |
+| reminders | Surfaced exactly once | `test_a_delivery_is_surfaced_at_most_once`<br>`test_a_second_owner_turn_carries_no_block_for_the_same_delivery` |
+| reminders | Surfacing survives a restart | `test_surfacing_survives_a_restart` |
+| reminders | Stale delivery does not resurface | `test_a_delivery_older_than_the_window_is_not_surfaced`<br>`test_the_window_boundary_includes_a_delivery_exactly_at_it` |
+| reminders | Event turns never carry it | `test_an_event_turn_never_carries_the_block` |
+| reminders | The note does not taint the session | `test_the_block_does_not_taint_the_session` |
+| reminders | Invalid delivery configuration fails startup | `test_a_non_positive_delivery_setting_fails_load_naming_the_setting`<br>`test_the_lateness_threshold_must_sit_below_the_grace_window`<br>`test_the_report_horizon_must_sit_above_the_retry_floor` |
+| reminders | No widening knob exists | `test_the_delivery_config_surface_is_exactly_this_and_nothing_wider`<br>`test_no_delivery_knob_names_a_recipient_channel_or_audit_exemption` |
+| reminders | Scheduling sets the selector column to the due instant | `test_scheduling_by_either_source_writes_next_attempt_at`<br>*(scenario inherited; test predates this change)* |
+| reminders | Reinstating sets the selector column to the due instant | `test_reinstating_writes_next_attempt_at`<br>`test_reinstate_returns_it_to_pending_and_writes_next_attempt_at`<br>*(scenario inherited; test predates this change)* |
+| reminders | Disabled means inert, not destructive | `test_a_disabled_run_writes_none_of_the_delivery_columns`<br>`test_disabled_wires_no_scheduler_and_no_note`<br>`test_stored_reminders_are_untouched_by_a_disabled_run` |
+| reminders | Disabled by default | `test_reminders_absent_entirely_means_disabled`<br>*(scenario inherited; test predates this change)* |
+| reminders | Re-enabling restores access to stored reminders | `test_a_disabled_lifetime_leaves_every_delivery_column_untouched` |
+| reminders | Re-enabling catches up under the grace rules | `test_re_enabling_catches_up_under_the_ordinary_grace_rules`<br>`test_re_enablement_surfaces_the_delivery_in_the_next_owner_turn` |
+| channel-adapter | Concurrent sends do not interleave | `test_concurrent_multi_chunk_sends_do_not_interleave`<br>`test_ten_concurrent_senders_all_stay_contiguous` |
+| channel-adapter | A waiting send is delivered, not dropped | `test_a_waiting_send_is_delivered_not_dropped_or_truncated`<br>`test_a_failing_sender_does_not_strand_the_waiting_one` |
+| channel-adapter | The notice cannot be separated from its chunks | `test_the_failure_notice_lands_before_the_waiting_senders_first_chunk` |
+| channel-adapter | Serialization is enforced by the adapter, not by caller convention | `test_the_lock_wraps_the_shared_sequence_not_the_two_wrappers`<br>`test_the_lock_is_the_whole_mechanism_and_nothing_more` |
+| agent-core | Event turn framed for triage | `test_owner_turn_has_no_triage_framing_event_turn_does`<br>`test_an_event_turn_never_carries_the_block` |
+| agent-core | Owner turn unaffected | `test_owner_turn_has_no_triage_framing_event_turn_does`<br>*(scenario inherited; test predates this change)* |
+| agent-core | Every owner turn knows the time | `test_every_owner_turn_carries_a_header_for_its_own_turn`<br>*(scenario inherited; test predates this change)* |
+| agent-core | No header when reminders are disabled | `test_no_owner_turn_carries_a_header_when_reminders_are_disabled`<br>`test_disabled_wires_no_scheduler_and_no_note` |
+| agent-core | First owner turn carries recall | `test_first_owner_turn_is_prefixed_with_the_block`<br>*(scenario inherited; test predates this change)* |
+| agent-core | Delivered reminder reaches a mid-session turn | `test_the_block_is_injected_even_when_recall_was_already_given` |
+| agent-core | Non-announceable event turn output suppressed | `test_non_announceable_event_output_is_suppressed`<br>*(scenario inherited; test predates this change)* |
+| agent-core | Scheduler starts and stops with the app | `test_the_scheduler_runs_for_the_apps_lifetime_and_is_cancelled_cleanly`<br>`test_the_scheduler_and_the_coordinator_both_run_and_both_stop` |
+| agent-core | Scheduler failure does not take the app down | `test_a_scheduler_failure_leaves_replies_working`<br>`test_a_scheduler_failure_leaves_the_coordinator_running`<br>`test_the_run_loop_survives_a_channel_exception` |
+| agent-core | No scheduler task when disabled | `test_disabled_wires_no_scheduler_and_no_note`<br>`test_no_scheduler_task_is_created_when_none_is_wired` |
+| approval-gate | Delivery does not prompt | `test_a_delivery_while_an_approval_is_pending_sends_and_prompts_nothing`<br>`test_the_scheduler_never_touches_the_gate` |
+| approval-gate | Delivery leaves a pending approval intact | `test_a_delivery_while_an_approval_is_pending_sends_and_prompts_nothing` |
+| approval-gate | Every delivery is traceable to a schedule | `test_a_delivered_reminders_trail_carries_both_records` |
+| incident-triage | Quiet homelab means silence | `test_nothing_due_means_zero_unprompted_messages_over_a_long_run`<br>`test_an_empty_store_sends_nothing_over_a_long_run` |
+| incident-triage | No system-scheduled message exists | `test_nothing_due_means_zero_unprompted_messages_over_a_long_run`<br>`test_the_pipeline_has_no_reminder_surface_at_all` |
+| incident-triage | Reminder delivery does not consume the incident cap | `test_a_reminder_delivery_does_not_consume_the_incident_cap`<br>`test_a_catch_up_summary_does_not_consume_the_incident_cap` |
+| incident-triage | Suppressed count surfaces later | `test_suppressed_count_surfaces_on_next_announceable_message`<br>*(scenario inherited; test predates this change)* |
+| incident-triage | Cap holds across a restart | `test_rehydrated_cap_holds_across_restart`<br>*(scenario inherited; test predates this change)* |
+| incident-triage | Suppressed triage cannot prompt | `test_per_instance_attempt_in_a_suppressed_turn_is_silent`<br>*(scenario inherited; test predates this change)* |
+| secure-deployment | No new infrastructure surface | `test_the_scheduler_module_opens_no_socket_and_registers_no_handler`<br>*(+ runtime half at deploy, task 11.2)* |
+| secure-deployment | Reminders add no listener | `test_the_scheduler_module_opens_no_socket_and_registers_no_handler`<br>*(+ runtime half at deploy, task 11.2)* |
+| secure-deployment | The timezone database resolves inside the image | `test_no_module_in_scope_reads_the_process_timezone`<br>*(+ runtime half at deploy, task 11.2)* |
+| secure-deployment | The scheduler cannot be triggered from outside | `test_a_tick_can_only_be_caused_by_the_clock`<br>`test_the_scheduler_module_opens_no_socket_and_registers_no_handler` |
+
+### 10.2 `openspec validate --changes reminder-delivery --strict`
+
+Passes (3 items: `owner-acknowledgement`, `reminder-delivery`, `reminders` — the latter
+two being the superseded draft and this change).
+
+### 10.3 The settled list, checked against the implementation
+
+The reminders README's "Settled — do not re-litigate" list, plus this change's D4
+asymmetry. Each row names where the settled decision now lives in code.
+
+| settled decision | where it lives | verified by |
+|---|---|---|
+| the two-budget separation (`send_attempts` cleared on any return, so it accumulates only across process death) | every post-send write clears it: `mark_delivered`, `schedule_retry`, `mark_reported` | `test_every_post_send_write_clears_the_counter`, `test_a_channel_failure_loop_never_grows_the_counter` |
+| the crash maximum in the **pre-work** transaction, not post-send | `ReminderScheduler._pre_work`, beside `charge_attempt` | `test_a_crash_loop_exits_to_abandoned_at_the_limit`; mutation 2 goes red |
+| `next_attempt_at` initialized on every path into `pending` | `ReminderStore.schedule` / `_transition`, unchanged from reminders-core | `test_scheduling_by_either_source_writes_next_attempt_at` (inherited) |
+| exits must **write** state the selector tests | ten repository writes, no in-memory exit anywhere | `test_every_exit_is_invisible_to_a_reopened_selector` (6 exits, each re-checked against a reopened store) |
+| the cadence amendment's two-class enumeration | incident-triage delta text + the scheduler bypassing the pipeline | `test_a_reminder_delivery_does_not_consume_the_incident_cap`, `test_the_pipeline_has_no_reminder_surface_at_all` |
+| the audit log's two-records-for-two-questions rule | `authorization` (gate) and `reminder` (transition) stay separate; the give-up writes neither | `test_a_delivered_reminders_trail_carries_both_records`, `test_a_summary_that_is_not_delivered_writes_no_report_record` |
+| the resolved-time echo with the weekday | `render_instant`, reused unchanged by every delivery surface | delivery, summary and note all render through it |
+| **B ships the complete final column set** | no DDL in this change at all | `test_every_designed_column_exists_after_first_connect` (inherited) |
+| duplicate-beats-loss | `partial` → delivered for a reminder; `partial` marks nothing for a summary | `test_a_partial_reminder_is_recorded_delivered_and_never_re_sent`, `test_reported_at_is_written_only_when_the_summary_is_delivered` |
+| cut #1 (no report item bound / pagination) | `select_reportable` is uncapped; composition names the whole set | `test_the_summary_names_every_unreported_row_with_no_item_bound`, `CHARGED=>WRITTEN` in the model |
+| cut #2 (`terminal_at`) | never added | the column set is unchanged |
+| cut #3 (one fixed floor, no schedule) | `retry_floor_seconds`, one value | `test_a_failed_send_leaves_the_row_pending_on_the_floor` |
+| cut #4 (one message per due reminder) | `_deliver` per row, no batching | `test_reminders_are_delivered_oldest_due_first_one_message_each` |
+| cuts #5/#6 (no `reschedule_reminder`, no reinstate **tool**) | registry untouched by this change | `test_the_registry_has_no_reinstate_reschedule_edit_or_delete_tool` (inherited) |
+| **D4's asymmetry** (a reminder's partial is content; a summary's partial is rows) | `_deliver` vs `_report`, deliberately different | mutation 3 goes red; `test_reported_at_is_written_only_when_the_summary_is_delivered` |
+
+### 10.3 The anchor sweep
+
+For every numeric or ordering claim in the deltas: the requirement or config value that
+makes it true. A claim true only because of an unwritten code fact is the defect class
+that produced three findings in the review, so this is checked rather than assumed.
+
+| claim | anchored by |
+|---|---|
+| poll interval 30 s, delivery cap 10/tick | `RemindersConfig.poll_interval_seconds` / `tick_delivery_limit`, both named in the polling-scheduler requirement |
+| lateness threshold 300 s, grace 24 h | `late_delivery_threshold_seconds` / `late_grace_seconds`, named in their own requirements, with the ordering constraint validated at load |
+| retry floor 900 s | `retry_floor_seconds`, named in the failed-send requirement |
+| crash limit 3 | `crash_attempt_limit`, named in the crash-bound requirement |
+| report horizon 86400 s | `report_horizon_seconds`, named in the report requirement, with `horizon > floor` validated at load |
+| note window 12 h, note count 10 | `note_window_seconds` / `note_max_items`, named in the note requirement |
+| **the selector's `due_at` conjunct** | stated twice on purpose: in the polling-scheduler requirement ("a reminder is never delivered before its due instant, whatever `next_attempt_at` holds") **and** in the MODIFIED initialization requirement, which is what makes the single-column version unsafe |
+| **the horizon anchor** (`due_at + grace + horizon`) | stated verbatim in the report requirement, together with the post-send placement and the reason for it |
+| **composition order** (oldest-due first) | stated in the report requirement, with its consequence — horizon-eligible rows land in the head chunks |
+| delivery order (individual reminders, then the summary) | stated in the verbatim-delivery requirement |
+| **notice recognition** (first-or-crash vs floor retry) | derivable from spec text alone, and deliberately so: initialization writes `next_attempt_at = due_at`, a floor retry sets it **later**, and "nothing may ever set it earlier" is a SHALL. So `next_attempt_at == due_at` ⟺ not-a-floor-retry, with no extra column and no unwritten code fact |
+| "at most `crash_attempt_limit` notices per grace window" | the notice rule plus the crash bound, both requirements |
+| per-row horizon attempt counts (≈96 / ≈192 / exactly 1) | now stated three-valued in the report requirement — this was **Finding 2**, and before the fix the number was anchored on nothing |
+| the pending cap 100 | `reminders-core`'s `max_pending`; also the reason a 120-row backlog is untestable |
+| ~33 s/chunk degraded ceiling | `signal.max_send_attempts × send_timeout_seconds` + backoff, cited in the channel-adapter delta |
+| ~1.1 s/chunk healthy | `notes/send-latency-measurement.md` (n=82, 29 days), cited in the channel-adapter delta |
+| "the summary carries no failure notice" | stated in the report requirement |
+| grace/lateness boundary strictness ("more than X before/after") | stated in both requirements; both boundaries have a test at the exact value |
+
+**One thing deliberately NOT anchored, flagged so it is not mistaken for a requirement:**
+the *relative order* of the three owner-turn blocks (time header, recall, delivered
+reminders) is unspecified in the agent-core delta, and the implementation's choice —
+time, recall, note, then the owner's message — is an implementation decision, not a
+contract. `test_the_follow_up_turn_carries_the_block` asserts the owner's text comes
+last, which is stricter than any delta requires. That is fine for a test but should not
+be read as spec.
+
+### 10.4 Publication safety
+
+Every **added** line across the ten commits (6,915 of them) scanned for the four
+repo-specific shapes plus the general ones:
+
+| check | result |
+|---|---|
+| tailnet IPs (Tailscale's CGNAT range) | none |
+| other private IPs (`10.*`, `192.168.*`, `172.16–31.*`) | none |
+| phone numbers | only `+31600000000` and `+31611111111` — **both pre-existing placeholders**, present in 9 and 1 files respectively at `3fed4bd` |
+| account UUIDs | none |
+| token-shaped literals (`tskey-`, `sk-…`, `ghp_`, bearer, api-key) | none |
+| `gitleaks detect --log-opts=3fed4bd..HEAD` | **no leaks found**, 10 commits scanned |
+
+The pre-commit hook (`core.hooksPath=.githooks`) ran clean on every commit; no
+`--no-verify` was used at any point, and no finding needed rewording.
