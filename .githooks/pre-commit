@@ -81,7 +81,37 @@ fi
 # than passed over silently, for the same reason a missing scanner is fatal.
 LOCAL="$(git rev-parse --show-toplevel)/.githooks/local-checks.sh"
 if [ -f "$LOCAL" ]; then
-  bash "$LOCAL" "$added" || fail=1
+  # The blob is handed over as a FILE PATH, never as an argv string. Passing it
+  # inline broke on 2026-08-20 at 217KB of added lines: Linux caps a single argv
+  # element at MAX_ARG_STRLEN (128 KiB), so execve returned E2BIG and bash reported
+  # "Argument list too long" *before* the local script ran at all. It failed closed,
+  # which is the right direction — but a gate that blocks every large commit is a
+  # gate that teaches --no-verify, so the size ceiling had to go rather than be
+  # worked around. A path has no ceiling, is re-readable, and lets the local script
+  # run more than one check over the same content.
+  #
+  # The contract is VERSIONED, and that guard is the point of this block. A local
+  # script written against the old inline contract would receive a path where it
+  # expected text, grep the filename, match nothing, and exit 0 — a total coverage
+  # loss with no symptom whatsoever. Silence is the one failure mode a
+  # publication gate must not have, so a stale script is fatal, not a warning.
+  if ! grep -q 'ADDED_LINES_FILE_CONTRACT' "$LOCAL"; then
+    red "pre-commit: .githooks/local-checks.sh predates the added-lines FILE contract."
+    echo "  It is now passed a PATH as \$1, not the added-lines blob. A script still"
+    echo "  reading \$1 as text would scan the filename, match nothing, and pass"
+    echo "  SILENTLY — so this is fatal rather than a warning."
+    echo "  Update it to read the file and to carry the token"
+    echo "  ADDED_LINES_FILE_CONTRACT (master copy: the private claude-config repo,"
+    echo "  provisioning/henk-local-checks.sh)."
+    fail=1
+  else
+    # mktemp is mode 600, and the blob can contain the very values being scanned
+    # for, so it is removed on every exit path including the blocked one.
+    added_file="$(mktemp)"
+    trap 'rm -f "$added_file"' EXIT INT TERM
+    printf '%s\n' "$added" > "$added_file"
+    bash "$LOCAL" "$added_file" || fail=1
+  fi
 else
   warn "pre-commit: no .githooks/local-checks.sh — project-local checks not run."
 fi
