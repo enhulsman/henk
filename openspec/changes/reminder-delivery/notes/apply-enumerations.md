@@ -339,3 +339,121 @@ The lock is **instance state**. A second `SignalAdapter` over the same bridge sa
 every test above while serializing nothing, so the scheduler must be handed the *same*
 adapter instance the agent core holds. Task 8.1 asserts that, and the reason is written
 into the lock's own comment so the next reader of `signal.py` finds it there.
+
+---
+
+## Group 5 — the scheduler
+
+Suite after: **1444** (+88). New: `henk/reminders/scheduler.py`,
+`tests/test_reminders_scheduler.py` (87 tests).
+
+### Marker and heading wording (design's first Open Question, settled here)
+
+The design left the marker wording to apply time, requiring only distinguishability
+from a triage message plus the original-due-time statement on late and missed items:
+
+| surface | wording |
+|---|---|
+| on-time delivery | `⏰ Reminder: {text}` |
+| late delivery | `⏰ Reminder (was due {rendered}): {text}` |
+| summary heading | `⏰ Catch-up: reminders that came due but were not delivered on time.` |
+| summary row | `• {rendered} — {text}` |
+| abandoned row | the same, plus ` (I tried to send this one and gave up.)` |
+| failure notice | `[⚠ the reminder due {rendered} could not be fully delivered]` |
+
+The stored text always appears **unchanged** after the prefix. The abandoned suffix
+exists because the distinction matters to the owner: a `missed` row means "you were
+away", an `abandoned` one means "I could not reach you", and one message carries both.
+
+### Finding 4 — `detail: "partial"` collided with an existing no-text guard
+
+Design D4 says the partial-delivery audit record carries `detail: "partial"`, calling it
+"v4's free `detail` property — no version bump". But `reminders-core` shipped
+`test_a_reminder_record_carries_no_reminder_text`, which asserted `detail` is **absent**
+from a reminder record — and for a good reason: `detail` is free text, so on a reminder
+record it is the one property through which the reminder's own wording could reach a log
+that "gets read and pasted around".
+
+So the design's mechanism and the existing guard's purpose were in direct conflict, and
+the full suite caught it the moment the scheduler started emitting the detail.
+
+Resolved by making the guard's *intent* enforceable rather than dropping either side: the
+v4 document's reminder branch now constrains `detail` to a **closed enum**
+(`["partial", null]`) with its own description. The property is available to the design,
+and free text on a reminder record is now refused by the contract rather than by a test.
+An authorization record's free-text `detail` is untouched.
+
+Deliberately **not** a version bump, and the reasoning is worth stating: this tightens
+what v4 accepts, and no reminder record carrying a `detail` value has ever been written,
+so nothing already on disk becomes invalid. The old assertion was replaced by
+`test_a_reminder_records_detail_is_a_closed_vocabulary_not_free_text`, which drives four
+smuggling attempts (`"buy bread"`, `"partial: buy bread"`, `"PARTIAL"`, `""`) through the
+document and asserts each is refused.
+
+### Two test bugs of mine, and one real constraint
+
+Worth recording because in each case the code was right and the test was wrong:
+
+- **Clock tests asserted the fixture, not the property.** Two tests asserted
+  `delivered_at == NOW` under a clock that advances on every read — but seeding consumes
+  reads, so the tick's captured instant is not `NOW`. Fixed to assert against
+  `clock.reads[reads_before]`, which is the actual property: the write is recorded
+  against exactly the instant the tick captured.
+- **A 120-row backlog is unreachable.** `test_the_summary_names_every_unreported_row`
+  seeded 120 rows and was refused by the pending cap. 100 is not a large-looking
+  sample — it *is* the cap, so it is the true worst case. The store was telling the
+  truth and the test was asking for something the system cannot produce.
+- **The abandoned row's `reported_at` is set by the end of its tick.** A test asserted it
+  null after a full tick; the exit leaves it null so the *same tick's summary* can name
+  it, and that summary then marks it. The null-at-the-exit half belongs at the
+  repository level, where no summary is in the way, and that is where it is asserted.
+
+### 5.6 The fault-injection matrix, retargeted
+
+Ten fault points × three channel outcomes, against the real store and scheduler, plus a
+process-death arm per outcome. The fixture carries four rows so every fault point is
+reachable in one run: delivery work, grace-then-report work, a row the crash bound
+retires in pre-work, and a row already past grace + horizon.
+
+The invariant under fault is **conservation, not success**: a fault may abandon a tick,
+log loudly and cost a duplicate; it may never leave a row that is neither terminal nor
+still selectable — a row charged an attempt with no recording write, which is the shape
+that silently vanishes.
+
+Seven of the thirty cells initially failed with "the fault was never reached", which was
+the matrix over-claiming rather than the code misbehaving: three of the ten writes only
+exist on one arm of the outcome mapping. Rather than skipping those cells, reachability
+is now **declared** (`REACHABLE`) and the unreachable ones assert they were *not*
+reached — so the matrix reports thirty checks and performs thirty. Two of those
+declarations are properties in their own right:
+
+- `mark_abandoned` is reachable under all three outcomes, because the crash bound is
+  evaluated pre-work and no channel outcome can affect whether it fires. That is the
+  pre-work-placement argument restated as coverage.
+- `mark_reported` is unreachable under a wholly `failed` summary — which is "a channel
+  outage never forfeits the report" showing up as an absence.
+
+### 5.6 The mutations — nine applied, nine red, zero survivors
+
+Task 5.6 lists nine mutations under "at minimum" (the apply brief called it eight; all
+nine listed were run). Each was applied by exact string replacement against pristine
+source, the suite run, then reverted — a replacement that failed to match aborts loudly
+rather than passing as a no-op no-op mutation.
+
+| mutation | verdict | what caught it |
+|---|---|---|
+| 1. drop the pre-work increment | RED, 9 failed | the crash-bound suite + `mark_abandoned` matrix cells |
+| 2. evaluate the crash max post-send | RED, 9 failed | same, and `test_a_send_then_death_redelivers_within_the_bound_never_silence` — the bound never fires on the path it exists to bound |
+| 3. mark `reported_at` on a partial summary | RED, 3 failed | `test_reported_at_is_written_only_when_the_summary_is_delivered` |
+| 4. skip the grace clear of `send_attempts` | RED, 1 failed | `test_the_grace_exit_clears_the_counter_and_leaves_reported_at_null` |
+| 5. drop the selector's `due_at` conjunct | RED, 2 failed | both future-delivery tests, at scheduler and store level |
+| 6. remove the report horizon | RED, 4 failed | the termination and give-up suite |
+| 7. move the horizon into the pre-work transaction | RED, 3 failed | **`test_a_stale_row_is_named_in_an_attempted_summary_before_any_give_up`** — the scenario the task named, plus `test_a_channel_outage_never_forfeits_the_report` |
+| 8. skip the pre-send status re-read | RED, 4 failed | the cancellation race + all three `status_of` matrix cells |
+| 9. hold a transaction across an await | RED, 1 failed | the AST guard from 3.5, statically |
+
+**No survivors.** Mutation 7 is the one worth dwelling on: moving the horizon check three
+lines earlier — into the transaction where the crash bound correctly lives — silently
+converts "every row is named at least once" into "a row that arrived stale is retired
+unnamed". That is a one-line defect with no runtime symptom, and it is the single
+strongest argument for the post-send placement being spec text rather than a code detail.

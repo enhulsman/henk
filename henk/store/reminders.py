@@ -321,6 +321,16 @@ class ReminderStore:
         )
         return int(cursor.lastrowid or 0)
 
+    def transaction(self):
+        """The store's transaction scope, for a caller grouping several writes.
+
+        A passthrough rather than a new mechanism: the scheduler's pre-work scope has
+        to contain grace transitions, selection and the increments, and it should not
+        have to be handed the ``Store`` separately just to open one. Reentrant and
+        poisoned exactly as :meth:`henk.store.db.Store.transaction` documents.
+        """
+        return self._store.transaction()
+
     # --- delivery selection (reminder-delivery design D2) -----------------
     #
     # These are the delivery selector, and it is a QUERY: every exit below writes a

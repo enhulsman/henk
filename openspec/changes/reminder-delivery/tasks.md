@@ -104,7 +104,7 @@ notes — which is deliberately the cheapest moment a spec edit will ever have.
 
 ## 5. Scheduler: tick, delivery, grace, summary
 
-- [ ] 5.1 Tests from the delivery scenarios: due → delivered within a tick, verbatim, marked;
+- [x] 5.1 Tests from the delivery scenarios: due → delivered within a tick, verbatim, marked;
       late (past threshold) states original due time via `render_instant` and records
       `delivered-late`; cancelled never delivers; **cancellation committing between selection
       and dispatch is skipped by the pre-send status re-read (drive it with the real lock
@@ -119,11 +119,11 @@ notes — which is deliberately the cheapest moment a spec edit will ever have.
       bridge, never `conftest.FakeChannel`: delivery does not wait on a turn; delivery waits
       on an in-flight send but is never skipped or interleaved; within-a-tick delivery when
       nothing is in flight.
-- [ ] 5.2 Tests from the counting/crash scenarios: increment visible after a simulated death
+- [x] 5.2 Tests from the counting/crash scenarios: increment visible after a simulated death
       mid-send; counter cleared on every return; crash loop exits to `abandoned` at the limit
       inside pre-work; abandoned is named in the summary; send-then-mark death → redelivery
       within the bound, never silence.
-- [ ] 5.3 Tests from the grace/summary/pacing scenarios: within-grace → `delivered-late`;
+- [x] 5.3 Tests from the grace/summary/pacing scenarios: within-grace → `delivered-late`;
       beyond → `missed` + summary; nothing overdue → zero messages; **a 100-row within-grace
       backlog is delivered at most `tick_delivery_limit` per tick, oldest-due first, none
       dropped and none attempt-charged while unselected**; summary names every unreported row
@@ -140,15 +140,15 @@ notes — which is deliberately the cheapest moment a spec edit will ever have.
       not renamed early; the summary names rows in selection order, oldest-due first;
       reported rows never resurface; report crash-loop give-up writes `reported_at` + error
       log.
-- [ ] 5.4 Tests for tick isolation: a store error mid-tick rolls back and the next tick
+- [x] 5.4 Tests for tick isolation: a store error mid-tick rolls back and the next tick
       succeeds; a channel exception does not kill the task; a tick captures `now` once
       (inject a stepping clock and assert one tick cannot disagree with itself).
-- [ ] 5.5 Implement `henk/reminders/scheduler.py`. Instants only (epoch seconds) — no wall
+- [x] 5.5 Implement `henk/reminders/scheduler.py`. Instants only (epoch seconds) — no wall
       clocks, no zone reads; rendering goes through `render_instant`. The AST-based
       process-timezone guard's scope must cover the new module — and it fails on ANY zero-arg
       call named `now` or `today`, so do not name a scheduler method `self._now()`; the
       guard's own history says the fix is renaming, not exempting.
-- [ ] 5.6 Retarget the model's fault-injection matrix at the real store + scheduler (design
+- [x] 5.6 Retarget the model's fault-injection matrix at the real store + scheduler (design
       D11): faults at pre-work commit, grace transition, each send, each post-send commit,
       tri-valued channel double, process-death cases. Then mutation-check the key assertions
       — at minimum: drop the pre-work increment, evaluate the crash max post-send, mark
