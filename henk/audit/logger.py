@@ -128,6 +128,7 @@ def reminder_record(
     transition: str,
     initiated_by: str = "model",
     at: float | None = None,
+    detail: str | None = None,
 ) -> dict[str, Any]:
     """Build one reminder lifecycle record (audit-log spec).
 
@@ -154,6 +155,7 @@ def reminder_record(
         "due_at": None if due_at is None else float(due_at),
         "transition": transition,
         "initiated_by": initiated_by,
+        "detail": _bounded(detail),
         "at": at,
     }
 
@@ -183,12 +185,14 @@ class ReminderReceipts:
         due_at: float | None,
         transition: str,
         initiated_by: str = "model",
+        detail: str | None = None,
     ) -> dict[str, Any]:
         record = reminder_record(
             reminder_id=reminder_id,
             due_at=due_at,
             transition=transition,
             initiated_by=initiated_by,
+            detail=detail,
         )
         if self._audit is not None:
             self._audit.write(record)  # loud but non-blocking; never raises

@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/enhulsman/henk/audit-record.v4.schema.json",
   "title": "Henk audit record",
-  "description": "One record per EVENT TRIAGE (written at triage completion), per owner session, per suppressed event, per MUTATION AUTHORIZATION (written at decision time), or per REMINDER LIFECYCLE TRANSITION (written after the store transaction commits). Schema version 4 adds: the `reminder` record type and the `scheduler` value for `initiated_by`. Version 4 declares the COMPLETE transition enumeration for the reminder capability, including the transitions only the delivery half writes, so that shipping delivery requires no further version increment \u2014 a schema document is a validation contract, not an inventory of what the current build emits. Version 3 added: the `authorization` record type (model-initiated decisions and owner-command receipts), the tier+outcome shape of session `approvals` entries (v2 used `decision`), the `executed` flag on `tool_calls` entries, and the session record's `memory_hash`.",
+  "description": "One record per EVENT TRIAGE (written at triage completion), per owner session, per suppressed event, per MUTATION AUTHORIZATION (written at decision time), or per REMINDER LIFECYCLE TRANSITION (written after the store transaction commits). Schema version 4 adds: the `reminder` record type and the `scheduler` value for `initiated_by`. Version 4 declares the COMPLETE transition enumeration for the reminder capability, including the transitions only the delivery half writes, so that shipping delivery requires no further version increment — a schema document is a validation contract, not an inventory of what the current build emits. Version 3 added: the `authorization` record type (model-initiated decisions and owner-command receipts), the tier+outcome shape of session `approvals` entries (v2 used `decision`), the `executed` flag on `tool_calls` entries, and the session record's `memory_hash`.",
   "type": "object",
   "required": [
     "schema_version",
@@ -89,14 +89,14 @@
               "string",
               "null"
             ],
-            "description": "The tool's returned identifier, retained ONLY for tools whose result the application consumes \u2014 in practice `publish_handoff`, whose value becomes this record's handoff_message_id. Null for every other tool: results are not recorded, so no tool output (node addresses, note content, stored memories, captured thoughts) enters the audit log."
+            "description": "The tool's returned identifier, retained ONLY for tools whose result the application consumes — in practice `publish_handoff`, whose value becomes this record's handoff_message_id. Null for every other tool: results are not recorded, so no tool output (node addresses, note content, stored memories, captured thoughts) enters the audit log."
           },
           "executed": {
             "type": [
               "boolean",
               "null"
             ],
-            "description": "True when the invocation was permitted to proceed. Derived by correlating the invocation with this session's authorization records \u2014 never inferred from tool-result text. Read-only and notify-only calls are true by construction: they bypass the gate."
+            "description": "True when the invocation was permitted to proceed. Derived by correlating the invocation with this session's authorization records — never inferred from tool-result text. Read-only and notify-only calls are true by construction: they bypass the gate."
           }
         }
       }
@@ -263,7 +263,7 @@
         "per-instance",
         null
       ],
-      "description": "Authorization records: the tool's declared tier. Null for owner commands \u2014 a tier is a tool property and a command is not a tool."
+      "description": "Authorization records: the tool's declared tier. Null for owner commands — a tier is a tool property and a command is not a tool."
     },
     "initiated_by": {
       "enum": [
@@ -278,7 +278,7 @@
         "string",
         "null"
       ],
-      "description": "Authorization records: the gate's one-time invocation reference. Null for owner commands (no gate involvement \u2014 the gate governs model-initiated calls)."
+      "description": "Authorization records: the gate's one-time invocation reference. Null for owner commands (no gate involvement — the gate governs model-initiated calls)."
     },
     "turn_type": {
       "type": [
@@ -298,7 +298,7 @@
         "string",
         "null"
       ],
-      "description": "Authorization records: a bounded summary of the effect (owner commands name what changed, e.g. how many memories were removed)."
+      "description": "Authorization records: a bounded summary of the effect (owner commands name what changed, e.g. how many memories were removed). Reminder records: restricted to a closed vocabulary by the reminder branch below — see its description."
     },
     "reminder_id": {
       "type": "integer",
@@ -322,7 +322,7 @@
         "missed",
         "abandoned"
       ],
-      "description": "Reminder records: the name of the LIFECYCLE TRANSITION, not the stored row status \u2014 a reinstated reminder's row status is `pending`. The COMPLETE enumeration for the capability: `delivered`, `delivered-late`, `missed` and `abandoned` are written only by the reminder-delivery half and validate here before that half exists."
+      "description": "Reminder records: the name of the LIFECYCLE TRANSITION, not the stored row status — a reinstated reminder's row status is `pending`. The COMPLETE enumeration for the capability: `delivered`, `delivered-late`, `missed` and `abandoned` are written only by the reminder-delivery half and validate here before that half exists."
     }
   },
   "allOf": [
@@ -420,6 +420,15 @@
               ]
             }
           ]
+        },
+        "properties": {
+          "detail": {
+            "enum": [
+              "partial",
+              null
+            ],
+            "description": "Reminder records: a CLOSED vocabulary, never free text. The only value is 'partial', marking a delivery whose send returned a partial outcome and was recorded as delivered anyway. Constrained by enum rather than by type so this property can never become a route for owner-personal reminder text into the log."
+          }
         }
       }
     }

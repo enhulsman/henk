@@ -29,6 +29,7 @@ from henk.audit import (
     SCHEMA_VERSION,
     AuditLog,
     ReminderReceipts,
+    authorization_record,
     reminder_record,
     session_record,
 )
@@ -97,9 +98,52 @@ def test_a_reminder_record_carries_no_reminder_text():
     # and pasted around in contexts where owner-personal free text does not belong.
     record = reminder_record(reminder_id=1, due_at=1.0, transition="scheduled")
     blob = json.dumps(record)
-    for key in ("text", "reminder_text", "content", "detail"):
+    for key in ("text", "reminder_text", "content"):
         assert key not in record
     assert "buy bread" not in blob  # nothing resembling a payload is carried
+    # `detail` IS present now (reminder-delivery needs to mark a partial delivery
+    # durably), and it is null unless a caller sets it. It used to be asserted absent
+    # here, for a reason that still holds — a free-text property on a reminder record
+    # is a route for owner-personal text into the log — so rather than dropping that
+    # guarantee, the contract now CONSTRAINS the property: see the enum test below.
+    assert record["detail"] is None
+
+
+def test_a_reminder_records_detail_is_a_closed_vocabulary_not_free_text():
+    """The property that replaces "reminder records have no `detail`".
+
+    `detail` is free text on an authorization record, where the writer is naming which
+    memory was removed. On a reminder record it must never be free text, or it becomes
+    the one field through which the reminder's own wording could reach the log — which
+    is exactly what the no-text guarantee exists to prevent. So the reminder branch of
+    the document pins it to an enum, and this asserts the document does the refusing
+    rather than the builder.
+    """
+    partial = reminder_record(
+        reminder_id=1, due_at=1.0, transition="delivered", detail="partial"
+    )
+    _validate(partial)
+    assert partial["detail"] == "partial"
+
+    for smuggled in ("buy bread", "partial: buy bread", "PARTIAL", ""):
+        record = reminder_record(
+            reminder_id=1, due_at=1.0, transition="delivered", detail=smuggled
+        )
+        with pytest.raises(jsonschema.ValidationError):
+            _validate(record)
+
+    # Tightening the reminder branch is deliberately NOT a version bump: no reminder
+    # record with a `detail` value has ever been written, so nothing already on disk
+    # becomes invalid, and an authorization record's free-text `detail` is untouched.
+    assert SCHEMA_VERSION == 4
+    authorization = authorization_record(
+        tool="capture",
+        tier="standing",
+        outcome="authorized",
+        detail="removed 3 memories",
+    )
+    _validate(authorization)
+    assert authorization["detail"] == "removed 3 memories"
 
 
 def test_the_document_itself_refuses_a_record_that_smuggles_text_in():
