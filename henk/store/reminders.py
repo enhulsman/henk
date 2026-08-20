@@ -321,6 +321,272 @@ class ReminderStore:
         )
         return int(cursor.lastrowid or 0)
 
+    # --- delivery selection (reminder-delivery design D2) -----------------
+    #
+    # These are the delivery selector, and it is a QUERY: every exit below writes a
+    # column one of these three predicates on, so an exit that reverts on restart is
+    # unrepresentable rather than merely unlikely.
+
+    def select_due(self, *, now: float, limit: int) -> tuple[Reminder, ...]:
+        """Pending reminders eligible for delivery, oldest-due first, capped.
+
+        Two conjuncts, not one. ``next_attempt_at <= now`` is retry scheduling;
+        ``due_at <= now`` is eligibility, and it is here because the column is doing
+        both jobs and its schema default is ``0`` — *eligible now*. Without the second
+        conjunct a single initialization bug would deliver every future reminder on
+        the first tick; with it, early delivery is unrepresentable in SQL.
+
+        ``limit`` paces a within-grace backlog. Rows past it are simply not returned:
+        not charged, not written, still eligible next tick — so pacing costs nothing
+        in bookkeeping and changes the arrival rate rather than the message count.
+        """
+        return self._select(
+            "status = ? AND next_attempt_at <= ? AND due_at <= ? "
+            "ORDER BY due_at ASC, id ASC LIMIT ?",
+            (PENDING, float(now), float(now), int(limit)),
+        )
+
+    def select_reportable(self, *, now: float) -> tuple[Reminder, ...]:
+        """Missed/abandoned reminders not yet reported, oldest-due first, uncapped.
+
+        Uncapped on purpose: the catch-up summary is one message however many rows it
+        names, so a bound here would strand rows that had already been charged an
+        attempt — the defect the report's item bound used to carry.
+
+        Oldest-due first is load-bearing beyond tidiness: it places any
+        horizon-eligible rows in the summary's head chunks, which is the part a
+        partial send did deliver.
+        """
+        return self._select(
+            "status IN (?, ?) AND reported_at IS NULL AND next_attempt_at <= ? "
+            "ORDER BY due_at ASC, id ASC",
+            (MISSED, ABANDONED, float(now)),
+        )
+
+    def select_past_grace(self, *, now: float, grace: float) -> tuple[Reminder, ...]:
+        """Every pending reminder whose due instant is more than ``grace`` old.
+
+        Deliberately unbounded by the delivery cap: grace applies to **every** past-
+        grace row, selected for delivery or not. Capping it would leave the
+        eleventh-oldest row pending past its window indefinitely, and eventually
+        deliver a day-old instruction as if it were current.
+
+        Strictly greater than, matching the requirement's "more than the grace window
+        before the captured instant": a row exactly at the boundary is still in grace.
+        """
+        return self._select(
+            "status = ? AND ? > due_at + ? ORDER BY due_at ASC, id ASC",
+            (PENDING, float(now), float(grace)),
+        )
+
+    def status_of(self, reminder_id: int) -> str | None:
+        """The row's committed status, or None if there is no such row.
+
+        The pre-send re-read. Kept as narrow as possible — one column, one row — so it
+        is cheap enough to run immediately before every dispatch, which is what closes
+        the window between a stale selection and the send. Once outbound sends
+        serialize, that window is as long as the earlier sends in the tick held the
+        lock, so it is tens of seconds rather than microseconds.
+        """
+        try:
+            row = (
+                self._store.connection()
+                .execute("SELECT status FROM reminders WHERE id = ?", (reminder_id,))
+                .fetchone()
+            )
+        except sqlite3.Error as exc:
+            raise StoreError(f"could not read the reminder's status: {exc}") from exc
+        return None if row is None else str(row["status"])
+
+    def _select(self, predicate: str, params: tuple) -> tuple[Reminder, ...]:
+        try:
+            rows = (
+                self._store.connection()
+                .execute(f"SELECT {_COLUMNS} FROM reminders WHERE {predicate}", params)
+                .fetchall()
+            )
+        except sqlite3.Error as exc:
+            raise StoreError(f"could not select reminders: {exc}") from exc
+        return tuple(_row_to_reminder(row) for row in rows)
+
+    # --- delivery writes (reminder-delivery design D3) --------------------
+    #
+    # Transaction-agnostic like every sibling: standalone each is one atomic write,
+    # and inside the scheduler's pre-work or post-send scope each joins that one.
+    # None of them is async, and none may become async — a scope held across an await
+    # could join an unrelated task's transaction on this single connection and be
+    # rolled back with it.
+
+    def charge_attempt(self, reminder_id: int) -> int:
+        """Increment ``send_attempts`` and return the new value (0 if no such row).
+
+        Called in the pre-work transaction, **before any send is attempted**, so an
+        attempt the process does not survive is already counted. The returned value is
+        what the crash bound is evaluated against, which is why it is read back inside
+        the same transaction rather than inferred by the caller.
+        """
+        try:
+            with self._store.transaction() as conn:
+                cursor = conn.execute(
+                    "UPDATE reminders SET send_attempts = send_attempts + 1 "
+                    "WHERE id = ?",
+                    (reminder_id,),
+                )
+                if cursor.rowcount == 0:
+                    return 0
+                row = conn.execute(
+                    "SELECT send_attempts FROM reminders WHERE id = ?", (reminder_id,)
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise StoreError(f"could not count the attempt: {exc}") from exc
+        return 0 if row is None else int(row["send_attempts"])
+
+    def mark_delivered(self, reminder_id: int, *, now: float, late: bool) -> bool:
+        """Record a delivery. ``late`` picks `delivered-late` over `delivered`.
+
+        A post-send write, so it clears ``send_attempts``: the counter accumulates
+        only when a post-send write does not happen.
+        """
+        return self._write(
+            "status = ?, delivered_at = ?, send_attempts = 0",
+            (DELIVERED_LATE if late else DELIVERED, float(now)),
+            reminder_id,
+        )
+
+    def schedule_retry(self, reminder_id: int, *, next_attempt_at: float) -> bool:
+        """Leave the row pending and defer it to ``next_attempt_at``.
+
+        The failed-send exit. One fixed floor, no escalating schedule — and the
+        counter clears, so a channel that is down for a week never reaches the crash
+        bound. What bounds that case is the grace window, not this counter.
+        """
+        return self._write(
+            "next_attempt_at = ?, send_attempts = 0",
+            (float(next_attempt_at),),
+            reminder_id,
+        )
+
+    def mark_missed(self, reminder_id: int, *, now: float) -> bool:
+        """The grace exit. Leaves ``reported_at`` NULL deliberately.
+
+        NULL is what lets the **same** tick's catch-up summary name the row: the grace
+        transition runs in the pre-work transaction, and the summary composes from the
+        report selector, which predicates on exactly that column.
+        """
+        return self._write(
+            "status = ?, send_attempts = 0, next_attempt_at = ?, reported_at = NULL",
+            (MISSED, float(now)),
+            reminder_id,
+        )
+
+    def mark_abandoned(self, reminder_id: int, *, now: float) -> bool:
+        """The crash-attempt give-up for a delivery row.
+
+        ``next_attempt_at`` is load-bearing rather than cosmetic here: the value now
+        decides report eligibility, so an abandoned row with a stale one would never
+        be named to the owner. ``reported_at`` stays NULL for the same reason
+        `mark_missed` leaves it NULL.
+        """
+        return self._write(
+            "status = ?, send_attempts = 0, next_attempt_at = ?, reported_at = NULL",
+            (ABANDONED, float(now)),
+            reminder_id,
+        )
+
+    def mark_reported(self, reminder_ids, *, now: float) -> int:
+        """Mark rows reported. Returns how many rows were written.
+
+        One statement for the whole named set, because the summary's outcome applies
+        to all of its rows or none of them: marking them one at a time would admit a
+        state where half a delivered summary's rows are reported.
+
+        An empty set writes nothing and returns 0 — never a bare ``IN ()``, and never
+        a statement whose WHERE clause could match every row.
+        """
+        ids = [int(i) for i in reminder_ids]
+        if not ids:
+            return 0
+        placeholders = ", ".join("?" for _ in ids)
+        try:
+            with self._store.transaction() as conn:
+                cursor = conn.execute(
+                    "UPDATE reminders SET reported_at = ?, send_attempts = 0 "
+                    f"WHERE id IN ({placeholders})",
+                    (float(now), *ids),
+                )
+        except sqlite3.Error as exc:
+            raise StoreError(f"could not mark the reminders reported: {exc}") from exc
+        return int(cursor.rowcount)
+
+    def mark_surfaced(self, reminder_ids, *, now: float) -> int:
+        """Mark deliveries as surfaced in conversation. Returns rows written.
+
+        Written at the moment the delivered-reminder block is composed, so the note
+        appears exactly once and survives a restart between the delivery and the
+        owner's reply.
+        """
+        ids = [int(i) for i in reminder_ids]
+        if not ids:
+            return 0
+        placeholders = ", ".join("?" for _ in ids)
+        try:
+            with self._store.transaction() as conn:
+                cursor = conn.execute(
+                    "UPDATE reminders SET surfaced_at = ? "
+                    f"WHERE id IN ({placeholders})",
+                    (float(now), *ids),
+                )
+        except sqlite3.Error as exc:
+            raise StoreError(f"could not mark the reminders surfaced: {exc}") from exc
+        return int(cursor.rowcount)
+
+    def unsurfaced_deliveries(
+        self, *, now: float, window: float, limit: int
+    ) -> tuple[Reminder, ...]:
+        """Delivered reminders not yet surfaced, newest delivery first, bounded.
+
+        Both bounds matter: the window keeps a delivery the owner never replied to
+        from resurfacing days later, and the count keeps the owner-turn prefix from
+        growing without limit after an outage's catch-up.
+        """
+        try:
+            rows = (
+                self._store.connection()
+                .execute(
+                    f"SELECT {_COLUMNS} FROM reminders "
+                    "WHERE status IN (?, ?) AND surfaced_at IS NULL "
+                    "AND delivered_at IS NOT NULL AND delivered_at >= ? "
+                    "ORDER BY delivered_at DESC, id DESC LIMIT ?",
+                    (
+                        DELIVERED,
+                        DELIVERED_LATE,
+                        float(now) - float(window),
+                        int(limit),
+                    ),
+                )
+                .fetchall()
+            )
+        except sqlite3.Error as exc:
+            raise StoreError(f"could not read delivered reminders: {exc}") from exc
+        return tuple(_row_to_reminder(row) for row in rows)
+
+    def _write(self, assignments: str, params: tuple, reminder_id: int) -> bool:
+        """One delivery UPDATE by id. Returns whether a row was written.
+
+        Every caller passes only delivery columns. ``text``, ``due_at``, ``due_tz``,
+        ``input_spec`` and ``created_at`` never appear in an ``assignments`` string,
+        and a test asserts that against this file's source.
+        """
+        try:
+            with self._store.transaction() as conn:
+                cursor = conn.execute(
+                    f"UPDATE reminders SET {assignments} WHERE id = ?",
+                    (*params, reminder_id),
+                )
+        except sqlite3.Error as exc:
+            raise StoreError(f"could not update the reminder: {exc}") from exc
+        return cursor.rowcount > 0
+
     # --- reads ------------------------------------------------------------
 
     def get(self, reminder_id: int) -> Reminder | None:

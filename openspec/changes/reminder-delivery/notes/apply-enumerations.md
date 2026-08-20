@@ -156,3 +156,118 @@ attempt whose post-send write performs the give-up**.
 Group 1's gate is satisfied: the model agrees with the delta text on every property, **after**
 three edits to the delta and design text. `openspec validate --changes reminder-delivery
 --strict` passes with the edits in place. Group 2 may begin.
+
+---
+
+## Group 2 — configuration
+
+Nine knobs on `RemindersConfig`, with load-time validation. Suite after: **1306** (+37).
+The prompt-hash tests in `test_reminders_inert.py` passed **untouched**, which was the
+acceptance condition — these knobs do not reach the system prompt, and
+`test_the_delivery_knobs_do_not_reach_the_system_prompt` now states that directly so a
+future interpolation fails with a readable message instead of an opaque hash mismatch.
+
+Two implementation notes worth the diff:
+
+- **`_DELIVERY_SETTINGS` is a table both the read path and the validator iterate.** Nine
+  hand-written read lines plus nine hand-written validation lines is the shape where a knob
+  gets added to one and not the other; iterating one table makes that drift unrepresentable.
+- **Validation is unconditional, not gated on `reminders.enabled`.** A bad value that only
+  surfaces when someone flips the flag surfaces on rp5, over SSH, at the worst moment. Both
+  ordering constraints (threshold < grace, horizon > floor) are checked the same way, and
+  every message names the setting because the error text is all the operator gets.
+
+One test of mine was wrong and was corrected rather than accommodated:
+`test_the_crash_attempt_limit_is_not_named_like_the_bridge_retry_budget` asserted
+`max_send_attempts` was a field of `SignalConfig`. It is not — it is a `SignalAdapter`
+constructor parameter, and config carries no key for it at all. The test now pins that
+(and that a future promotion of it to config must not land in `RemindersConfig`).
+
+---
+
+## Group 3 — the store's delivery writes
+
+Suite after: **1345** (+39 over group 2). New file
+`tests/test_reminders_delivery_store.py` (41 tests), plus the transaction/await guard and
+its self-test in `tests/test_store_transaction.py`.
+
+### 3.1 Pre-flight — the guard enumeration, re-derived
+
+`grep -rn "surfaced_at\|send_attempts\|delivered_at\|reported_at\|scheduler" tests/` returns
+six files. Re-derived rather than trusted, and the result **confirms task 3.3's list exactly**:
+
+| file | what it is | disposition |
+|---|---|---|
+| `test_reminders_inert.py` | the three inertness guards + the cadence guard | three expired (3.3), one survives |
+| `test_reminders_store.py` | asserts the 13-column set exists and `next_attempt_at` is `NOT NULL DEFAULT 0` | **schema** assertion, not an inertness guard — survives untouched |
+| `test_audit_v4.py` | asserts v4 already validates every delivery transition and the `scheduler` initiator | forward-looking; this change must keep it green (task 6.1) |
+| `test_audit_receipts.py` | `SCHEMA_VERSION == 4` | ditto — no version bump here |
+| `test_channel_adapter.py` | `max_send_attempts=3` in adapter fixtures | the bridge's retry budget, unrelated |
+| `test_config_reminders.py` | group 2's own new tests | n/a |
+
+So: exactly three expiries, no fourth. No guard outside `test_reminders_inert.py` needed
+touching.
+
+### 3.3 The expiries, each with its successor
+
+Per the edited-tests rule. All three are recorded **in place** as a comment block in
+`test_reminders_inert.py` rather than silently deleted, because "this test vanished" and
+"this test was retired deliberately" look identical in a diff a year later.
+
+| expired guard | why it had to go | successor |
+|---|---|---|
+| `test_nothing_in_this_change_writes_a_delivery_column` (parametrized ×4) | a grep asserting no `UPDATE`/`INSERT` literal in `henk/` names the four columns. Writing them *is* this change. | `test_a_disabled_run_writes_none_of_the_delivery_columns` — a **stronger** claim than the grep made: it drives a real disabled startup over a real file, so it catches a write reached through a path no literal names. Plus `test_the_delivery_columns_are_written_only_by_the_scheduler_and_the_note`, which narrows the grep rather than dropping it (only `reminders.py` / `scheduler.py` may write them). Plus group 8's no-task-when-disabled. |
+| `test_the_reminder_repository_writes_only_status_and_next_attempt_at` | an AST guard over every `UPDATE reminders` literal, asserting the repository writes almost nothing. | `tests/test_reminders_delivery_store.py`'s selector-and-exit suite, which asserts what the repository **does** write per exit. The half worth keeping — that no write touches the owner's words or the due instant — is now `test_no_delivery_write_touches_the_owners_words_or_the_due_instant`, run over all seven delivery writes. |
+| `test_there_is_no_scheduler_and_no_send_in_this_change` | asserted `henk/reminders/scheduler.py` does not exist. | the module is this change's subject; the disabled-path assertion above plus group 8. |
+
+`test_no_cadence_amendment_rode_along` **survives untouched and green**, as the task requires.
+The file's module docstring was updated, since its claim 2 ("this change writes none of
+delivery's columns") is no longer the claim the file makes.
+
+**Expected total for task 10.1: exactly these three, and no others.**
+
+### 3.4 The repository surface
+
+Eleven methods, all synchronous and all transaction-agnostic. Selection is three queries
+(`select_due`, `select_reportable`, `select_past_grace`) plus the one-column `status_of` for
+the pre-send re-read; writes are `charge_attempt`, `mark_delivered`, `schedule_retry`,
+`mark_missed`, `mark_abandoned`, `mark_reported`, `mark_surfaced`, and the note's
+`unsurfaced_deliveries` read.
+
+Decisions the tests pin:
+
+- **`select_due` carries both conjuncts.** `test_a_future_due_row_with_an_eligible_next_attempt_at_is_never_selected`
+  forces `next_attempt_at = 0` (the schema default, meaning *eligible now*) on a row due in a
+  week and asserts nothing is selected — the exact bug the conjunct exists for.
+- **`select_past_grace` is not bounded by the delivery cap.** 25 past-grace rows, all
+  returned; a cap here would leave the eleventh-oldest pending past its window forever.
+- **`mark_reported` / `mark_surfaced` take a set and write it in one statement.** The
+  summary's outcome applies to all its rows or none, and an empty set returns 0 without ever
+  emitting a bare `IN ()`.
+- **`charge_attempt` reads the incremented value back inside its own transaction** and returns
+  it, because the crash bound is evaluated against that value and must not be inferred.
+- **No store call went off the event loop**: the pre-existing `to_thread|run_in_executor` grep
+  is still green and was not weakened.
+
+### 3.5 The transaction/await guard, watched failing twice
+
+`test_no_transaction_scope_spans_an_await` walks every `with …transaction()` body in `henk/`
+and fails on any `await`, `async for`, or `async with` lexically inside it. Matched on the
+called name `transaction` rather than the receiver, for the same reason the process-timezone
+guard matches `now`/`today` that way — an alias or a helper slips past a receiver check, and a
+false positive is loud and cheap.
+
+Seen to fail, both ways:
+
+1. **Durably, in the suite.** `test_the_await_in_transaction_guard_detects_every_shape_it_claims_to`
+   runs the detector over six offending fixtures (plain await; aliased receiver; await nested
+   in a branch; `async for`; `async with`; a coroutine *defined* inside the scope) and four
+   clean ones (await after the scope; await before it; a non-transaction `with` awaiting
+   freely; post-send writes each in their own scope). This is the part that stays.
+2. **Once, against real source.** A temporary async method with a transaction scope held
+   across an await was added to `henk/store/reminders.py`; the guard failed naming
+   `henk/store/reminders.py:594`, then the defect was reverted and the suite re-confirmed
+   green at 1345. Worth recording that the *first* attempt at this was a `SyntaxError`, not a
+   guard failure — `await` in a synchronous method never reaches the AST check, so a defect
+   planted in the wrong kind of method would have "proved" the guard works without exercising
+   it at all.

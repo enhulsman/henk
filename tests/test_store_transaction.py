@@ -10,9 +10,12 @@ the broken code.
 
 from __future__ import annotations
 
+import ast
 import subprocess
 import sqlite3
 import sys
+import tempfile
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -206,6 +209,165 @@ def test_transaction_on_an_unopenable_store_raises_store_error(tmp_path: Path):
 
 
 # --- The single-connection assumption (task 1.5) --------------------------
+
+
+def _awaits_inside_transaction_scopes(path: Path):
+    """Yield (lineno, what) for every ``await`` lexically inside a transaction scope.
+
+    Matched on the CALLED NAME (``transaction``) rather than on the receiver, for the
+    same reason the process-timezone guard matches ``now``/``today`` that way: an
+    alias or a helper (``self._txn()``, ``store.transaction()``, a re-export) would
+    slip past a receiver-based check. The cost is a false positive on any other
+    zero-argument ``transaction()``, which is loud and cheap to fix.
+
+    Nested function definitions inside the body are included on purpose. A coroutine
+    defined in a transaction scope and awaited from it is the same defect wearing a
+    hat, and a callable defined there is almost certainly meant to run there.
+    """
+    tree = ast.parse(path.read_text())
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.With, ast.AsyncWith)):
+            continue
+        opens_transaction = False
+        for item in node.items:
+            call = item.context_expr
+            if not isinstance(call, ast.Call):
+                continue
+            func = call.func
+            name = (
+                func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            )
+            if name == "transaction":
+                opens_transaction = True
+        if not opens_transaction:
+            continue
+        for statement in node.body:
+            for inner in ast.walk(statement):
+                if isinstance(inner, ast.Await):
+                    yield inner.lineno, "await inside a transaction() scope"
+                # `async for` and `async with` suspend just as an await does.
+                if isinstance(inner, ast.AsyncFor):
+                    yield inner.lineno, "async for inside a transaction() scope"
+                if isinstance(inner, ast.AsyncWith) and inner is not node:
+                    yield inner.lineno, "async with inside a transaction() scope"
+
+
+def test_no_transaction_scope_spans_an_await():
+    """No transaction scope may span a suspension point (reminder-delivery design D3).
+
+    `Store.transaction()` is reentrant by **instance depth on one shared connection**,
+    not per task. While one task owned the store that was merely tidy; once a second
+    concurrent writer exists — the reminder scheduler is the first — a scope held
+    across an await can be *joined* by whatever the other task does next, and then
+    rolled back with it. The scheduler's answer is structural: the pre-work
+    transaction closes before the first send, and every post-send write opens its own
+    scope.
+
+    A grep would not do here: `await` and `with store.transaction()` are lines apart,
+    so the pattern is a tree relationship rather than a textual one.
+    """
+    offenders = []
+    for path in sorted((REPO_ROOT / "henk").rglob("*.py")):
+        for lineno, what in _awaits_inside_transaction_scopes(path):
+            offenders.append(f"{path.relative_to(REPO_ROOT)}:{lineno}: {what}")
+    assert offenders == [], (
+        "a transaction scope now spans a suspension point. Store.transaction() "
+        "counts depth per Store on ONE connection, so a scope held across an await "
+        "can join another task's transaction and be rolled back with it. Close the "
+        "scope before awaiting:\n" + "\n".join(offenders)
+    )
+
+
+def test_the_await_in_transaction_guard_detects_every_shape_it_claims_to():
+    """The guard, watched going red — on a fixture rather than on real source.
+
+    A guard nobody has seen fail is a guard nobody knows works. Rather than
+    temporarily breaking `henk/` and reverting (which leaves no evidence in the
+    suite), the detector runs against fixtures that carry each offending shape.
+    """
+    offending = {
+        "plain await": """
+            async def tick(store, channel):
+                with store.transaction():
+                    store.charge(1)
+                    await channel.send("x")
+        """,
+        "aliased receiver": """
+            async def tick(txn_source, channel):
+                with txn_source.transaction() as conn:
+                    await channel.send("x")
+        """,
+        "await nested in a branch": """
+            async def tick(store, channel, flag):
+                with store.transaction():
+                    if flag:
+                        for _ in range(3):
+                            await channel.send("x")
+        """,
+        "async for": """
+            async def tick(store, stream):
+                with store.transaction():
+                    async for item in stream:
+                        store.charge(item)
+        """,
+        "async with": """
+            async def tick(store, lock):
+                with store.transaction():
+                    async with lock:
+                        store.charge(1)
+        """,
+        "coroutine defined inside the scope": """
+            async def tick(store, channel):
+                with store.transaction():
+                    async def inner():
+                        await channel.send("x")
+                    store.later(inner)
+        """,
+    }
+    clean = {
+        "await after the scope closes": """
+            async def tick(store, channel):
+                with store.transaction():
+                    store.charge(1)
+                await channel.send("x")
+        """,
+        "await before the scope opens": """
+            async def tick(store, channel):
+                await channel.send("x")
+                with store.transaction():
+                    store.charge(1)
+        """,
+        "a non-transaction with, awaiting freely": """
+            async def tick(client, channel):
+                with open("f") as fh:
+                    await channel.send(fh.read())
+        """,
+        "post-send writes each in their own scope": """
+            async def tick(store, channel, rows):
+                for row in rows:
+                    outcome = await channel.send(row.text)
+                    with store.transaction():
+                        store.record(row.id, outcome)
+        """,
+    }
+    for label, source in offending.items():
+        path = _fixture(textwrap.dedent(source).strip())
+        found = list(_awaits_inside_transaction_scopes(path))
+        assert found, f"the guard missed: {label}"
+    for label, source in clean.items():
+        path = _fixture(textwrap.dedent(source).strip())
+        found = list(_awaits_inside_transaction_scopes(path))
+        assert found == [], f"the guard false-positived on: {label} -> {found}"
+
+
+def _fixture(source: str) -> Path:
+    """Write ``source`` to a throwaway file the AST detector can read."""
+    handle = tempfile.NamedTemporaryFile(
+        "w", suffix=".py", delete=False, encoding="utf-8"
+    )
+    with handle:
+        handle.write(source + "\n")
+    return Path(handle.name)
 
 
 def test_no_store_call_is_dispatched_to_a_thread():

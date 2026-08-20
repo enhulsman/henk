@@ -46,7 +46,7 @@ notes — which is deliberately the cheapest moment a spec edit will ever have.
 
 ## 3. Store: the delivery writes
 
-- [ ] 3.1 Pre-flight: re-grep `tests/test_reminders_inert.py` (and any other guard the grep
+- [x] 3.1 Pre-flight: re-grep `tests/test_reminders_inert.py` (and any other guard the grep
       surfaces) and reconcile the expiry list in 3.3 against what actually exists — the
       enumeration is re-derived, never trusted. Then tests from the selector scenarios:
       selection returns `pending` rows with `next_attempt_at <= now` **and `due_at <= now`**
@@ -56,13 +56,13 @@ notes — which is deliberately the cheapest moment a spec edit will ever have.
       uncapped; every exit (delivered, delivered-late, missed, abandoned, reported, give-up)
       is re-checked by re-running the selector against a reopened store, not by reading back
       the row alone.
-- [ ] 3.2 Tests for the two transactions on `Store.transaction()`: pre-work (grace
+- [x] 3.2 Tests for the two transactions on `Store.transaction()`: pre-work (grace
       transitions for ALL past-grace pending rows, then selection, then increments +
       both give-up exits — crash limit and report horizon) commits or rolls back as one;
       post-send writes clear `send_attempts` on every return; a poisoned inner scope rolls
       back the whole tick's pre-work. Process death is simulated by dropping the connection
       between the transactions, then reopening the store.
-- [ ] 3.3 **Deliberately expire the reminders-core inertness guards — BEFORE writing the
+- [x] 3.3 **Deliberately expire the reminders-core inertness guards — BEFORE writing the
       repository methods, and enumerated in full** (the reminders-core archive refers to
       this as "task 3.4"; renumbered here so the expiry precedes the code it unblocks):
       - `test_nothing_in_this_change_writes_a_delivery_column` (the parametrized
@@ -80,10 +80,10 @@ notes — which is deliberately the cheapest moment a spec edit will ever have.
         keep it green, and that is a deliberate constraint, not an accident.
       Report every edit and reason in the apply notes, per the edited-tests rule; task 10.1
       expects exactly these three and no others.
-- [ ] 3.4 Implement the repository methods in `henk/store/reminders.py`, transaction-agnostic
+- [x] 3.4 Implement the repository methods in `henk/store/reminders.py`, transaction-agnostic
       like every sibling. No store call off the event loop (the existing grep-based test is
       the guard; do not weaken it).
-- [ ] 3.5 Add the transaction/await AST guard (design D3): a test, modelled on the
+- [x] 3.5 Add the transaction/await AST guard (design D3): a test, modelled on the
       process-timezone guard, that fails on any `await` inside a `with …transaction()` body
       anywhere in `henk/`. Watch it go red by temporarily introducing one, per the
       guard-never-seen-to-fail rule.
