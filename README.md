@@ -311,6 +311,54 @@ is reachable on the tailnet (see `henk-vps-setup.sh`); tokens minted.
 6. **Register Signal** (see below).
 7. **Smoke test** (see the checklist).
 
+### Redeploying an existing install
+
+The runbook above is for a first install. For shipping a new commit to a live rp5, the two
+things that bite are **ownership** (the checkout is `pi`'s, `docker compose` needs root) and
+**`config.yaml`**, which is a genuine uncommitted local modification holding the real
+`owner.id`, `signal.account`, and `todo_note_allowlist`. A plain `git pull` refuses whenever
+upstream also touched that file.
+
+Back the live config up first, then pull around it:
+
+```bash
+su pi -c 'install -m 600 /home/pi/Coding/henk/config.yaml /home/pi/henk-config-live.yaml'
+su - pi                                    # interactive shell — see the warning below
+cd /home/pi/Coding/henk
+git stash push -m live-config -- config.yaml
+git pull --ff-only origin main             # type this ALONE; it prompts for the key passphrase
+cp /home/pi/henk-config-live.yaml config.yaml
+git stash drop
+cmp /home/pi/henk-config-live.yaml config.yaml && echo CONFIG-UNCHANGED && git log --oneline -1
+exit
+docker compose -p henk -f /home/pi/Coding/henk/docker-compose.yml up -d --build henk
+```
+
+**`git pull` must be typed interactively, one line at a time.** rp5's git key
+(`~/.ssh/id_ed25519_work_pi5`) is passphrase-protected, and neither `su pi -c 'git pull …'` nor
+a pasted multi-line block leaves a terminal for the prompt — both fail with a bare
+`Permission denied (publickey)` that looks exactly like a wrong or unregistered key.
+
+**`-p henk` is not optional.** Compose derives the project name from the directory, so running
+it from anywhere else (or from a copy like `henk.old`) creates a *separate* project on brand-new
+**empty** volumes. The symptom is a wall of name-resolution failures, because the fresh
+tailscale sidecar has no identity.
+
+**Three tells that a "deploy" silently did nothing** — all three appeared twice on 2026-08-19
+when the pull had failed:
+
+| Tell | Meaning |
+|---|---|
+| `COPY henk ./henk` reported `CACHED` | the source tree is unchanged, so the pull didn't land |
+| the image sha matches the previous build | same |
+| the container line reads `Running`, not `Started` | compose found nothing to recreate |
+
+A real deploy rebuilds `COPY henk ./henk`, re-runs `pip install` (~15–25s), writes a new image
+sha, and prints `Started`. Verify afterwards with a `since=<id>` line in
+`docker compose -p henk -f … logs henk` — that proves it attached to the real
+`henk_henk_audit` volume rather than an empty one. Keep the previous image (don't prune); it
+is the rollback target.
+
 ### Signal registration
 
 Henk uses a **dedicated number** (the secondary SIM), not a linked device.
