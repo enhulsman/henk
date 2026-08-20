@@ -12,14 +12,14 @@ Group 1 is the apply session's first act and its gate: if 1.2 disagrees with the
 on any property, the delta is edited THEN — before group 2 exists, recorded in the apply
 notes — which is deliberately the cheapest moment a spec edit will ever have.
 
-- [ ] 1.1 Rewrite `openspec/changes/reminders/notes/verify_selector_invariants.py` into this
+- [x] 1.1 Rewrite `openspec/changes/reminders/notes/verify_selector_invariants.py` into this
       change's `notes/` to model the CUT design exactly: no backoff schedule, no
       `unconfirmed_sends`, no `terminal_at`, no report item bound; one retry floor, crash
       maximum pre-work, grace → missed, per-tick delivery pacing, the selector's `due_at`
       conjunct, summary marks `reported_at` only on `delivered`, and BOTH report give-up
       exits in their stated places — the crash limit in pre-work, the report horizon in the
       post-send write of a partial summary. Keep the stated-non-coverage header current.
-- [ ] 1.2 Re-run its properties — termination under crash faults, **termination under a
+- [x] 1.2 Re-run its properties — termination under crash faults, **termination under a
       deterministically partial summary send (the horizon property)**, detectability where
       termination is impossible (the wholly-failed summary, which retries forever by
       design), quiescence under channel failure, conservation — now including: **every row
@@ -33,7 +33,7 @@ notes — which is deliberately the cheapest moment a spec edit will ever have.
 
 ## 2. Configuration
 
-- [ ] 2.1 Tests: `RemindersConfig` gains `poll_interval_seconds` (30), `retry_floor_seconds`
+- [x] 2.1 Tests: `RemindersConfig` gains `poll_interval_seconds` (30), `retry_floor_seconds`
       (900), `crash_attempt_limit` (3), `late_grace_seconds` (86400),
       `late_delivery_threshold_seconds` (300), `report_horizon_seconds` (86400),
       `tick_delivery_limit` (10), `note_window_seconds` (43200), `note_max_items` (10); each
@@ -41,7 +41,7 @@ notes — which is deliberately the cheapest moment a spec edit will ever have.
       horizon ≤ floor fails load; no widening knob exists (assert the config surface by
       field enumeration). The
       system-prompt hash tests must pass untouched — these knobs do not reach the prompt.
-- [ ] 2.2 Implement in `henk/config.py`. `crash_attempt_limit` is deliberately NOT named
+- [x] 2.2 Implement in `henk/config.py`. `crash_attempt_limit` is deliberately NOT named
       `max_send_attempts` — that name is the bridge's HTTP retry budget.
 
 ## 3. Store: the delivery writes

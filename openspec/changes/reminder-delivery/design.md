@@ -228,16 +228,22 @@ timely message before the stale news.
   `due_at + grace + horizon` takes the same give-up exit the crash limit already defines —
   `reported_at` written, error logged, no new audit transition. Post-send placement is what
   makes the bound safe: every row that reaches the horizon give-up was named in at least one
-  attempted summary — a fresh row gets ~`horizon / floor` ≈ 96 attempts, a stale one
-  (restart after long downtime) gets exactly one — where a pre-work horizon would have
-  silently retired rows that arrived already stale, unnamed. The horizon is anchored on
-  `due_at + grace` — which equals the moment of reportability only when the grace transition
-  ran on time, and is *earlier* than reportability after downtime; the post-send placement
-  is what absorbs that gap. The bound is per row, not per summary: a rolling stream of
-  newly-missed rows keeps the summary retrying on the newcomers' account, so the absolute
-  worst is the pending cap times `horizon / floor` sends (100 × ~96) with each individual
-  row's exposure capped at ~96 — bounded, where the previous design was not, and never yet
-  observed on this host (29 days, zero non-201). Composition order makes the residual nearly
+  attempted summary, where a pre-work horizon would have silently retired rows that arrived
+  already stale, unnamed. The horizon is anchored on `due_at + grace`, and that anchor is the
+  moment of reportability only for a row whose grace transition ran on time — so the per-row
+  attempt count is **three-valued, and the model measured each** (its `abandoned_anchor`
+  arm): a row that went `missed` on time gets ~`horizon / floor` ≈ 96 (measured 97 — the
+  extra is the final attempt in whose post-send write the give-up is written); a row that
+  exited to `abandoned` becomes reportable within a few ticks of its due instant, because
+  nothing waits a grace window to abandon, so its anchor sits a full grace window further out
+  and it gets ~`(grace + horizon) / floor` ≈ 192 (measured 193) — the **largest** of the
+  three; a row that arrived already stale after long downtime gets exactly one (measured 1).
+  This design's first draft quoted the 96 for every row, which understated the `abandoned`
+  case by 2×; the model is what caught it. The bound is per row, not per summary: a rolling
+  stream of newly-missed rows keeps the summary retrying on the newcomers' account, so the
+  absolute worst is the pending cap times the largest per-row figure (100 × ~192) — bounded,
+  where the previous design was not, and never yet observed on this host (29 days, zero
+  non-201). Composition order makes the residual nearly
   unreachable in practice: the summary names rows in selection order, oldest-due first, so
   the horizon-eligible rows sit in the head chunks — exactly the part a partial send did
   deliver.
@@ -384,7 +390,9 @@ status re-read, and hold a transaction across an await.
 - **[Duplicate deliveries across crashes]** → bounded by `crash_attempt_limit` (settled:
   duplicate beats loss); the abandoned exit is named to the owner in the summary.
 - **[A deterministically partial summary loops owner-visibly]** → bounded by the report
-  horizon (D5): at most `horizon / floor` ≈ 96 head-re-deliveries **per row**, absolutely
+  horizon (D5): at most ~`(grace + horizon) / floor` ≈ 192 head-re-deliveries **per row**
+  (≈ 96 for a row that went `missed` on time; the 192 is an `abandoned` row, whose anchor sits
+  a grace window further out — see D5, measured by the model), absolutely
   bounded by the pending cap times that (a rolling stream of newly-missed rows can keep the
   summary retrying on the newcomers' account), then the give-up exit with an error log —
   against *unbounded, forever* without the horizon. The per-retry duplication itself is
