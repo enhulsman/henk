@@ -38,6 +38,8 @@ from henk.events.intake import (
 )
 from henk.events.pipeline import EventPipeline, PipelineConfig
 from henk.gate.approval import ApprovalGate
+from henk.reminders.note import DeliveredReminderNote
+from henk.reminders.scheduler import ReminderScheduler
 from henk.reminders.timeparse import TimeResolver
 from henk.store import build_stores
 from henk.tools import build_production_registry, build_time_resolver
@@ -197,6 +199,9 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         # None when reminders are disabled, and then owner-turn composition is
         # byte-identical to before this change.
         time_header=_time_header(resolver),
+        # The delivered-reminder block: what the scheduler sent, told back to Henk on
+        # the owner's next turn. Same repository and resolver as everything else.
+        deliveries=_delivery_note(config, stores, resolver),
     )
     dispatcher = Dispatcher(AllowlistFilter(config.owner.id), gate, core)
 
@@ -205,7 +210,48 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         if config.events.enabled
         else None
     )
-    return App(adapter, dispatcher, core, coordinator=coordinator), client
+    # The scheduler is handed `adapter` — the SAME instance the core holds, not a
+    # second one over the same bridge. The send lock is instance state, so a second
+    # adapter would serialize nothing while passing every serialization test.
+    scheduler = (
+        ReminderScheduler(
+            stores.reminders,
+            adapter,
+            config=config.reminders,
+            resolver=resolver,
+            receipts=reminder_receipts,
+        )
+        if config.reminders.enabled and resolver is not None
+        else None
+    )
+    return (
+        App(
+            adapter,
+            dispatcher,
+            core,
+            coordinator=coordinator,
+            scheduler=scheduler,
+        ),
+        client,
+    )
+
+
+def _delivery_note(config: Config, stores, resolver: TimeResolver | None):
+    """The owner-turn delivered-reminder provider, or None when reminders are off.
+
+    Off means off: with no provider the core's owner-turn composition is byte-identical
+    to what it was before this capability existed, which is what makes the disabled
+    deploy a genuine no-op rather than a nearly-no-op.
+    """
+    if not config.reminders.enabled or resolver is None:
+        return None
+    return DeliveredReminderNote(
+        stores.reminders,
+        resolver,
+        window_seconds=config.reminders.note_window_seconds,
+        max_items=config.reminders.note_max_items,
+        clock=resolver.current_instant,
+    )
 
 
 def _time_header(resolver: TimeResolver | None):

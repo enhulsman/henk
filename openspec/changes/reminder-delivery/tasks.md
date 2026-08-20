@@ -160,34 +160,34 @@ notes — which is deliberately the cheapest moment a spec edit will ever have.
 
 ## 6. Audit records
 
-- [ ] 6.1 Tests: `delivered`, `delivered-late`, `missed`, `abandoned` records carry
+- [x] 6.1 Tests: `delivered`, `delivered-late`, `missed`, `abandoned` records carry
       `initiated_by: "scheduler"`, the id, due time and timestamp, no reminder text, and
       validate against the **existing v4 document — assert `SCHEMA_VERSION == 4` is
       untouched**; a partial-mapped delivery's record carries `detail: "partial"` (v4's free
       `detail` property — no version bump); records are appended at the transition (kill
       after the transition commit, find the record after restart); a rejected/failed send
       writes no transition record.
-- [ ] 6.2 Implement using the existing `reminder_record` builder; appends sit beside the
+- [x] 6.2 Implement using the existing `reminder_record` builder; appends sit beside the
       state writes per design D3.
 
 ## 7. The delivered-reminder note
 
-- [ ] 7.1 Tests from the note scenarios: follow-up turn carries the delimited block (framed
+- [x] 7.1 Tests from the note scenarios: follow-up turn carries the delimited block (framed
       as sent messages, never instructions); at most once (`surfaced_at` durable — assert
       across a store reopen); window- and count-bounded, newest first; event turns never;
       no taint (a `capture` after the block executes normally); absent when empty; injected
       even when the recall block was already given.
-- [ ] 7.2 Implement the block composition in the owner-turn path beside the recall block and
+- [x] 7.2 Implement the block composition in the owner-turn path beside the recall block and
       time header; `surfaced_at` written at composition time.
 
 ## 8. Runtime wiring
 
-- [ ] 8.1 Tests: enabled → scheduler task starts with the app and is cancelled on shutdown
+- [x] 8.1 Tests: enabled → scheduler task starts with the app and is cancelled on shutdown
       with nothing left pending; disabled → no task exists; scheduler failure leaves replies
       and triage working; core failure leaves the scheduler ticking; **the scheduler is
       handed the same adapter instance as the core** — the send lock is instance state, and a
       second adapter would satisfy every channel scenario while serializing nothing.
-- [ ] 8.2 Wire in `henk/runtime.py` / `henk/app.py` following the coordinator precedent.
+- [x] 8.2 Wire in `henk/runtime.py` / `henk/app.py` following the coordinator precedent.
 
 ## 9. Cross-capability contracts (the deltas with no code of their own)
 

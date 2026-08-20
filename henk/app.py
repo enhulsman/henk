@@ -53,9 +53,16 @@ class App:
     """Top-level runner: consumes the channel and pumps the core worker.
 
     When events are enabled a coordinator task runs alongside, feeding debounced
-    event turns into the same serial core queue (design D5). Both the core worker
-    and the coordinator are cancelled on shutdown, and the open session is
-    flushed to the audit log.
+    event turns into the same serial core queue (design D5). When reminders are
+    enabled a scheduler task runs alongside too — but unlike the coordinator it
+    never enqueues a turn: a due reminder goes straight out through the channel
+    adapter, so delivery costs no session and cannot queue behind one. All three
+    tasks are cancelled on shutdown, and the open session is flushed to the audit
+    log.
+
+    The tasks are deliberately independent. One of them failing must not stop the
+    others: a scheduler that died would otherwise take replies and triage with it,
+    and a triage failure would otherwise stop the owner's reminders arriving.
     """
 
     def __init__(
@@ -65,16 +72,20 @@ class App:
         core: AgentCore,
         *,
         coordinator: "_Runnable | None" = None,
+        scheduler: "_Runnable | None" = None,
     ) -> None:
         self._adapter = adapter
         self._dispatcher = dispatcher
         self._core = core
         self._coordinator = coordinator
+        self._scheduler = scheduler
 
     async def run(self) -> None:
         tasks = [asyncio.create_task(self._core.run())]
         if self._coordinator is not None:
             tasks.append(asyncio.create_task(self._coordinator.run()))
+        if self._scheduler is not None:
+            tasks.append(asyncio.create_task(self._scheduler.run()))
         try:
             async for message in self._adapter.messages():
                 await self._dispatcher.on_inbound(message)
@@ -86,6 +97,15 @@ class App:
                     await task
                 except asyncio.CancelledError:
                     pass
+                except Exception:
+                    # A background task that died on its own is reaped here, and its
+                    # exception must NOT propagate: re-raising it would turn one
+                    # subsystem's failure into a crash during shutdown, and would mask
+                    # whatever actually ended the message stream. Each task owns its
+                    # own error handling; this is only the funeral.
+                    logger.error(
+                        "a background task ended with an error", exc_info=True
+                    )
             await self._core.aclose()
 
 

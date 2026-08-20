@@ -457,3 +457,107 @@ lines earlier — into the transaction where the crash bound correctly lives —
 converts "every row is named at least once" into "a row that arrived stale is retired
 unnamed". That is a one-line defect with no runtime symptom, and it is the single
 strongest argument for the post-send placement being spec text rather than a code detail.
+
+---
+
+## Group 6 — audit records
+
+Suite after: **1459** (+15). New: `tests/test_reminders_delivery_audit.py`.
+
+**An honest TDD deviation, recorded rather than glossed:** 6.2's implementation landed
+inside group 5, because the scheduler cannot record an outcome without it — the receipt
+call sites are part of the delivery path, not a layer on top of it. So 6.1's tests were
+written after that code and passed on first run rather than going red first. What they
+add is not the behaviour but the *contract*: they drive the scheduler through the **real**
+`AuditLog` and `ReminderReceipts` onto a real file, then read the JSONL back and validate
+each record against the committed v4 document. Group 5's tests used a collecting double,
+which proves neither the durability nor the validation.
+
+What the fifteen establish:
+
+- each of `delivered` / `delivered-late` / `missed` / `abandoned` writes exactly **one**
+  record, validating against v4, carrying the id, the due **instant** (not a rendered
+  string — a receipt must not move when the configured zone does), `initiated_by:
+  "scheduler"`, and a timestamp;
+- **no record carries the reminder's text.** Checked against the raw file bytes with a
+  deliberately unmistakable string, so a nested or renamed field would still be caught;
+- a `partial` delivery carries `detail: "partial"`; a clean one carries `detail: null`;
+- a failed send writes **no** record, and neither does a give-up exit — `reported_at`
+  written as a give-up is Henk stopping, not a transition, and putting it in the trail
+  would make the trail assert something false;
+- the record survives the process: written, store closed, then found by a reader sharing
+  nothing with the writer;
+- the traceability scenario (approval-gate delta): a delivered reminder's trail carries
+  the `scheduled` record naming who asked and the delivery record naming the scheduler;
+- the cancellation race carries **both** transitions, so the sequence is reconstructible
+  rather than looking like a contradiction;
+- an audit write failure does not stop the delivery. The owner's reminder matters more
+  than its paperwork.
+
+## Group 7 — the delivered-reminder note
+
+Suite after: **1478** (+19). New: `henk/reminders/note.py`,
+`tests/test_reminders_note.py`. `henk/agent/core.py` gains a `deliveries` provider.
+
+Composition order in the owner turn, outermost first: **time header, recall block,
+delivered-reminder block, the owner's message.** The note sits closest to the owner's text
+because it is the context their message most likely refers to.
+
+Two design points worth stating, because both are places a plausible implementation goes
+wrong:
+
+- **Composing and marking are one step**, inside `block()`. A block returned but not
+  marked shows twice; marked but not returned is lost entirely. Both are failures, so
+  neither half happens without the other.
+- **The note is NOT gated on a per-session flag**, unlike recall. "Surfaced already" is
+  durable state in the store, which is what lets a delivery landing mid-conversation reach
+  the owner's next turn. A per-session flag here would silently swallow every delivery
+  after the first turn of a long session — and it would have passed a naive test, because
+  the obvious test only sends one message.
+
+The line renders both instants (`Sent {when}` plus `(was due {then})`) and omits the
+second when they coincide, since repeating one rendered time twice on a line reads like a
+bug. Event turns never receive it, and an event turn does not consume an unsurfaced
+delivery either — asserted, because "not shown" and "not consumed" are different claims.
+
+## Group 8 — runtime wiring
+
+Suite after: **1492** (+14). New: `tests/test_reminders_runtime.py`. `henk/app.py` and
+`henk/runtime.py` wire the scheduler beside the coordinator.
+
+### A real defect found while wiring: a dead background task crashed the shutdown
+
+`App.run`'s reaping loop caught only `CancelledError`. A background task that had already
+died on its own — the exact case the agent-core delta's isolation requirement is about —
+would have its exception **re-raised** by `await task` in the `finally`, turning one
+subsystem's failure into a crash during shutdown and masking whatever actually ended the
+message stream. This predates the change (the coordinator had the same exposure) and was
+found only because the isolation tests drove it. Now reaped and logged; each task owns its
+own error handling, and this is only the funeral.
+
+### The wiring assertion that matters most
+
+`test_the_scheduler_gets_the_same_adapter_instance_as_the_core` asserts **identity**, not
+equality, on three references (`app._scheduler._channel is app._core._channel is
+app._adapter`). The send lock is instance state: a second `SignalAdapter` over the same
+bridge has its own lock, so every serialization test in the suite would still pass — they
+each build one adapter and drive it — while production interleaved the scheduler's chunks
+with the core's. Green suite, broken behaviour, no test able to see it. That is why the
+task list singled this out and why the lock's own comment in `signal.py` says so too.
+
+Also asserted: one repository and one resolver shared by the scheduler, the owner
+commands and the note (two resolvers could render one due time two ways, leaving the owner
+to adjudicate); the bounds come from config; and with the capability disabled there is no
+scheduler, no note provider, and no time header — the three tells the reminders-core
+deploy record uses to call a deploy inert.
+
+### 9.4's test-level half, landed here
+
+`test_the_scheduler_module_opens_no_socket_and_registers_no_handler` walks the module's
+imports and calls and refuses `socket` / `http` / `httpx` / `websockets` / `signal` /
+`selectors`, plus any `bind` / `listen` / `connect` / `add_signal_handler` /
+`create_server` / `open_connection` / `add_reader` call.
+`test_a_tick_can_only_be_caused_by_the_clock` pins the public surface to exactly
+`{"run", "tick"}` and drives the whole inbound path to confirm no message reaches the
+scheduler. The runtime half — comparing the container's listening sockets before and
+after — is task 11.2's.
