@@ -7,15 +7,19 @@ inspected — because both are exactly the kind of claim that rots:
    registry, the owner command set, the system prompt and owner-turn composition are
    byte-identical to before. If any of them is not, the kill switch is incomplete
    and the deploy is not the no-op it is being sold as.
-2. **This change writes none of `reminder-delivery`'s columns.** No scheduler, no
-   send, no writer of `surfaced_at`, `send_attempts`, `delivered_at` or
-   `reported_at`, no cadence amendment. The columns ship here because there is no
-   migration path; the behaviour does not.
+2. **The delivery columns are written only by the delivery path.** Originally the
+   stronger claim — that nothing anywhere wrote `surfaced_at`, `send_attempts`,
+   `delivered_at` or `reported_at` — which held while `reminder-delivery` did not
+   exist. `reminder-delivery` retired three guards here (see the block above
+   `test_a_disabled_run_writes_none_of_the_delivery_columns`) and narrowed the claim
+   to the two that survive it: with the capability **off** nothing writes those
+   columns at all, and when it is on only the scheduler and the repository do.
 
-`reminders.enabled: false` is not a compromise. A build that accepts "remind me at
-six", echoes a confident "Reminder #3 set for Wednesday at 18:00", and then says
-nothing at six has spent the owner's trust on a promise it structurally cannot keep.
-Off is the honest state until `reminder-delivery` exists.
+`reminders.enabled: false` is still not a compromise, and claim 1 is unchanged: a
+build that accepts "remind me at six", echoes a confident "Reminder #3 set for
+Wednesday at 18:00", and then says nothing at six has spent the owner's trust on a
+promise it structurally cannot keep. Off remains the honest default, and the flag is
+what this file guards.
 """
 
 from __future__ import annotations
@@ -263,65 +267,120 @@ def _sql_writes(directory: str) -> str:
     return "\n".join(chunks)
 
 
-@pytest.mark.parametrize("column", DELIVERY_ONLY_COLUMNS)
-def test_nothing_in_this_change_writes_a_delivery_column(column: str):
-    sql = _sql_writes("henk")
-    # The CREATE TABLE statement names them; nothing may UPDATE or INSERT them.
-    offenders = [
-        line
-        for line in sql.splitlines()
-        if column.upper() in line
-        and ("UPDATE" in line or "SET " in line or "INSERT" in line)
-    ]
-    if column == "send_attempts":
-        # `send_attempts` appears in the INSERT-adjacent DDL literal, which is the
-        # CREATE TABLE. Allow that one and nothing else.
-        offenders = [line for line in offenders if "CREATE TABLE" not in line]
-    assert offenders == [], offenders
+#: --- EXPIRED BY `reminder-delivery` (its task 3.3) ------------------------
+#:
+#: Three guards stood here, and all three were doing their job right up until the
+#: change they were guarding against arrived. They are recorded rather than silently
+#: deleted, because "this test disappeared" and "this test was retired on purpose"
+#: look identical in a diff a year later:
+#:
+#: 1. `test_nothing_in_this_change_writes_a_delivery_column` — a parametrized grep
+#:    asserting no `UPDATE`/`INSERT` literal anywhere in `henk/` named
+#:    `send_attempts`, `delivered_at`, `surfaced_at` or `reported_at`. Writing those
+#:    four columns is exactly what `reminder-delivery` is. Its successor is
+#:    `test_a_disabled_run_writes_none_of_the_delivery_columns` below, which asserts
+#:    the property that actually still holds — the columns are written only by the
+#:    scheduler, and with the capability off nothing writes them — plus group 8's
+#:    "no scheduler task when disabled".
+#: 2. `test_the_reminder_repository_writes_only_status_and_next_attempt_at` — an AST
+#:    guard over every `UPDATE reminders` literal in the repository. Expired
+#:    outright: its successor is `tests/test_reminders_delivery_store.py`'s
+#:    selector-and-exit suite, which asserts what the repository DOES write per exit
+#:    rather than that it writes almost nothing. The half of it worth keeping — that
+#:    no write ever touches the owner's words or the due instant — is asserted there
+#:    by `test_no_delivery_write_touches_the_owners_words_or_the_due_instant`, and
+#:    still asserted against this file's source by `test_reminders_store.py`.
+#: 3. `test_there_is_no_scheduler_and_no_send_in_this_change` — asserted that
+#:    `henk/reminders/scheduler.py` did not exist and that nothing under
+#:    `henk/reminders/` called `send`. Expired outright; the module is this change's
+#:    entire subject.
+#:
+#: `test_no_cadence_amendment_rode_along` below deliberately SURVIVES: design D9 is
+#: spec text plus scheduler behaviour, with no `PipelineConfig` field, so keeping it
+#: green is a constraint on this change rather than an oversight in it.
 
 
-def test_the_reminder_repository_writes_only_status_and_next_attempt_at():
-    from henk.store import reminders as module
+def test_a_disabled_run_writes_none_of_the_delivery_columns(tmp_path: Path):
+    """With the capability off, the four delivery columns are never written.
 
-    tree = ast.parse(inspect.getsource(module))
-    updates = [
-        node.value.upper()
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and "UPDATE REMINDERS" in node.value.upper()
-    ]
-    assert updates, "the repository should have at least one UPDATE"
-    for statement in updates:
-        assigned = statement.split("SET", 1)[1].split("WHERE")[0]
-        for column in DELIVERY_ONLY_COLUMNS:
-            assert column.upper() not in assigned, statement
-        assert "TEXT" not in assigned and "DUE_AT =" not in assigned
-
-
-def test_there_is_no_scheduler_and_no_send_in_this_change():
-    # `reminder-delivery`'s whole surface. A module or a call appearing here would
-    # mean the split was not held.
-    assert not (REPO_ROOT / "henk" / "reminders" / "scheduler.py").exists()
-    assert not (REPO_ROOT / "henk" / "reminders" / "delivery.py").exists()
-    reminders_dir = sorted(
-        p.name for p in (REPO_ROOT / "henk" / "reminders").glob("*.py")
+    The successor to the retired grep guard, and a stronger claim than the grep made:
+    it drives a real disabled startup over a real file rather than searching source
+    text, so it would catch a write reached through a path no literal names.
+    """
+    path = tmp_path / "inert.db"
+    seeded = Store(path, clock=lambda: 1787203800.0)
+    repo = ReminderStore(seeded)
+    row = repo.schedule(
+        "survives the flag with its delivery columns untouched",
+        due_at=1787203800.0 - 10_000,  # already overdue: a scheduler WOULD act on it
+        due_tz="Europe/Amsterdam",
+        input_spec="-3h",
     )
-    assert reminders_dir == ["__init__.py", "timeparse.py"]
+    seeded.close()
 
-    # And nothing under henk/reminders/ or henk/tools/reminders.py sends anything.
-    for path in (
-        REPO_ROOT / "henk" / "reminders" / "timeparse.py",
-        REPO_ROOT / "henk" / "tools" / "reminders.py",
-    ):
+    config = _disabled_config(tmp_path)
+    object.__setattr__(config.store, "path", str(path))
+    _registry(config)  # a full disabled startup over the same file
+
+    reopened = Store(path)
+    try:
+        again = ReminderStore(reopened).get(row.id)
+        assert again.status == PENDING
+        assert again.send_attempts == 0
+        assert again.delivered_at is None
+        assert again.surfaced_at is None
+        assert again.reported_at is None
+        # `next_attempt_at` is written by the SCHEDULING path (reminders-core), so it
+        # is deliberately not in the untouched list — it equals the due instant, and
+        # that is the invariant delivery's selector depends on.
+        assert again.next_attempt_at == row.due_at
+    finally:
+        reopened.close()
+
+
+def test_the_delivery_columns_are_written_only_by_the_scheduler_and_the_note(
+    tmp_path: Path,
+):
+    """Which modules may write the four columns — the grep guard, narrowed not dropped.
+
+    The retired guard said "nobody". The live property is "only the delivery path",
+    and that is still worth enforcing: a delivery column written from a tool, a
+    command, or the agent core would put a state change outside the scheduler's
+    transactions, where no audit record and no selector re-check follows it.
+    """
+    allowed = {"reminders.py", "scheduler.py"}
+    offenders = []
+    for path in sorted((REPO_ROOT / "henk").rglob("*.py")):
         tree = ast.parse(path.read_text())
-        called = {
-            node.func.attr
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-        }
-        assert "send" not in called
-        assert "send_proactive" not in called
+        docstrings = set()
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if isinstance(body, list) and body:
+                first = body[0]
+                if (
+                    isinstance(first, ast.Expr)
+                    and isinstance(first.value, ast.Constant)
+                    and isinstance(first.value.value, str)
+                ):
+                    docstrings.add(id(first.value))
+        for node in ast.walk(tree):
+            if (
+                not isinstance(node, ast.Constant)
+                or not isinstance(node.value, str)
+                or id(node) in docstrings
+            ):
+                continue
+            text = node.value.upper()
+            if "UPDATE REMINDERS" not in text:
+                continue
+            assigned = text.split("SET", 1)[1].split("WHERE")[0] if "SET" in text else ""
+            for column in DELIVERY_ONLY_COLUMNS:
+                if column.upper() in assigned and path.name not in allowed:
+                    offenders.append(f"{path.relative_to(REPO_ROOT)}: {column}")
+    assert offenders == [], (
+        "a delivery column is written outside the delivery path: "
+        + ", ".join(offenders)
+    )
 
 
 def test_no_cadence_amendment_rode_along():
