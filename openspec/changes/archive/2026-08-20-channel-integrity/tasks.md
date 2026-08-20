@@ -206,3 +206,48 @@ Three findings for a later change (none blocks anything):
    map addresses to `rp5`/`vps`/`rp2` in the tool's presentation layer.
 3. **`owner-acknowledgement`'s proposal cites a line number this change moved.** The
    `DEPLOY-VERIFY` note it references as `henk/channel/signal.py:146-151` is now at line 192.
+
+## Post-archive corrections (2026-08-20, same day)
+
+A post-implementation review of this change found two defects in the *bridge timeout* work —
+both in territory the design delegated to implementation, so the spec review could not have
+caught either. Fixed directly against `openspec/specs/channel-adapter/spec.md` rather than as
+a new change (~10 lines, one file: the project's "skip specs under ~20 lines" rule). Recorded
+here because this archive is where a reader looks for what this change actually shipped.
+
+1. **The "Total budget bounds a multi-phase stall" scenario was not deliverable, and its test
+   could not fail for the right reason.** httpcore applies the read and write timeouts per
+   socket *operation*, inside `while True` loops (`_receive_response_headers` →
+   `_receive_event` → `network_stream.read`), so no allocation across phases bounds a whole
+   request — a response arriving in many small reads runs indefinitely with every read inside
+   budget. The shipped test asserted the four phases *summed* to the configured value: true,
+   and strictly weaker than the requirement it was filed under, so the scenario read as
+   satisfied on an assertion that could not detect the gap. **The requirement text was the
+   defect, not the code**: a total is obtainable only by cancelling a request in flight, which
+   design D1 rules out for manufacturing the very ambiguity `SendOutcome` exists to describe.
+   The scenario is replaced by two that state what the mechanism actually guarantees.
+2. **The `read` phase received 6.0s of a nominal 10.0.** The motivating defect — signal-cli
+   latency exceeding httpx's 5s default, producing a false failure and a retried duplicate —
+   is bounded by `read`. The fractional allocation therefore raised that ceiling from 5s to
+   6s, ~20%, while this change's own design describes 10.0 as "deliberately generous". The
+   fractions are replaced by `httpx.Timeout(send_timeout)`, a scalar, which populates all four
+   phases with the configured value in full. Strictly better on the real risk: neither form
+   bounds a total, so the fractions' only effect was a tighter per-read bound bought with the
+   latency headroom this change existed to create — and a byte-dripping server is not the
+   threat model for a trusted container on the compose network.
+
+**Not defects, checked and cleared.** The splitter was fuzzed 300k trials against invariants
+taken from the requirement text rather than from its tests — mixed 1/2/3/4-byte alphabets,
+combining marks, regional-indicator pairs, boundary-only inputs, limits from 4 to 40 — for
+exact concatenation, per-chunk byte ceiling, no empty chunk, no divided code point, and
+termination. Zero failures. The window-selection substitution for D4's "shrinking window" is
+sound.
+
+**One weakness left standing:** `test_caller_ignoring_the_outcome_behaves_exactly_as_before`
+cannot really test "additive" — it has no pre-change behaviour to compare against, so it
+asserts current behaviour and reads as tautological. Harmless, and not worth a mechanism.
+
+**Transferable lesson:** the review that found #1 was a spec-scenario→test conformance sweep —
+for each scenario, does its test assert the *scenario*, or what the implementer built? Both
+findings sat in judgment the design delegated ("if the allocation proves wrong in practice the
+allocation is the knob"), which is exactly where a spec review cannot reach.

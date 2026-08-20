@@ -204,27 +204,27 @@ class SignalAdapter:
         )
 
 
-#: How the total request budget is divided across httpx's four transport phases,
-#: as fractions so the configured total stays the single knob.
+#: Why every phase gets the configured value in full, rather than a share of it.
 #:
-#: All four are named on purpose. httpx applies a timeout PER PHASE, so any phase
-#: left unset falls back to httpx's own 5s default — an unbounded segment inside
-#: a guarantee whose whole point is totality. That is exactly the bug this
-#: replaces: an untimed client gave connect, write and read httpx's default of
-#: 5s *each*, so one POST could run to roughly 3x the number a reader would
-#: assume, and a send the bridge had already accepted and delivered came back as
-#: a failure to retry.
+#: httpx applies a timeout PER PHASE, so any phase left unset falls back to
+#: httpx's own 5s default — an unbounded segment in a guarantee that is supposed
+#: to be explicit. That was the original defect: an untimed client gave connect,
+#: write and read 5s *each*, and 5s is shorter than signal-cli's send latency
+#: under load, so a message the bridge had already accepted and delivered came
+#: back as a failure to retry.
 #:
-#: The weighting suits a POST to a container on the same compose network: connect
-#: and write are cheap, ``read`` carries signal-cli's own send latency. If the
-#: allocation proves wrong in practice, the allocation is the knob — not the
-#: mechanism (design Open Questions).
-_TIMEOUT_PHASE_SHARES = {
-    "connect": 0.15,
-    "write": 0.15,
-    "pool": 0.10,
-    "read": 0.60,
-}
+#: A *total* request budget was specified first and cannot be built this way.
+#: httpcore applies the read and write timeouts per socket OPERATION, inside
+#: `while True` loops (`_receive_response_headers` → `_receive_event` →
+#: `network_stream.read`), so a response arriving in many small reads is never
+#: bounded by any sum. The only mechanism that bounds a whole request is
+#: cancelling it in flight, which manufactures the "may already have been
+#: delivered" ambiguity ``SendOutcome`` exists to describe rather than to create.
+#: So the guarantee is per-phase and stated as such.
+#:
+#: The value therefore lands on `read` in full, which is the phase that carries
+#: signal-cli's own processing time and the one the motivating bug lives in.
+#: A scalar populates all four phases, `pool` included.
 
 
 class SignalCliRestBridge:
@@ -255,22 +255,14 @@ class SignalCliRestBridge:
         self._open_timeout = open_timeout
 
     def _build_client(self):
-        """The ONLY place an HTTP client is constructed, so the total is unskippable.
+        """The ONLY place an HTTP client is constructed, so no phase goes unbounded.
 
-        Deliberately not ``asyncio.wait_for`` around the POST: cancelling an
-        in-flight request manufactures the "may already have been delivered"
-        ambiguity the delivery outcome exists to describe rather than to create.
+        Deliberately not ``asyncio.wait_for`` around the POST — see the note
+        above on why a request total is not specified.
         """
         import httpx  # lazy
 
-        return httpx.AsyncClient(
-            timeout=httpx.Timeout(
-                **{
-                    phase: self._send_timeout * share
-                    for phase, share in _TIMEOUT_PHASE_SHARES.items()
-                }
-            )
-        )
+        return httpx.AsyncClient(timeout=httpx.Timeout(self._send_timeout))
 
     async def receive(self) -> AsyncIterator[dict]:  # pragma: no cover - deploy path
         import websockets  # lazy: only needed at runtime

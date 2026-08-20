@@ -586,21 +586,30 @@ def test_bridge_client_timeout_comes_from_configuration():
     assert phases.pool is not None
 
 
-def test_bridge_budget_is_a_total_not_a_per_phase_limit():
-    total = 12.0
-    phases = _bridge(send_timeout=total)._build_client().timeout
-    allotted = [phases.connect, phases.read, phases.write, phases.pool]
-    # Summing to the total is what makes it a total: a request that stalls
-    # within every individual phase limit still cannot exceed the configured
-    # budget, whereas httpx's per-phase default admits a multiple of it.
-    assert sum(allotted) == pytest.approx(total)
-    assert all(0 < phase < total for phase in allotted)
+def test_every_phase_carries_the_configured_value_in_full():
+    # NOT a total, and deliberately not a fraction of one. httpcore applies the
+    # read and write timeouts PER SOCKET OPERATION inside `while True` loops
+    # (httpcore/_async/http11.py `_receive_response_headers` / `_receive_event`),
+    # so no allocation across phases can bound a whole request — an earlier
+    # version of this test asserted the four phases summed to the configured
+    # value, which was true and strictly weaker than the guarantee it claimed.
+    configured = 12.0
+    phases = _bridge(send_timeout=configured)._build_client().timeout
+    assert phases.connect == pytest.approx(configured)
+    assert phases.read == pytest.approx(configured)
+    assert phases.write == pytest.approx(configured)
+    assert phases.pool == pytest.approx(configured)
 
 
-def test_bridge_total_scales_with_the_configured_value():
-    phases = _bridge(send_timeout=4.0)._build_client().timeout
-    total = phases.connect + phases.read + phases.write + phases.pool
-    assert total == pytest.approx(4.0)
+def test_read_phase_gets_the_full_configured_value():
+    # The motivating bug is bounded by READ: signal-cli's own send latency is
+    # what the bridge waits on, so a read ceiling below that latency turns an
+    # accepted message into a reported failure and a retried duplicate. A
+    # fraction of the configured value here would raise httpx's 5s default only
+    # marginally — which is what shipped in 0bfcc5b (6.0s of a nominal 10.0).
+    for configured in (4.0, 10.0, 12.0):
+        phases = _bridge(send_timeout=configured)._build_client().timeout
+        assert phases.read == pytest.approx(configured), configured
 
 
 def test_no_bridge_code_path_constructs_a_client_without_a_timeout():

@@ -24,7 +24,7 @@ The channel layer SHALL process messages only from the configured owner identity
 - **THEN** the message is ignored (v1 is DM-only) and logged as dropped
 
 ### Requirement: Signal transport via signal-cli-rest-api
-The Signal adapter SHALL send and receive messages exclusively through a containerized signal-cli-rest-api instance using Henk's dedicated Signal identity. The adapter SHALL NOT embed Signal protocol logic or credentials beyond the bridge's API endpoint and its account identifier. Every bridge **HTTP** request SHALL carry an explicitly configured **total** timeout, and the receive path's connection attempt SHALL carry an explicitly configured timeout: no request SHALL rely on an HTTP client library's default, since a default shorter than the bridge's own send latency turns an accepted message into a reported failure and a retried duplicate. The total request budget SHALL bound the whole request rather than each transport phase separately, because a per-phase timeout of *n* admits a request lasting several times *n*.
+The Signal adapter SHALL send and receive messages exclusively through a containerized signal-cli-rest-api instance using Henk's dedicated Signal identity. The adapter SHALL NOT embed Signal protocol logic or credentials beyond the bridge's API endpoint and its account identifier. Every bridge **HTTP** request SHALL carry an explicitly configured timeout on **every** transport phase — connect, read, write and pool — and the receive path's connection attempt SHALL carry an explicitly configured timeout: no request and no phase SHALL rely on an HTTP client library's default, since a default shorter than the bridge's own send latency turns an accepted message into a reported failure and a retried duplicate. The configured value SHALL apply to each phase **in full** rather than as a share of a budget divided across them, because the phase that carries the bridge's own processing time is `read`, and a fraction of the configured value there raises the ceiling the motivating defect lives under only marginally. A **total** request budget is deliberately NOT specified: the HTTP client applies the read and write timeouts per socket *operation* rather than per phase, so no allocation across phases bounds a whole request, and the only mechanism that does is cancelling a request in flight — which manufactures the "may already have been delivered" ambiguity the delivery outcome exists to describe rather than to create.
 
 #### Scenario: Inbound message received
 - **WHEN** signal-cli-rest-api reports a new incoming message for Henk's account
@@ -42,9 +42,13 @@ The Signal adapter SHALL send and receive messages exclusively through a contain
 - **WHEN** the Signal bridge's HTTP client is inspected
 - **THEN** its request timeout comes from configuration, no bridge code path constructs a client without one, and every transport phase the client can spend time in is bounded
 
-#### Scenario: Total budget bounds a multi-phase stall
-- **WHEN** a bridge request stalls within each individual transport phase's limit but exceeds the configured total
-- **THEN** the request is abandoned at the configured total rather than at a multiple of it
+#### Scenario: Every phase carries the configured value in full
+- **WHEN** the Signal bridge's HTTP client's timeout is inspected
+- **THEN** connect, read, write and pool each carry the configured value, none falls back to the client library's default, and none carries a fraction of it
+
+#### Scenario: The bridge's own send latency is bounded by the read phase
+- **WHEN** the bridge waits on signal-cli's processing of a send
+- **THEN** the wait is bounded by the configured value in full, so raising that value raises the ceiling the false-failure-and-duplicate defect lives under
 
 #### Scenario: Receive connection timeout is configured
 - **WHEN** the receive path's websocket connection is inspected
