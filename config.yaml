@@ -4,6 +4,24 @@
 owner:
   # Henk's owner identity as the channel reports it (Signal number or UUID).
   id: "+31600000000"
+  # The owner's timezone, as a Region/Location zone key. NO DEFAULT and NO
+  # FALLBACK, on purpose (reminders design D8): a hardcoded zone would bake a
+  # personal fact into a repo that is publication-bound, and a UTC fallback would
+  # fire every reminder one or two hours off while looking perfectly healthy.
+  #
+  # Left COMMENTED OUT here rather than filled with a plausible placeholder. An
+  # absent key fails startup loudly the moment reminders are enabled, naming both
+  # keys; a placeholder that merely validates would resolve every reminder in the
+  # wrong zone and say nothing. Loud beats silent.
+  #
+  # Required exactly when `reminders.enabled` is true (see the reminders section).
+  # rp5's config.yaml is locally modified by design and does not carry this key —
+  # enabling reminders there is a deliberate TWO-key host-side edit: this one and
+  # `reminders.enabled`. Values like `localtime`, `UTC` or `EST` are refused even
+  # though they resolve: `localtime` resolves against the HOST clock, which is
+  # exactly the fallback this setting exists to rule out.
+  #
+  #   timezone: "Europe/Amsterdam"
 
 signal:
   # Compose-internal address of signal-cli-rest-api (no published ports).
@@ -125,6 +143,45 @@ store:
   # Oldest-first page size for /inbox and inbox_read. Not a cap: newer items are
   # counted in the reply and stay reachable by draining or /inbox all.
   inbox_page_size: 20
+
+# One-shot reminders. `enabled: false` is the state this change SHIPS in, and that
+# is the feature rather than a compromise: the delivery half (the scheduler, the
+# send, grace/late/missed) is the separate reminder-delivery change. A build that
+# accepts "remind me at six", echoes a confident "Reminder #3 set for Wednesday at
+# 18:00", and then says nothing at six has spent the owner's trust on a promise it
+# structurally cannot keep.
+#
+# Enabling is a deliberate TWO-key edit: this flag AND `owner.timezone` above.
+# Startup fails naming both if only one is set. On rp5 both edits are host-side, and
+# neither is worth making until reminder-delivery lands.
+#
+# Every key here only NARROWS. There is deliberately no key for the authorization
+# tier, the turn scope, or the recipient — promoting `remind` past standing, letting
+# it run in an event turn, or pointing a reminder at another identity are code
+# decisions that ride code review (see the gate section below for the same rule).
+reminders:
+  enabled: false
+  # How many reminders may be pending at once. Bounds accumulation from a model
+  # that schedules more eagerly than the owner asked for; the overflow is REFUSED
+  # naming this number, never silently dropped.
+  max_pending: 100
+  # Per-reminder text limit, same principle as store.fact_length_limit above:
+  # over-limit text is rejected naming the limit, never truncated.
+  text_length_limit: 500
+  # How far ahead a reminder may be scheduled. Also bounds the resolve-once
+  # residual: a reminder stores an absolute instant, so a timezone RULE change
+  # inside this window (Iran, Mexico, Jordan, Lebanon and Greenland have all
+  # changed future rules on short notice) would leave an already-scheduled reminder
+  # an hour wrong, with no re-resolution path. A year bounds the exposure.
+  horizon_days: 365
+  # How far into the past a submitted time may already be. Absorbs the sub-second
+  # gap between the model reading the turn's time header and the app resolving the
+  # value, without admitting a genuinely stale target.
+  clock_skew_tolerance_seconds: 120
+  # Oldest-due-first bound for BOTH /reminders and reminders_read — one number, so
+  # the owner and the model see the same slice of the schedule. Not a cap: the
+  # reply says how many were not shown, and nothing is deleted.
+  page_size: 20
 
 # The authorization gate. This section can only NARROW authorization: setting
 # demote_standing makes every standing-tier action (capture, store_memory) ask for

@@ -7,6 +7,14 @@ requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.27",
     "pyyaml>=6.0",
+    # The IANA timezone database as a pure-data wheel (no code, no transitive
+    # dependencies). `zoneinfo` reads the OS zone database and python:3.12-slim is
+    # not guaranteed to ship one, so this is what makes a missing database fail
+    # LOUD at first resolution instead of depending on the base image's packaging.
+    # Declaring it guarantees availability but NOT precedence — `zoneinfo` searches
+    # TZPATH first — which is why the Dockerfile also empties TZPATH. See the
+    # PYTHONTZPATH comment there; the two only work together.
+    "tzdata>=2025.1",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +37,14 @@ dev = [
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+# The full DST sweep is opt-in: `pytest -m dst_sweep` overrides this (a
+# command-line -m replaces the one from addopts).
+addopts = ["-m", "not dst_sweep"]
+markers = [
+    # The full 12-zone DST oracle sweep (~6.2M classifications). Two zones run on
+    # every change; this runs the rest on demand: `pytest -m dst_sweep`.
+    "dst_sweep: the full multi-zone DST ground-truth sweep (slow, opt-in)",
+]
 
 [build-system]
 requires = ["hatchling"]

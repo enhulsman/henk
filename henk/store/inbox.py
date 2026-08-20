@@ -86,17 +86,18 @@ class SqliteInboxStore:
         content = (text or "").strip()
         if not content:
             raise EmptyContentError("the capture text is empty; nothing was stored")
-        conn = self._store.connection()
         now = self._store.clock()
         try:
-            cursor = conn.execute(
-                "INSERT INTO inbox (text, created_at, source, status) "
-                "VALUES (?, ?, ?, ?)",
-                (content, now, source, OPEN),
-            )
-            conn.commit()
+            # Transaction-agnostic (reminders design D2): standalone this is one
+            # atomic write, and inside a caller's transaction it joins theirs
+            # instead of committing it out from under them.
+            with self._store.transaction() as conn:
+                cursor = conn.execute(
+                    "INSERT INTO inbox (text, created_at, source, status) "
+                    "VALUES (?, ?, ?, ?)",
+                    (content, now, source, OPEN),
+                )
         except sqlite3.Error as exc:
-            conn.rollback()
             raise StoreError(f"could not store the capture: {exc}") from exc
         return InboxItem(
             id=int(cursor.lastrowid or 0),
@@ -131,21 +132,23 @@ class SqliteInboxStore:
 
     def mark_done(self, item_id: int) -> InboxItem | None:
         """Archive one open item. Returns None when no OPEN item has that id."""
-        conn = self._store.connection()
         try:
-            cursor = conn.execute(
-                "UPDATE inbox SET status = ? WHERE id = ? AND status = ?",
-                (DONE, item_id, OPEN),
-            )
-            conn.commit()
-            if cursor.rowcount == 0:
-                return None
-            row = conn.execute(
-                "SELECT id, text, created_at, source, status FROM inbox WHERE id = ?",
-                (item_id,),
-            ).fetchone()
+            # The UPDATE and its read-back are one transaction, so the item this
+            # returns is the item the update wrote — not a row a concurrent writer
+            # changed in between.
+            with self._store.transaction() as conn:
+                cursor = conn.execute(
+                    "UPDATE inbox SET status = ? WHERE id = ? AND status = ?",
+                    (DONE, item_id, OPEN),
+                )
+                if cursor.rowcount == 0:
+                    return None
+                row = conn.execute(
+                    "SELECT id, text, created_at, source, status FROM inbox "
+                    "WHERE id = ?",
+                    (item_id,),
+                ).fetchone()
         except sqlite3.Error as exc:
-            conn.rollback()
             raise StoreError(f"could not update the inbox: {exc}") from exc
         return _row_to_item(row) if row is not None else None
 

@@ -94,19 +94,22 @@ class MemoryStore:
         if len(text) > self._length_limit:
             raise ContentTooLongError(self._length_limit, len(text))
 
-        conn = self._store.connection()
         now = self._store.clock()
         try:
-            cursor = conn.execute(
-                "INSERT INTO memories (content, memory_type, created_at) "
-                "VALUES (?, ?, ?)",
-                (text, memory_type, now),
-            )
-            new_id = int(cursor.lastrowid or 0)
-            evicted = self._trim_locked(conn, memory_type, protect_id=new_id)
-            conn.commit()
+            # The insert and the cap eviction are ONE transaction. They used to be
+            # so only by accident, riding pysqlite's implicit BEGIN under a single
+            # trailing commit(); under autocommit they would be independent commits
+            # and a crash between them would leave a memory evicted with nothing
+            # written in its place.
+            with self._store.transaction() as conn:
+                cursor = conn.execute(
+                    "INSERT INTO memories (content, memory_type, created_at) "
+                    "VALUES (?, ?, ?)",
+                    (text, memory_type, now),
+                )
+                new_id = int(cursor.lastrowid or 0)
+                evicted = self._trim_locked(conn, memory_type, protect_id=new_id)
         except sqlite3.Error as exc:
-            conn.rollback()
             raise StoreError(f"could not store the memory: {exc}") from exc
         return MemoryWrite(
             memory=Memory(new_id, text, memory_type, now), evicted=tuple(evicted)
@@ -122,22 +125,21 @@ class MemoryStore:
         token = (needle or "").strip().lower()
         if not token:
             return []
-        conn = self._store.connection()
         try:
-            rows = conn.execute(
-                "SELECT id, content, memory_type, created_at FROM memories"
-            ).fetchall()
-            matches = [
-                _row_to_memory(row)
-                for row in rows
-                if token in str(row["content"]).strip().lower()
-            ]
-            if matches:
-                conn.executemany(
-                    "DELETE FROM memories WHERE id = ?",
-                    [(m.id,) for m in matches],
-                )
-                conn.commit()
+            with self._store.transaction() as conn:
+                rows = conn.execute(
+                    "SELECT id, content, memory_type, created_at FROM memories"
+                ).fetchall()
+                matches = [
+                    _row_to_memory(row)
+                    for row in rows
+                    if token in str(row["content"]).strip().lower()
+                ]
+                if matches:
+                    conn.executemany(
+                        "DELETE FROM memories WHERE id = ?",
+                        [(m.id,) for m in matches],
+                    )
         except sqlite3.Error as exc:
             raise StoreError(f"could not delete memories: {exc}") from exc
         return matches
@@ -145,7 +147,10 @@ class MemoryStore:
     def _trim_locked(
         self, conn: sqlite3.Connection, memory_type: str, *, protect_id: int
     ) -> list[Memory]:
-        """Evict this type's oldest rows until its cap holds. Caller commits.
+        """Evict this type's oldest rows until its cap holds.
+
+        Runs inside the caller's ``transaction()`` scope — it issues no commit of
+        its own, so the eviction and the insert it accompanies are atomic together.
 
         ``protect_id`` keeps a just-inserted row safe from its own eviction when
         the cap is 1 or lower, so a write never silently succeeds as a no-op.
