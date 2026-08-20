@@ -377,6 +377,48 @@ class RemindersConfig:
     #: the owner and the model see the same slice of the schedule.
     page_size: int = 20
 
+    # --- delivery (reminder-delivery design D10) --------------------------
+    #
+    # Every knob below narrows, and every one has a scenario behind it. Polling
+    # rather than sleep-until-next-due is what makes the first of them the whole
+    # scheduling policy: there is no wake-up bookkeeping to get wrong.
+
+    #: How often the scheduler ticks. One poll interval of latency is the honest
+    #: reading of "at 18:00", and it is ADDITIVE to any in-flight send wait — the
+    #: interval does not absorb the send lock's hold (design D6).
+    poll_interval_seconds: float = 30
+    #: One fixed retry floor for a send the channel did not confirm. Deliberately
+    #: not a schedule (cut #3): the requirement was never "roughly a dozen
+    #: duplicates", it was "not 2,880".
+    retry_floor_seconds: float = 900
+    #: How many counted attempts a row may accumulate before it is given up on.
+    #: Counts attempts the process did not SURVIVE — every post-send write clears
+    #: the counter — so this bounds crash loops, never channel failure. Named
+    #: unlike `signal.max_send_attempts` (a per-chunk HTTP retry budget) precisely
+    #: because they count different things.
+    crash_attempt_limit: int = 3
+    #: How long after its due instant a reminder may still be delivered late. Past
+    #: it the reminder is `missed` and summarised instead: a day-old instruction
+    #: delivered as if current is worse than useless.
+    late_grace_seconds: float = 86400
+    #: How late a delivery has to be before it states its original due time and
+    #: records `delivered-late`. Must sit below the grace window, or the on-time
+    #: status is unreachable.
+    late_delivery_threshold_seconds: float = 300
+    #: The report path's only channel-outcome bound (design D5). Evaluated in the
+    #: post-send write of an attempted summary, on a `partial` outcome only, so a
+    #: summary that keeps delivering just its head chunks stops eventually. Must
+    #: sit above the retry floor, or the bound becomes a one-attempt drop.
+    report_horizon_seconds: float = 86400
+    #: How many due reminders one tick may deliver. Paces a within-grace backlog
+    #: into bounded bursts; unselected rows are untouched and stay eligible, so the
+    #: message COUNT is unchanged and only the arrival rate is bounded.
+    tick_delivery_limit: int = 10
+    #: How far back the delivered-reminder note looks for unsurfaced deliveries.
+    note_window_seconds: float = 43200
+    #: How many deliveries that note may name, newest first.
+    note_max_items: int = 10
+
 
 @dataclass(frozen=True)
 class Secrets:
@@ -550,7 +592,9 @@ class Config:
                 )
             ),
             page_size=int(reminders_sec.get("page_size", RemindersConfig.page_size)),
+            **_delivery_settings(reminders_sec),
         )
+        _validate_delivery_settings(reminders)
 
         pd_sec = raw.get("personal_data", {}) or {}
         personal_data = PersonalDataConfig(
@@ -632,6 +676,81 @@ class Config:
         # describes Henk), so neither section's builder can see both.
         _validate_liveness_ordering(config)
         return config
+
+
+#: Each delivery setting and the coercion its value takes. A table rather than nine
+#: hand-written lines so the read path and the validation below cannot drift apart:
+#: both iterate this, so a knob added to one is present in the other by construction.
+_DELIVERY_SETTINGS: tuple[tuple[str, Any], ...] = (
+    ("poll_interval_seconds", float),
+    ("retry_floor_seconds", float),
+    ("crash_attempt_limit", int),
+    ("late_grace_seconds", float),
+    ("late_delivery_threshold_seconds", float),
+    ("report_horizon_seconds", float),
+    ("tick_delivery_limit", int),
+    ("note_window_seconds", float),
+    ("note_max_items", int),
+)
+
+
+def _delivery_settings(reminders_sec: Mapping[str, Any]) -> dict[str, Any]:
+    """Read the delivery knobs, coerced, defaulting to the dataclass values."""
+    values: dict[str, Any] = {}
+    for name, cast in _DELIVERY_SETTINGS:
+        raw = reminders_sec.get(name, getattr(RemindersConfig, name))
+        try:
+            values[name] = cast(raw)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"reminders.{name} must be a number; got {raw!r}"
+            ) from exc
+    return values
+
+
+def _validate_delivery_settings(reminders: "RemindersConfig") -> None:
+    """Refuse a delivery configuration that cannot mean what it says.
+
+    Validated unconditionally, NOT only when the capability is enabled: a bad value
+    that surfaces the moment someone flips ``reminders.enabled`` surfaces on the host,
+    over SSH, at the worst possible moment. Every message names the setting for the
+    same reason — the error text is all the operator gets.
+
+    Two orderings beyond positivity, and each is a silent-wrongness guard rather than
+    a taste preference:
+
+    - **lateness threshold < grace window.** At or above it, every delivery still
+      inside the grace window counts as late and the on-time ``delivered`` status is
+      unreachable.
+    - **report horizon > retry floor.** At or below the floor, the first attempted
+      summary's post-send write already finds every named row past the horizon, which
+      converts a bound designed to fire after ~96 namings into a one-attempt drop.
+    """
+    for name, _cast in _DELIVERY_SETTINGS:
+        value = getattr(reminders, name)
+        if value <= 0:
+            raise ConfigError(
+                f"reminders.{name} must be strictly positive; got {value!r}"
+            )
+    if (
+        reminders.late_delivery_threshold_seconds
+        >= reminders.late_grace_seconds
+    ):
+        raise ConfigError(
+            "reminders.late_delivery_threshold_seconds "
+            f"({reminders.late_delivery_threshold_seconds!r}) must be strictly less "
+            f"than reminders.late_grace_seconds ({reminders.late_grace_seconds!r}): "
+            "at or above the grace window every in-grace delivery would be recorded "
+            "late and the on-time status would be unreachable."
+        )
+    if reminders.report_horizon_seconds <= reminders.retry_floor_seconds:
+        raise ConfigError(
+            f"reminders.report_horizon_seconds ({reminders.report_horizon_seconds!r}) "
+            "must be strictly greater than reminders.retry_floor_seconds "
+            f"({reminders.retry_floor_seconds!r}): at or below the floor, the first "
+            "attempted summary's post-send write already finds every named row past "
+            "the horizon, turning the report bound into a one-attempt drop."
+        )
 
 
 def _require_owner_timezone(
