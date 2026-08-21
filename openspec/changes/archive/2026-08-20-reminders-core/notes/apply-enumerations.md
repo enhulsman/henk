@@ -199,7 +199,7 @@ changed).
 
 ## 9.2 — the "Settled — do not re-litigate" list, checked against the implementation
 
-From `openspec/changes/reminders/notes/README.md`:
+From `openspec/changes/archive/2026-08-21-reminders-superseded/notes/README.md`:
 
 | settled item | status |
 |---|---|

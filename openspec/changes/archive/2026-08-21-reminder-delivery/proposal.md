@@ -11,7 +11,7 @@ is the second half the reminders spec Purpose already names ("the clock that del
 specified separately, and reminders ship disabled until it exists"), and it is what allows
 `reminders.enabled` to be flipped on rp5.
 
-The scope is the **cut** version from `openspec/changes/reminders/notes/README.md`: the fresh
+The scope is the **cut** version from `openspec/changes/archive/2026-08-21-reminders-superseded/notes/README.md`: the fresh
 review found the original delivery design over-engineered by about a third, with all six late
 criticals living in the excess. What remains: poll, select due, send one message per due
 reminder, record the outcome, one retry floor, a crash-attempt bound, grace → missed,
@@ -105,7 +105,7 @@ design demanded before any bound is taken: it exists
   pre-work/post-send transactions build on; no store call may be dispatched off the event
   loop (a grep-based test enforces the single-connection assumption).
 - **Verification:** the fault-injection matrix from
-  `openspec/changes/reminders/notes/verify_selector_invariants.py` is retargeted at the real
+  `openspec/changes/archive/2026-08-21-reminders-superseded/notes/verify_selector_invariants.py` is retargeted at the real
   store and scheduler; the model itself is updated to the cut design first, since a defect
   found in the model is unfixed until the requirement text changes.
 - **Deployment:** no new infrastructure surface. Enabling is a host-side edit to rp5's
@@ -113,4 +113,4 @@ design demanded before any bound is taken: it exists
   rollback is setting the flag false — stored rows are untouched either way.
 - **Not touched:** `owner-acknowledgement` (independent, nothing here depends on it);
   recurrence, snooze, edit-in-place (non-goals since the original design); the original
-  `openspec/changes/reminders/` draft remains superseded and is not implemented.
+  `openspec/changes/archive/2026-08-21-reminders-superseded/` draft remains superseded and is not implemented.

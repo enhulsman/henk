@@ -1,7 +1,7 @@
 # Tasks — Reminder Delivery
 
 **Read first:** `design.md`; `notes/send-latency-measurement.md`;
-`openspec/changes/reminders/notes/README.md` (the cut list and the settled list are binding);
+`openspec/changes/archive/2026-08-21-reminders-superseded/notes/README.md` (the cut list and the settled list are binding);
 `channel-integrity` design D5/D6. TDD throughout: every task-group's tests come from this
 change's spec scenarios before its implementation, and no concurrency property may be proven
 with a cooperative double.
@@ -12,7 +12,7 @@ Group 1 is the apply session's first act and its gate: if 1.2 disagrees with the
 on any property, the delta is edited THEN — before group 2 exists, recorded in the apply
 notes — which is deliberately the cheapest moment a spec edit will ever have.
 
-- [x] 1.1 Rewrite `openspec/changes/reminders/notes/verify_selector_invariants.py` into this
+- [x] 1.1 Rewrite `openspec/changes/archive/2026-08-21-reminders-superseded/notes/verify_selector_invariants.py` into this
       change's `notes/` to model the CUT design exactly: no backoff schedule, no
       `unconfirmed_sends`, no `terminal_at`, no report item bound; one retry floor, crash
       maximum pre-work, grace → missed, per-tick delivery pacing, the selector's `due_at`

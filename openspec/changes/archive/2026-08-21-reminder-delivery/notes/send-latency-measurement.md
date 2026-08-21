@@ -1,6 +1,6 @@
 # signal-cli send latency on rp5 — the measurement the send bound is designed against
 
-Taken 2026-08-20, per `openspec/changes/reminders/notes/README.md`: *"Before designing the
+Taken 2026-08-20, per `openspec/changes/archive/2026-08-21-reminders-superseded/notes/README.md`: *"Before designing the
 bound: log signal-cli send latency on rp5 for a day."* The measurement came out **better than
 asked**: the bridge container (`henk-signal-cli-rest-api-1`, up 4 weeks) logs a Gin access line
 for every `POST /v2/send` with **server-side latency**, so the full retained log is a

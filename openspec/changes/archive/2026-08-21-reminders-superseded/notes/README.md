@@ -3,6 +3,17 @@
 **Read this file, not `revision-record.md`.** The record is 1,522 lines of eleven review
 rounds; this is what you need to act. Dated 2026-08-19, status updated 2026-08-21.
 
+**Retired off the board 2026-08-21.** This directory used to live under `openspec/changes/`
+as the `reminders` change — the
+original single change, which `openspec list` kept reporting as `0/36 tasks` of pending work
+long after its scope had shipped as three separate changes. It was moved here rather than
+archived through `/opsx:archive`, deliberately: its delta text is stale in ~20 places, so
+merging it into `openspec/specs/` would have overwritten specs the three completed changes
+had just got right. Its `proposal.md`, `design.md`, `tasks.md` and `specs/` were **deleted**
+in the same move for the same reason — they were the misleading half. Git history holds them
+if they are ever wanted; `git log --follow` from this directory finds them. What survives is
+what is still binding, below.
+
 > **The reminders arc is COMPLETE.** `channel-integrity`, `reminders-core` and
 > `reminder-delivery` are all implemented, deployed to rp5 and archived; reminders are
 > **enabled** in production as of 2026-08-21. Both open defects below are closed, and the
@@ -21,7 +32,7 @@ rounds; this is what you need to act. Dated 2026-08-19, status updated 2026-08-2
 | `owner-acknowledgement` | Not written; `proposal.md` + the moved `agent-core` delta exist at `openspec/changes/owner-acknowledgement/`, with thirteen source-verified findings to fold in. Split out of `channel-integrity` — it carries the only new endpoints, the only encapsulation exception and the only rollback flag, and **nothing below depends on it**. |
 | `reminders-core` | **DONE** — implemented, deployed to rp5 and archived 2026-08-20 at `openspec/changes/archive/2026-08-20-reminders-core/`. Store with the complete column set, `Store.transaction()`, DST-correct time resolution, `remind` / `cancel_reminder` / `reminders_read`, the `/remind` and `/reminders` commands, audit v4 — shipped inert, and `reminder-delivery` is what turned it on. Its `notes/dst-verified-facts.md` is **still required reading before touching `timeparse.py`**. |
 | `reminder-delivery` | **DONE** — implemented, deployed to rp5, **enabled** and verified end-to-end, archived 2026-08-21 at `openspec/changes/archive/2026-08-21-reminder-delivery/`. Polling scheduler, verbatim sessionless delivery, the retry floor and crash bound, grace → missed → catch-up summary, the report horizon, the delivered-reminder note, the cadence amendment, and the send lock. **Read its `notes/apply-enumerations.md`** — the header is the state-of-play, and it carries four findings that moved the spec (three from the model before any code existed), the nine-mutation record, and the live deploy verification including a no-op deploy that four independent tells caught. Its `notes/verify_selector_invariants.py` is the model retargeted at the cut design; the fault-injection matrix, not the model, is the transferable artifact. |
-| `openspec/changes/reminders/` (the original draft) | **Superseded, do not implement.** ~20 sites stale; several decisions reversed. |
+| the original draft (this directory) | **Superseded; its artifacts are deleted, not merged.** ~20 sites stale; several decisions reversed. Retired off the board 2026-08-21 — see the header. |
 
 The original single change was reviewed to destruction: eleven rounds, then one clean pass
 from a fresh reviewer. It must be rewritten as the changes above.

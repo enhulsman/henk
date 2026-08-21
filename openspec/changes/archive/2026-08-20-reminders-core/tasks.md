@@ -12,7 +12,7 @@ reading the code would not have:
 1. `notes/dst-verified-facts.md` (this change) — every DST claim in the design, with the executed
    output that established it. **Required before touching `henk/reminders/timeparse.py`**; it is
    also the source for most of group 4's test tables.
-2. `openspec/changes/reminders/notes/README.md` — the superseded draft's continuation notes. The
+2. `openspec/changes/archive/2026-08-21-reminders-superseded/notes/README.md` — the superseded draft's continuation notes. The
    "Settled — do not re-litigate" list is binding on this change (task 9.2 checks it).
 3. `design.md` D1–D3 and D8a — the column set, the transaction contract, the two input families
    and the per-family validation ladder. The ladder table is the thing to walk as a matrix before
@@ -334,7 +334,7 @@ Two rules for this group specifically, both earned in review rather than assumed
 - [x] 9.1 Full suite green, including every test the enumerations in 1.1, 5.3 and 8.3 turned up.
       Report the count and any test that was edited, with the reason
 - [x] 9.2 Re-read the "Settled — do not re-litigate" list in
-      `openspec/changes/reminders/notes/README.md` against the implementation, and confirm this
+      `openspec/changes/archive/2026-08-21-reminders-superseded/notes/README.md` against the implementation, and confirm this
       change did not quietly reverse any of it
 - [x] 9.3 Confirm the deployed-behaviour claim by inspection: with no `reminders` section in
       config, the registry, the command set, the system prompt and the turn composition are

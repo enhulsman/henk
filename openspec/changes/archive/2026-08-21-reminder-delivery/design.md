@@ -7,7 +7,7 @@ time model, the tools and commands — inert behind `reminders.enabled: false`. 
 the clock: the first path where Henk speaks because a clock said so, and the first real
 second sender on the channel. Required reading, in order:
 
-- `openspec/changes/reminders/notes/README.md` — the cut list, the two open defects, the
+- `openspec/changes/archive/2026-08-21-reminders-superseded/notes/README.md` — the cut list, the two open defects, the
   settled-decisions list. Everything under "Settled — do not re-litigate" is inherited here
   verbatim and is not re-argued.
 - `channel-integrity` design D5/D6 (archive 2026-08-20) — why serialization was deferred to

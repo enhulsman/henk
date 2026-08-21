@@ -1,6 +1,6 @@
 # Fix Plan — reminders change, round 11 (final)
 
-Splitting `openspec/changes/reminders/` into **A** `channel-send-integrity`, **B**
+Splitting the original `reminders` change (this directory) into **A** `channel-send-integrity`, **B**
 `reminders-core`, **C** `reminder-delivery`. No source edits.
 
 R1 (C1–C5, M1–M14, m1–m17) → R2 (B1–B4) → R3 (D1–D8, N-a–N-d) → R4 (E1–E11) → R5 (F1–F8) → R6 (G1–G11) → R7 (H1–H9) → R8 (J1–J10) → R9 (K1–K6) → R10 (L1–L8) → R11 (N1–N7).

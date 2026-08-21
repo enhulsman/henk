@@ -1,6 +1,6 @@
 """Executable model of the CUT delivery design, as this change's deltas specify it.
 
-Rewritten from `openspec/changes/reminders/notes/verify_selector_invariants.py`, which
+Rewritten from `openspec/changes/archive/2026-08-21-reminders-superseded/notes/verify_selector_invariants.py`, which
 modelled the *pre-cut* design (seven-step backoff schedule, `unconfirmed_sends`,
 `terminal_at`, report item bound + pagination, chunk-atomic batching). All of that is
 gone; per the original's own header the model is disposable and the fault-injection
