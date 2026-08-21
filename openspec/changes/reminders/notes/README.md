@@ -1,7 +1,17 @@
 # Reminders — revision record and continuation notes
 
 **Read this file, not `revision-record.md`.** The record is 1,522 lines of eleven review
-rounds; this is what you need to act. Dated 2026-08-19.
+rounds; this is what you need to act. Dated 2026-08-19, status updated 2026-08-21.
+
+> **The reminders arc is COMPLETE.** `channel-integrity`, `reminders-core` and
+> `reminder-delivery` are all implemented, deployed to rp5 and archived; reminders are
+> **enabled** in production as of 2026-08-21. Both open defects below are closed, and the
+> cut list and settled list were carried through without re-litigation.
+>
+> The only unstarted item in this arc is **`owner-acknowledgement`** (read receipts and the
+> typing indicator), which nothing above depends on. This file survives for its cut list,
+> its settled-decisions list, and the lessons in the DST warning — all still binding on
+> anything that touches reminders — not as a plan.
 
 ## Status
 
@@ -9,8 +19,8 @@ rounds; this is what you need to act. Dated 2026-08-19.
 |---|---|
 | `channel-integrity` | **DONE** — implemented, deployed to rp5 and archived 2026-08-20 at `openspec/changes/archive/2026-08-20-channel-integrity/`. Its design D5/D6 and its As-built deploy record are required reading for `reminder-delivery`. The prerequisite is satisfied: `SendOutcome` and `send_proactive` exist. |
 | `owner-acknowledgement` | Not written; `proposal.md` + the moved `agent-core` delta exist at `openspec/changes/owner-acknowledgement/`, with thirteen source-verified findings to fold in. Split out of `channel-integrity` — it carries the only new endpoints, the only encapsulation exception and the only rollback flag, and **nothing below depends on it**. |
-| `reminders-core` | **IMPLEMENTED 2026-08-20**, green, **not yet committed or archived** — store with the complete column set, `Store.transaction()`, DST-correct time resolution, `remind` / `cancel_reminder` / `reminders_read`, the `/remind` and `/reminders` commands, audit v4, shipping inert. Two tasks remain open and neither is code: **3.5** (verify the zone database inside the built image — needs a real terminal for `docker`) and **9.5** (deploy, hard stop pending owner go). **Read `openspec/changes/reminders-core/notes/apply-enumerations.md` first** — its header block is the state-of-play, and it carries the apply-time enumerations, the ladder matrix walk, the verification record for group 9, and the exact commands for 3.5. The verified DST facts behind the requirement wording are in that change's `notes/dst-verified-facts.md`, still required reading before touching `timeparse.py`. |
-| `reminder-delivery` | **PROPOSED 2026-08-20** — full artifact set at `openspec/changes/reminder-delivery/` (proposal, design, six spec deltas, tasks), validating `--strict`. Scheduler, delivery, catch-up, the delivered-reminder note, the cadence amendment, and the inherited send serialization (decided: plain adapter lock + amended scenario, per design D6). **The send-latency measurement below is TAKEN** — `reminder-delivery/notes/send-latency-measurement.md`, 29 days retroactive from the bridge's Gin access log (n=82, median 162 ms, max 1.087 s), so the "log for a day" prerequisite is satisfied and exceeded; the harvest command is recorded there for re-running at apply time. |
+| `reminders-core` | **DONE** — implemented, deployed to rp5 and archived 2026-08-20 at `openspec/changes/archive/2026-08-20-reminders-core/`. Store with the complete column set, `Store.transaction()`, DST-correct time resolution, `remind` / `cancel_reminder` / `reminders_read`, the `/remind` and `/reminders` commands, audit v4 — shipped inert, and `reminder-delivery` is what turned it on. Its `notes/dst-verified-facts.md` is **still required reading before touching `timeparse.py`**. |
+| `reminder-delivery` | **DONE** — implemented, deployed to rp5, **enabled** and verified end-to-end, archived 2026-08-21 at `openspec/changes/archive/2026-08-21-reminder-delivery/`. Polling scheduler, verbatim sessionless delivery, the retry floor and crash bound, grace → missed → catch-up summary, the report horizon, the delivered-reminder note, the cadence amendment, and the send lock. **Read its `notes/apply-enumerations.md`** — the header is the state-of-play, and it carries four findings that moved the spec (three from the model before any code existed), the nine-mutation record, and the live deploy verification including a no-op deploy that four independent tells caught. Its `notes/verify_selector_invariants.py` is the model retargeted at the cut design; the fault-injection matrix, not the model, is the transferable artifact. |
 | `openspec/changes/reminders/` (the original draft) | **Superseded, do not implement.** ~20 sites stale; several decisions reversed. |
 
 The original single change was reviewed to destruction: eleven rounds, then one clean pass
@@ -100,13 +110,18 @@ records, or the channel work. Cut, in value order:
 What remains: poll, select due, send one message, record the outcome, one retry floor, a
 crash-attempt bound, grace → missed, `reported_at`, and the catch-up summary.
 
-## Two open defects — fix these when writing B and C
+## Two open defects — BOTH CLOSED
 
-1. **Report pagination strands rows.** The pre-work transaction charges an attempt to every
-   *selected* row; if composition then omits overflow rows behind an item bound, those rows get
-   no post-send transaction, so their counter never clears and they are incremented again next
-   tick. Rows past position `3 × bound` hit the crash maximum **without ever being named** and
-   are marked "gave up telling you". Cut #1 above dissolves this entirely.
+1. ~~**Report pagination strands rows.**~~ **DISSOLVED by `reminder-delivery` (2026-08-21),**
+   exactly as cut #1 predicted. The original defect: the pre-work transaction charges an
+   attempt to every *selected* row, so if composition then omitted overflow rows behind an
+   item bound, those rows got no post-send transaction, their counter never cleared, and rows
+   past position `3 × bound` hit the crash maximum **without ever being named**. Removing the
+   item bound removes the gap: `select_reportable` is uncapped and composition names the whole
+   selected set, so a charged row always gets a recording write. Verified rather than
+   asserted — the model's `CHARGED=>WRITTEN` property ran 300 fault-free ticks with zero
+   mismatches, and a 100-row backlog (the pending cap, i.e. the true worst case) is named in
+   one summary with nothing omitted.
 2. ~~**The store has no transaction API.**~~ **FIXED by `reminders-core` (2026-08-20).**
    `Store.transaction()` exists: a `BEGIN IMMEDIATE` context manager on an
    `isolation_level=None` (autocommit) connection, reentrant by depth so only the outermost
