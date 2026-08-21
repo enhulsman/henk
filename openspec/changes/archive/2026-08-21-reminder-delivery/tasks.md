@@ -229,22 +229,22 @@ notes — which is deliberately the cheapest moment a spec edit will ever have.
 
 ## 11. Deploy and enable (hard stop — owner go required)
 
-- [~] 11.1 Re-run the latency harvest (`notes/send-latency-measurement.md`) and both standing
+- [x] 11.1 Re-run the latency harvest (`notes/send-latency-measurement.md`) and both standing
       watches (channel-integrity `partial`/`failed`; reminders-core store-error grep) over
       the extended window; **record each container's start time beside its grep so the
       coverage window is stated, not inferred** (docker logs reset on recreation). Record
       rp5's open inbox item count (one query) — it prices design D6's unbounded-`/inbox all`
       exposure as a number. Anything non-empty is real.
-- [ ] 11.2 Deploy the code (still inert — rp5 config carries no `reminders` section). Verify
+- [x] 11.2 Deploy the code (still inert — rp5 config carries no `reminders` section). Verify
       the three silent-no-op tells from the reminders-core apply record: no reminder tool
       registers, `/remind`//`/reminders` reply "not configured", no time header is composed.
       Confirm the only live behaviour change is the send lock; exercise one long reply to
       confirm chunks still arrive in order; inspect the container's listening sockets and
       confirm they are unchanged (secure-deployment scenario).
-- [ ] 11.3 **STOP — owner go.** Host-side edit to rp5 `config.yaml`: `owner.timezone`
+- [x] 11.3 **STOP — owner go.** Host-side edit to rp5 `config.yaml`: `owner.timezone`
       (Region/Location key) + `reminders.enabled: true`. One restart. Startup must NOT fail;
       if it does, the validation error names the bad setting — fix, don't bypass.
-- [ ] 11.4 End-to-end on the live system, per the design's migration step 4: `/remind +2m`
+- [x] 11.4 End-to-end on the live system, per the design's migration step 4: `/remind +2m`
       delivers verbatim with the marker; the follow-up turn carries the note; stop-past-due
       restart within grace → `delivered-late` stating original due; a forced beyond-grace row
       → `missed` + summary — backdate it **beyond grace + horizon (> 48 h at defaults)**, so
@@ -252,13 +252,62 @@ notes — which is deliberately the cheapest moment a spec edit will ever have.
       silent; a `/reminders cancel` issued while a delivery is in flight
       behaves per the race rules; audit records validate; `/reminders` list/cancel/reinstate
       unchanged. Record each in the As-built.
-- [ ] 11.5 Give `README.md` its deferred pass — tools table, `henk/tools/` row, owner-command
+- [x] 11.5 Give `README.md` its deferred pass — tools table, `henk/tools/` row, owner-command
       list now including `/remind` and `/reminders` — the follow-up reminders-core recorded
       as riding this exact flip.
-- [ ] 11.6 `/opsx:archive` with the deploy verification recorded. Update the reminders spec
+- [x] 11.6 `/opsx:archive` with the deploy verification recorded. Update the reminders spec
       Purpose at archive time (it still says "the clock that delivers is specified
       separately") — after this change, it isn't. Add the delivered-reminder watch
       (`abandoned` / summary / give-up greps) as a NEW standing watch for the delivery path;
       channel-integrity's `partial`/`failed` watch **stays open** — it covers the reply and
       triage paths, whose outcomes still have no durable consumer until
       `owner-acknowledgement` provides one.
+
+---
+
+## Standing watches after this change
+
+Two watches are open, and they cover different halves of the send path. Both are grep-only,
+read-only, and cheap; **state the container's start time beside each result**, because
+`docker logs` resets on recreation and an empty grep over four hours reads far stronger
+than it is.
+
+### NEW — the delivery path (this change)
+
+The delivery path's own bad outcomes have no durable consumer yet: `abandoned` and the two
+give-up exits are error-logged and nothing reads them. Until something does, this grep is
+the consumer.
+
+```bash
+ssh rp5 'sudo -n docker ps --format "{{.Names}}\t{{.CreatedAt}}" | grep henk-henk-1
+         sudo -n docker logs henk-henk-1 2>&1 | grep -aiE \
+           "gave up delivering|gave up reporting|past the report horizon|catch-up summary naming|scheduler tick failed"'
+```
+
+What each hit would mean, since none of them should ever appear on a healthy host:
+
+| line | meaning | how alarming |
+|---|---|---|
+| `gave up delivering reminder N` | a reminder crashed mid-send `crash_attempt_limit` times | the owner was told in the summary; investigate why the process kept dying |
+| `gave up reporting reminder N` | repeated process death *at the reporting stage* — the one residual where a row is retired unnamed | the most serious of the four; means a promise was dropped, loudly |
+| `past the report horizon` | a summary kept returning `partial` for a full horizon | never observed; would mean chronic chunk-level failure |
+| `scheduler tick failed` | a tick raised — store or unforeseen | the next tick retries, but a repeat is a real defect |
+
+### STAYS OPEN — channel-integrity's `partial`/`failed` watch
+
+Deliberately **not** closed by this change. It covers the *reply* and *triage* paths, whose
+send outcomes still have **no durable consumer** — only a log line — until
+`owner-acknowledgement` provides one. The delivery path is now the exception: its outcomes
+are durable in the store and the audit log, which is why it gets its own watch above rather
+than folding into this one.
+
+```bash
+ssh rp5 'sudo -n docker logs henk-henk-1 2>&1 | grep -aiE "partial|not delivered|giving up|outcome="'
+```
+
+### Recommended follow-up, recorded not smuggled
+
+A `recall_render_limit`-style render bound on `/inbox all` (design D6). Measured at deploy
+time: rp5 holds **1** open inbox item, 33 bytes — so the pathological-`N` send-lock hold
+this would bound is nil in practice today, and the follow-up is insurance rather than
+urgent. It belongs to `capture-inbox`, not here.

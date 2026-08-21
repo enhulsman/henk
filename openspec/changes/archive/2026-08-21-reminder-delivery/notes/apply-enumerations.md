@@ -1021,3 +1021,135 @@ hidden whether the retirement stood on its own.
 1356 → 1357 → 1444 → 1459 → 1478 → 1492 → 1503 — is the split's own evidence: every
 commit is a complete, self-consistent state of the repository, and the one non-monotonic
 step has a stated reason.
+
+---
+
+## Group 11 — DEPLOYED and ENABLED on rp5, 2026-08-20
+
+Pushed `96f79a4..1eb67bd` (13 commits). Deployed and the flag flipped the same evening.
+
+### 11.2 — the first attempt was a NO-OP, and the tells caught it
+
+Worth recording in full, because it is the failure class the tooling backlog entry names
+and it very nearly ate the hard stop.
+
+`docker compose up -d --build` was run **without a preceding `git pull`**. The build
+cached every layer, wrote the **identical** image sha `ba638f0466ea` — the reminders-core
+image — and compose reported `Running` rather than `Recreated`, leaving the 4-hour-old
+container in place. Four independent tells all agreed:
+
+| tell | no-op value | real-deploy value |
+|---|---|---|
+| image sha | `ba638f0466ea` (= reminders-core's) | `7bb1986fbfac` |
+| container created | `12:59:43` (unchanged) | `22:23:20` |
+| `COPY henk ./henk` | `CACHED` | rebuilt |
+| `RUN pip install ".[runtime]"` | cached | re-ran, 14.9s |
+| compose verb | `Running` | `Started` |
+| rp5 `HEAD` | `bccc642` | `1eb67bd` |
+
+**Everything that "looked like proof" was worthless.** The startup log was clean — because
+it was the same log from four hours earlier. The socket count was 41 — unchanged, because
+nothing had changed. Both Signal checks passed — against the old code, where
+"not configured" was already true and where a single sender's chunks were never at risk
+anyway. Had the config flip followed, `reminders.enabled: true` would have landed on code
+with **no scheduler in it**: Henk would have accepted `/remind`, echoed a confident
+resolved time, and then said nothing — exactly the failure the inert flag exists to
+prevent.
+
+The lesson generalizes and is now backlog entry #9: **a container's create time and image
+sha are the evidence a deploy landed; a clean startup log is not.** `reminders-core`'s
+record already said a clean startup proves less than it looks (the store opens lazily);
+this adds that it may not even be a *new* startup.
+
+Snag worth recording: `git pull` as `root` fails with `detected dubious ownership`, and
+root has no access to the deploy key. `sudo -u pi git pull` is the working form (it prompts
+for the key passphrase). Same for `git log` — as root it refuses the repo.
+
+### 11.2 verification, after the real deploy
+
+- `henk-henk-1` recreated at `22:23:20 CEST` on image `7bb1986fbfac`.
+- Startup clean; on restart after the config edit:
+  `20:24:28,764 INFO henk.reminders.scheduler reminder scheduler started; polling every 30s`
+- Listening sockets: **41, unchanged** (secure-deployment scenario satisfied on the
+  runtime side; the module-level half is asserted in the suite).
+- Inert-path tells, pre-flip: both reminder commands replied "not configured"; a long
+  reply's chunks arrived contiguous and in order (a regression check on the send lock —
+  the lock's actual guarantee needs a second concurrent sender and is proven in the suite
+  against the real lock with a slow bridge).
+
+### 11.1, completed at deploy time
+
+rp5's open inbox count — the measurement that needed a tty:
+
+```
+inbox open     1
+inbox bytes    33
+reminders      0
+```
+
+**One open item, 33 bytes.** Design D6's unbounded-`/inbox all` exposure is therefore
+*nil in practice today*: the pathological-`N` hold it prices needs a few hundred undrained
+captures, and there is one. The recommended `capture-inbox` render bound remains worth
+doing as insurance, but it is not urgent, and this number is why. (`reminders 0` also
+confirms design's "first enablement meets no backlog of stored test reminders" — the kill
+switch really did store nothing during the inert period.)
+
+### 11.3 — the flip
+
+`owner.timezone: "Europe/Amsterdam"` and `reminders.enabled: true` added to rp5's
+locally-modified `config.yaml`. One restart. **Startup did not fail** — the new
+unconditional delivery-knob validation accepted the defaults, which is the case that
+mattered, since rp5 sets none of the nine.
+
+### 11.4 — live end-to-end
+
+**On-time delivery.** `/remind +2m` → scheduled `at=…517.09`, `due_at=…637.08` (+120s
+exactly). Delivered `at=…649.56` — **12.5 s after due**, inside one 30 s poll interval and
+far inside the 300 s lateness threshold, so recorded `delivered` rather than
+`delivered-late`. Store agrees: `(1, 'delivered', 1787257637.08, None, 0)`.
+
+**Traceability** (approval-gate delta) — the trail carries both halves:
+
+```
+{"record_type":"reminder","reminder_id":1,"transition":"scheduled","initiated_by":"owner-command",...}
+{"record_type":"reminder","reminder_id":1,"transition":"delivered","initiated_by":"scheduler",...}
+```
+
+**The stale-row path** — the discriminating live test. A pending reminder was backdated
+three days (past grace **plus** horizon, so a pre-work horizon check would have retired it
+unnamed). Result: `20:29:30,298 INFO catch-up summary delivered, naming 1 reminder(s)`,
+store row `(2, 'missed', 1786998548.16, 1787257769.57, 0)`, and one `missed` audit record
+from `scheduler`. It was **named, not delivered as if current, and not silently dropped**.
+This is precisely the behaviour mutation #7 destroyed.
+
+**One tick, one instant — observable in production.** Three timestamps from that tick:
+
+| value | instant | what it is |
+|---|---|---|
+| `reported_at` | `…769.5692` | the tick's **captured** instant |
+| `missed` record `at` | `…769.5733` | audit append, ~4 ms later |
+| summary delivered (log) | `20:29:30.298` | ~730 ms later still |
+
+`reported_at` carries the instant captured at the **start** of the tick, not a fresh read
+after the send — the "a tick cannot disagree with itself" requirement, visible in real
+data. And the audit `at` falling *after* the captured instant but *before* the send
+confirms D3's append-after-commit ordering.
+
+**Audit hygiene.** Every `reminder` record carries id, due **instant**, transition,
+initiator — and no reminder text. `detail: null` on the clean delivery. `schema_version: 4`
+throughout: **no version bump**, exactly as v4 was written to allow.
+
+### 11.4 — the remaining three, confirmed live 2026-08-21
+
+| check | result |
+|---|---|
+| **`delivered-late`** — a pending reminder backdated two hours (inside grace, past the 300 s threshold) | delivered within a tick, stating its **original** due time via the shared renderer, recorded `delivered-late` |
+| **The delivered-reminder note** — a follow-up turn after a delivery | the turn carried the delimited block; Henk answered from it with no tool call, and the next turn did not repeat it (`surfaced_at` doing its job) |
+| **`/reminders` list / cancel / reinstate** | unchanged by the delivery half |
+
+That closes every live path: on-time delivery, late delivery with its rendered due time,
+grace expiry into a catch-up summary, the stale-row naming, the note, and all four owner
+commands. Every branch of the delivery state machine has now been exercised on the
+deployed host, not only in the suite.
+
+**Group 11 complete. 38/38 tasks.**
