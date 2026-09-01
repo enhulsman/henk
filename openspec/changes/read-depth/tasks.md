@@ -35,15 +35,15 @@ Probing first prevents shipping a query that returns empty and looks healthy.
 
 ## 3. The query registry as reviewable data
 
-- [ ] 3.1 Write registry-shape tests first: every entry declares backend, template, parameter domains, and renderer; the `query_name` set is exactly the six names and contains **no** rule-state query
-- [ ] 3.2 Write the publication-safety test: **no registry template contains a tailnet address, an `instance` selector, or a `server` selector** — every template, `dns_performance` included. Add a second assertion that no *rendered result* contains an `instance`, `scrapeUrl`, or `server` value
-- [ ] 3.3 Write a test comparing every declared parameter domain against the spec's literals, so the code and the binding spec cannot drift
-- [ ] 3.4 Write per-query domain tests: `container_state` **rejects `rp2` with an error, not an empty result**; `node_resource_trend` accepts it; every out-of-domain `resource`/`window` is refused
-- [ ] 3.5 Write the three-outcome test: in-domain-and-available, out-of-domain (refused), and **in-domain-but-not-derivable** each produce a distinct, distinguishable result
-- [ ] 3.6 Write tests asserting an unregistered `query_name` and every out-of-domain value are refused with **no HTTP request issued** — assert on the transport, not the return value
-- [ ] 3.7 Write the boundary test: validation holds when a value reaches the tool's execution path **bypassing any schema check**, since the schema layer's enforcement is unverified in this codebase. Adopt the same-object enum-and-dispatch idiom so advertised and enforced domains cannot diverge
-- [ ] 3.8 Write a test that every registry threshold matches `notes/backend-probe.md`, and that no threshold exists in the registry absent from that record
-- [ ] 3.9 Implement the registry, domain validator, and dispatch to satisfy 3.1–3.8
+- [x] 3.1 Write registry-shape tests first: every entry declares backend, template, parameter domains, and renderer; the `query_name` set is exactly the six names and contains **no** rule-state query
+- [x] 3.2 Write the publication-safety test: **no registry template contains a tailnet address, an `instance` selector, or a `server` selector** — every template, `dns_performance` included. Add a second assertion that no *rendered result* contains an `instance`, `scrapeUrl`, or `server` value
+- [x] 3.3 Write a test comparing every declared parameter domain against the spec's literals, so the code and the binding spec cannot drift
+- [x] 3.4 Write per-query domain tests: `container_state` **rejects `rp2` with an error, not an empty result**; `node_resource_trend` accepts it; every out-of-domain `resource`/`window` is refused
+- [x] 3.5 Write the three-outcome test: in-domain-and-available, out-of-domain (refused), and **in-domain-but-not-derivable** each produce a distinct, distinguishable result
+- [x] 3.6 Write tests asserting an unregistered `query_name` and every out-of-domain value are refused with **no HTTP request issued** — assert on the transport, not the return value
+- [x] 3.7 Write the boundary test: validation holds when a value reaches the tool's execution path **bypassing any schema check**, since the schema layer's enforcement is unverified in this codebase. Adopt the same-object enum-and-dispatch idiom so advertised and enforced domains cannot diverge
+- [x] 3.8 Write a test that every registry threshold matches `notes/backend-probe.md`, and that no threshold exists in the registry absent from that record
+- [x] 3.9 Implement the registry, domain validator, and dispatch to satisfy 3.1–3.8
 
 ## 4. `homelab_query` — the six named queries
 
