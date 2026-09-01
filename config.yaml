@@ -81,9 +81,16 @@ endpoints:
 #
 # taiga_project_allowlist pre-shapes the deferred taiga_read fast-follow; nothing
 # reads it yet (taiga_read stays unregistered until its project-id filter exists).
+#
+# docs_path_allowlist scopes the documentation corpus (homelab_docs below). Same
+# rule, same shape: entries are paths RELATIVE TO THE DOCUMENTATION ROOT, so the
+# owner writes `devices/workstation.md`, not the mount's internal prefix. Empty
+# here on purpose — the owner's membership decision lives in the deployed rp5
+# config, and an unset allowlist surfaces nothing rather than everything.
 personal_data:
   todo_note_allowlist: []
   taiga_project_allowlist: []
+  docs_path_allowlist: []
 
 # Event intake (henk-events v1.2). `enabled: false` is the rollback flag — the
 # subscriber never starts and Henk behaves exactly as v1. Topics ride the single
@@ -197,3 +204,52 @@ gate:
 # deployed config that predates this section keeps working untouched.
 audit:
   path: "/data/audit/henk-audit.jsonl"
+
+# The named-query tool (homelab_query). Ships ENABLED: it rides the tag:henk
+# egress homelab_health already uses (rp5:8080, vps:9090), so there is no host
+# provisioning to stage — no new port, no new socket, no new secret.
+#
+# There is deliberately NO key here for a PromQL expression, a metric name, a
+# label selector, or an "allow free text" escape hatch. The six query names and
+# their parameter domains are a closed, owner-reviewed registry in code, and it
+# widens only through code review. There is also no timeout key: the backends'
+# timeouts are endpoints.gatus and endpoints.prometheus above, and a second
+# source would let two tools time out at different bounds against one backend.
+homelab_query:
+  enabled: true
+  # Upper bound on the points a range query asks Prometheus for. The step is
+  # derived from the requested window and this count, so every window costs a
+  # bounded amount to render; 60 spreads 24h over ~24-minute buckets.
+  query_range_max_points: 60
+
+# The documentation-corpus tool (homelab_docs). Ships DISABLED, and that is the
+# feature: the corpus arrives as a read-only bind mount from a host-side clone
+# that must exist first (deploy key, /opt/homelab-docs, daily pull timer, stamp).
+# Enabling it before that would register a tool that can only answer "corpus
+# unavailable".
+#
+# Enabling is a deliberate THREE-key edit on rp5: `path`, the
+# `personal_data.docs_path_allowlist` above, and then this flag. Startup FAILS
+# naming both keys if `enabled` is true with no `path` — a config-value mistake
+# is caught in dev. Host state is not: a missing, empty or unstamped directory
+# still registers the tool, and every call fails honestly naming the path and the
+# condition, because an absent tool produces no honest failure at all.
+homelab_docs:
+  enabled: false
+  # Container-side path of the mounted clone. Left EMPTY here rather than filled
+  # with a plausible placeholder: Docker auto-creates a missing bind source as an
+  # empty root-owned directory, so a wrong path would search successfully and
+  # find nothing — indistinguishable from "the docs don't say".
+  path: ""
+  # How old the stamp's last PULL may be before every result carries a staleness
+  # marker. 26h against a daily timer, reusing the fleet's own BackupStale > 26h
+  # convention. Applies to the pull time ONLY: a repo nobody has pushed to for
+  # weeks is healthy, an updater that has stopped pulling is not.
+  stamp_max_age_seconds: 93600
+  # Byte cap on one returned section. Past it the result is truncated AND says
+  # so, naming the section — never silently shortened.
+  read_byte_budget: 8000
+  # How many ranked candidates one search returns. Several, because a keyword
+  # ranker misses paraphrases and the mitigation is candidates rather than a
+  # smarter matcher; bounded, because each one carries a snippet.
+  search_result_count: 5

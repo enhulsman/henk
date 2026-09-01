@@ -273,14 +273,89 @@ class PersonalDataConfig:
     """Tier-W boundary knobs: default-deny allowlists for tools backed by stores
     that mix personal and work/Anamata content (design D5).
 
-    Both default to an empty tuple → the corresponding tool surfaces **nothing**
-    (fail closed). A forgotten or fat-fingered config can only make a tool
-    unhelpfully empty, never leaky. ``taiga_project_allowlist`` is pre-shaped for
-    the deferred ``taiga_read`` fast-follow; nothing reads it yet.
+    All three default to an empty tuple → the corresponding tool surfaces
+    **nothing** (fail closed). A forgotten or fat-fingered config can only make a
+    tool unhelpfully empty, never leaky. ``taiga_project_allowlist`` is pre-shaped
+    for the deferred ``taiga_read`` fast-follow; nothing reads it yet.
+
+    ``docs_path_allowlist`` scopes the documentation corpus (read-depth D13). It
+    lives here rather than in ``homelab_docs`` for the same reason
+    ``todo_note_allowlist`` does not live in a todo section: the data axis is one
+    reviewable surface, and the corpus is covered by the *existing* personal-data
+    scoping requirement rather than claiming an exemption from it. Entries are
+    paths relative to the **documentation root**, so the owner writes
+    ``devices/workstation.md``, not the mount's internal prefix.
     """
 
     todo_note_allowlist: tuple[str, ...] = ()
     taiga_project_allowlist: tuple[str, ...] = ()
+    docs_path_allowlist: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class HomelabQueryConfig:
+    """The named-query tool's only configuration surface.
+
+    Ships **enabled**: the query half rides the `tag:henk` egress that
+    ``homelab_health`` already uses (rp5:8080, vps:9090), so it needs no host
+    provisioning, no new port, and no new secret. There is nothing to stage.
+
+    There is deliberately **no key for a query expression, a metric name, a label
+    selector, or an "allow free text" escape hatch**. The registry is the closed
+    set of owner-reviewed templates and it widens only through code review
+    (homelab-tools spec, "No free-text query path"). There is also no timeout key:
+    the two backends' timeouts are ``endpoints.gatus`` and
+    ``endpoints.prometheus``, and a second source would let two tools time out at
+    different bounds against the same backend.
+    """
+
+    enabled: bool = True
+    #: Upper bound on the points a range query asks Prometheus for, so every
+    #: supported window costs a bounded amount to render (the step is derived from
+    #: the window and this count). 60 points spreads a 24h window over ~24-minute
+    #: buckets — enough to see direction of travel, small enough that the summary
+    #: is cheap at every window.
+    query_range_max_points: int = 60
+
+
+@dataclass(frozen=True)
+class HomelabDocsConfig:
+    """The documentation-corpus tool. Defaults to **disabled**, and that is the
+    feature.
+
+    The corpus arrives as a read-only bind mount from a host-side clone that rp5
+    does not have yet: enabling this before the clone, the pull timer, and the
+    allowlist exist would register a tool that can only ever return "corpus
+    unavailable". Off is the honest state until migration steps 2-6 are done.
+
+    ``path`` has no default value on purpose — a plausible-looking default would
+    be a path that does not exist on any host, and Docker's bind auto-creation
+    turns a typo into an empty directory that reads exactly like "no match". The
+    refusal is at load: enabled with no path is a ``ConfigError``, naming both
+    keys. Host state is deliberately NOT a load error (design D11) — a missing,
+    empty, or unstamped directory registers the tool and fails honestly per call.
+
+    The path **allowlist** lives in ``personal_data`` with the other Tier-W
+    boundaries, not here.
+    """
+
+    enabled: bool = False
+    #: Container-side path of the mounted clone. Empty means "not configured".
+    path: str = ""
+    #: How old the stamp's last **pull** may be before every result carries a
+    #: staleness marker. 26h against a daily timer, reusing the fleet's own
+    #: `BackupStale > 26h` convention rather than inventing a number. Applies to
+    #: the pull time only: a repo nobody has pushed to for weeks is healthy, a
+    #: dead timer is not (design D9).
+    stamp_max_age_seconds: float = 26 * 3600.0
+    #: Byte cap on one returned section. Past it the result is truncated **and
+    #: says so** — never silently shortened. 8000 bytes is ~2k tokens, the same
+    #: per-injection bound ``store.recall_render_limit`` uses.
+    read_byte_budget: int = 8000
+    #: How many ranked candidates one search returns. Several, because the
+    #: keyword ranker misses paraphrases and the mitigation is candidates rather
+    #: than a smarter matcher (design D8); bounded, because each carries a snippet.
+    search_result_count: int = 5
 
 
 @dataclass(frozen=True)
@@ -455,6 +530,8 @@ class Config:
     store: StoreConfig = field(default_factory=StoreConfig)
     reminders: RemindersConfig = field(default_factory=RemindersConfig)
     personal_data: PersonalDataConfig = field(default_factory=PersonalDataConfig)
+    homelab_query: HomelabQueryConfig = field(default_factory=HomelabQueryConfig)
+    homelab_docs: HomelabDocsConfig = field(default_factory=HomelabDocsConfig)
     secrets: Secrets = field(default_factory=Secrets)
 
     @classmethod
@@ -602,7 +679,25 @@ class Config:
             taiga_project_allowlist=tuple(
                 pd_sec.get("taiga_project_allowlist", []) or []
             ),
+            docs_path_allowlist=tuple(pd_sec.get("docs_path_allowlist", []) or []),
         )
+
+        query_sec = raw.get("homelab_query", {}) or {}
+        homelab_query = HomelabQueryConfig(
+            enabled=bool(query_sec.get("enabled", HomelabQueryConfig.enabled)),
+            **_bounded_settings(
+                "homelab_query", query_sec, HomelabQueryConfig, _QUERY_SETTINGS
+            ),
+        )
+        docs_sec = raw.get("homelab_docs", {}) or {}
+        homelab_docs = HomelabDocsConfig(
+            enabled=bool(docs_sec.get("enabled", HomelabDocsConfig.enabled)),
+            path=str(docs_sec.get("path", HomelabDocsConfig.path) or "").strip(),
+            **_bounded_settings(
+                "homelab_docs", docs_sec, HomelabDocsConfig, _DOCS_SETTINGS
+            ),
+        )
+        _validate_read_depth_settings(homelab_query, homelab_docs)
 
         config = cls(
             owner=OwnerConfig(
@@ -669,6 +764,8 @@ class Config:
             store=store,
             reminders=reminders,
             personal_data=personal_data,
+            homelab_query=homelab_query,
+            homelab_docs=homelab_docs,
             secrets=Secrets.from_env(env),
         )
         # Post-assembly on purpose: the two values it relates deliberately live in
@@ -750,6 +847,99 @@ def _validate_delivery_settings(reminders: "RemindersConfig") -> None:
             f"({reminders.retry_floor_seconds!r}): at or below the floor, the first "
             "attempted summary's post-send write already finds every named row past "
             "the horizon, turning the report bound into a one-attempt drop."
+        )
+
+
+#: The read-depth bounds and the coercion each takes, in the same table-driven
+#: shape as ``_DELIVERY_SETTINGS`` above: the read path and the validation both
+#: iterate these, so a knob added to one is present in the other by construction,
+#: and the default is read from the dataclass rather than re-typed into the
+#: builder. Both matter here because rp5's ``config.yaml`` is skip-worktree'd and
+#: will never carry a new key — the loader's fallback IS the deployed value.
+_QUERY_SETTINGS: tuple[tuple[str, Any], ...] = (
+    ("query_range_max_points", int),
+)
+
+_DOCS_SETTINGS: tuple[tuple[str, Any], ...] = (
+    ("stamp_max_age_seconds", float),
+    ("read_byte_budget", int),
+    ("search_result_count", int),
+)
+
+#: A range summary needs at least a first and a last sample; with one point,
+#: first/last/min/max collapse and "direction of travel" is unanswerable.
+MIN_RANGE_POINTS = 2
+
+
+def _bounded_settings(
+    section: str,
+    sec: Mapping[str, Any],
+    cls: type,
+    table: tuple[tuple[str, Any], ...],
+) -> dict[str, Any]:
+    """Read a section's bounded values, coerced, defaulting to the dataclass."""
+    values: dict[str, Any] = {}
+    for name, cast in table:
+        raw = sec.get(name, getattr(cls, name))
+        try:
+            values[name] = cast(raw)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"{section}.{name} must be a number; got {raw!r}"
+            ) from exc
+    return values
+
+
+def _validate_read_depth_settings(
+    homelab_query: "HomelabQueryConfig", homelab_docs: "HomelabDocsConfig"
+) -> None:
+    """Refuse a read-depth configuration that cannot mean what it says.
+
+    Validated unconditionally, NOT only for an enabled capability: a bad value
+    that surfaces the moment someone flips ``enabled`` surfaces on the host, over
+    SSH, at the worst possible moment. Every message names the setting for the
+    same reason — the error text is all the operator gets.
+
+    Positivity is not a formality for any of these four. A zero byte budget serves
+    every section empty; a zero result count searches and surfaces nothing while
+    reporting success; a zero staleness bound marks even a just-completed pull
+    stale, training the owner to ignore the marker; a zero point count makes the
+    range step a division by zero at the first trend query.
+
+    The corpus path is the one *conditional* refusal (design D11 layer 1): enabled
+    with no path is a config error and kills startup, because it is a pure
+    config-value mistake, deterministic and caught in dev. Host state — a missing,
+    empty, or unstamped directory — is deliberately not checked here: that
+    registers the tool and fails honestly per call, because an absent tool
+    produces no honest failure at all.
+    """
+    for section, obj, table in (
+        ("homelab_query", homelab_query, _QUERY_SETTINGS),
+        ("homelab_docs", homelab_docs, _DOCS_SETTINGS),
+    ):
+        for name, _cast in table:
+            value = getattr(obj, name)
+            if value <= 0:
+                raise ConfigError(
+                    f"{section}.{name} must be strictly positive; got {value!r}"
+                )
+    if homelab_query.query_range_max_points < MIN_RANGE_POINTS:
+        raise ConfigError(
+            "homelab_query.query_range_max_points "
+            f"({homelab_query.query_range_max_points!r}) must be at least "
+            f"{MIN_RANGE_POINTS}: a range query returns a first/last/min/max "
+            "summary and a direction of travel, and a single point answers none "
+            "of those."
+        )
+    if homelab_docs.enabled and not homelab_docs.path:
+        raise ConfigError(
+            "homelab_docs.enabled is true but homelab_docs.path is not set. The "
+            "corpus reaches the container as a read-only bind mount and there is "
+            "deliberately no default path: a plausible-looking one would name a "
+            "directory no host has, and Docker's bind auto-creation would turn a "
+            "typo into an empty directory that reads exactly like 'no match'. "
+            "Set homelab_docs.path to the mounted corpus directory, or set "
+            "homelab_docs.enabled to false."
         )
 
 

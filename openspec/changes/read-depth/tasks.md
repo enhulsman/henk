@@ -26,12 +26,12 @@ Probing first prevents shipping a query that returns empty and looks healthy.
 
 ## 2. Config surface
 
-- [ ] 2.1 Write config tests first: every new key resolves to its safe default when absent from the config mapping, exercised through `Config.from_dict` with an empty section. The real trap is a `from_dict` builder that never reads the key at all — assert against that, not against dataclass attributes
-- [ ] 2.2 Add a test asserting the corpus tool defaults to disabled and the query tool defaults to enabled, so a later edit cannot silently flip either
-- [ ] 2.3 Add config for: query enable flag, `query_range_max_points` (default 60), corpus enable flag, corpus directory path, **corpus path allowlist**, stamp staleness bound (default 26h), read byte budget, search result count. State a default for every one. **Reuse** the existing `endpoints.gatus` / `endpoints.prometheus` timeouts — do not add a timeout key
-- [ ] 2.4 Follow the in-repo pattern for defaults rather than duplicating literals across the dataclass and the builder
-- [ ] 2.5 Validate the staleness bound, byte budget, and result count are positive; reject non-positive values at load time with a named error
-- [ ] 2.6 Assert **no config key holds an address** — `dns_performance`'s mapping is derived, not configured
+- [x] 2.1 Write config tests first: every new key resolves to its safe default when absent from the config mapping, exercised through `Config.from_dict` with an empty section. The real trap is a `from_dict` builder that never reads the key at all — assert against that, not against dataclass attributes
+- [x] 2.2 Add a test asserting the corpus tool defaults to disabled and the query tool defaults to enabled, so a later edit cannot silently flip either
+- [x] 2.3 Add config for: query enable flag, `query_range_max_points` (default 60), corpus enable flag, corpus directory path, **corpus path allowlist**, stamp staleness bound (default 26h), read byte budget, search result count. State a default for every one. **Reuse** the existing `endpoints.gatus` / `endpoints.prometheus` timeouts — do not add a timeout key
+- [x] 2.4 Follow the in-repo pattern for defaults rather than duplicating literals across the dataclass and the builder
+- [x] 2.5 Validate the staleness bound, byte budget, and result count are positive; reject non-positive values at load time with a named error
+- [x] 2.6 Assert **no config key holds an address** — `dns_performance`'s mapping is derived, not configured
 
 ## 3. The query registry as reviewable data
 
