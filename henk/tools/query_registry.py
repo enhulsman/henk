@@ -220,6 +220,25 @@ class Threshold:
     is_trigger: bool = True
     note: str = ""
 
+    def crossed_by(self, reading: float) -> bool:
+        """Whether one reading sits on the wrong side of this bar.
+
+        THE predicate, shared by ``node_resource_trend``'s renderer and by
+        ``homelab_health``. Two hand-written copies of ``>``/``<`` around one bar
+        is precisely how the two tools would come to disagree about the same
+        measurement — the failure the spec's "cannot disagree" scenario names —
+        and the disk case makes it concrete: the bar is percent *free* below a
+        floor, so a copy that assumed "above" would report it exactly backwards.
+        """
+        if self.direction == "above":
+            return reading > self.value
+        return reading < self.value
+
+    def describe(self) -> str:
+        """`memory >75.00 percent used (High memory usage)` — the bar, sourced."""
+        arrow = ">" if self.direction == "above" else "<"
+        return f"{arrow}{self.value:.2f} {self.unit} ({self.source})"
+
 
 @dataclass(frozen=True)
 class QueryParameter:

@@ -232,10 +232,8 @@ def _threshold_line(plan: "QueryPlan", key: str, summary: _Summary) -> str | Non
     bar = plan.entry.thresholds.get(key)
     if bar is None:
         return None
-    crossed = (
-        summary.maximum > bar.value if bar.direction == "above" else summary.minimum < bar.value
-    )
     reading = summary.maximum if bar.direction == "above" else summary.minimum
+    crossed = bar.crossed_by(reading)
     verdict = (
         f"the {'highest' if bar.direction == 'above' else 'lowest'} reading "
         f"{_number(reading)} {'crossed' if crossed else 'stayed clear of'} it"
