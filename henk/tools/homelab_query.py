@@ -33,13 +33,26 @@ from henk.tools.query_registry import (
     QUERY_NAMES,
     QUERY_REGISTRY,
     QueryBackend,
+    QueryEntry,
     QueryOutcome,
     QueryPlan,
     QueryRefused,
     WINDOW_SECONDS,
     plan_query,
     range_step_seconds,
+    resolve_endpoint_key,
 )
+
+#: Where the Gatus endpoint key set is discovered from. The bulk statuses route
+#: is the only one that enumerates keys.
+ENDPOINT_DISCOVERY_ROUTE = "/api/v1/endpoints/statuses"
+
+#: How long a discovered key set is trusted before it is re-read. Not a config
+#: key: the deployed `config.yaml` is skip-worktree'd and cannot carry new keys,
+#: and a lookup miss refreshes regardless of the TTL — so the interval only
+#: bounds how long a *deleted* endpoint stays queryable, never how long a *new*
+#: one stays invisible.
+DEFAULT_DISCOVERY_TTL_SECONDS = 300.0
 
 logger = logging.getLogger("henk.tools.homelab_query")
 
@@ -117,6 +130,7 @@ class HomelabQueryTool(Tool):
         prometheus_timeout: float = 10.0,
         max_points: int = 60,
         discovered_endpoints: tuple[str, ...] | None = None,
+        endpoint_discovery_ttl: float = DEFAULT_DISCOVERY_TTL_SECONDS,
         clock=time.time,
     ) -> None:
         self._client = client
@@ -125,16 +139,30 @@ class HomelabQueryTool(Tool):
         self._gatus_timeout = gatus_timeout
         self._prometheus_timeout = prometheus_timeout
         self._max_points = max_points
-        #: §4 replaces this with first-use discovery, memoized with a TTL and a
-        #: refresh on lookup miss. ``None`` means discovery has not run, and
-        #: every `endpoint_history` call fails closed until it has.
-        self._discovered_endpoints = discovered_endpoints
+        #: The discovered Gatus key set, memoized. Seeding it here is a test and
+        #: startup seam only — nothing fetches during construction, which
+        #: `build_runtime`'s "nothing network-facing is opened here" contract
+        #: requires. ``None`` means discovery has not run yet.
+        self._discovered_endpoints = (
+            tuple(discovered_endpoints) if discovered_endpoints is not None else None
+        )
+        self._discovery_ttl = endpoint_discovery_ttl
         self._clock = clock
+        self._discovered_at = clock() if discovered_endpoints is not None else None
 
     async def _run(self, **arguments: Any) -> ToolResult:  # type: ignore[override]
         query_name = arguments.pop("query_name", None)
+        entry = QUERY_REGISTRY.get(query_name) if isinstance(query_name, str) else None
+
+        discovered: dict[str, tuple[str, ...]] = {}
+        if entry is not None and any(p.discovered for p in entry.parameters):
+            keys, error = await self._resolve_discovered(entry, arguments)
+            if error is not None:
+                return ToolResult.failure(error)
+            discovered["endpoint"] = keys or ()
+
         try:
-            plan = plan_query(query_name, arguments, discovered=self._discovered())
+            plan = plan_query(query_name, arguments, discovered=discovered)
         except QueryRefused as refusal:
             return ToolResult.failure(str(refusal))
         if plan.outcome is QueryOutcome.NOT_DERIVABLE:
@@ -146,11 +174,87 @@ class HomelabQueryTool(Tool):
             return ToolResult.success(plan.entry.renderer(plan, payloads))
         except NotImplementedError as exc:
             return ToolResult.failure(f"{plan.entry.name}: {exc}")
+        except Exception:  # pragma: no cover - defensive
+            # A shape nobody anticipated must not crash the turn, and must not
+            # produce a partial result presented as a whole one.
+            logger.exception("rendering %s failed", plan.entry.name)
+            return ToolResult.failure(
+                f"{plan.entry.name}: the backend answered, but its response could "
+                "not be summarised. No partial result is returned."
+            )
 
-    def _discovered(self) -> dict[str, tuple[str, ...]]:
-        if self._discovered_endpoints is None:
-            return {}
-        return {"endpoint": tuple(self._discovered_endpoints)}
+    # --- Discovered domains -------------------------------------------------
+
+    async def _resolve_discovered(
+        self, entry: QueryEntry, arguments: dict[str, Any]
+    ) -> tuple[tuple[str, ...] | None, str | None]:
+        """Discover the Gatus key set and resolve the supplied value into it.
+
+        Two things happen here and both are part of the closed-set boundary. The
+        key set is **discovered at first use** rather than at construction, so a
+        rename picks up without a restart and a discovery outage fails one
+        invocation instead of permanently disabling the query. And the supplied
+        value is **resolved against that set** — an arriving Gatus event names
+        `{group}/{endpoint}` while the queryable key is the composed, sanitized
+        form, so without this step the agent would be guessing at a key.
+
+        A miss refreshes once. Anything that still does not resolve is left as
+        supplied, so `plan_query` refuses it by name: this function never invents
+        a key and never widens the set.
+        """
+        keys, error = await self._endpoint_keys()
+        if error is not None:
+            return None, error
+        supplied = arguments.get("endpoint")
+        if not isinstance(supplied, str) or supplied in (keys or ()):
+            return keys, None
+        resolved = resolve_endpoint_key(supplied, keys or ())
+        if resolved is None:
+            keys, error = await self._endpoint_keys(refresh=True)
+            if error is not None:
+                return None, error
+            resolved = resolve_endpoint_key(supplied, keys or ())
+        if resolved is not None:
+            arguments["endpoint"] = resolved
+        return keys, None
+
+    async def _endpoint_keys(
+        self, *, refresh: bool = False
+    ) -> tuple[tuple[str, ...] | None, str | None]:
+        fresh = (
+            self._discovered_endpoints is not None
+            and self._discovered_at is not None
+            and (self._clock() - self._discovered_at) < self._discovery_ttl
+        )
+        if fresh and not refresh:
+            return self._discovered_endpoints, None
+        payload, error = await self._get(
+            f"{self._gatus_url}{ENDPOINT_DISCOVERY_ROUTE}",
+            None,
+            self._gatus_timeout,
+            "Gatus",
+        )
+        if error is not None:
+            # Fail closed, always: a discovery outage must refuse the invocation
+            # rather than fall back to a stale set or to treating the argument as
+            # free text.
+            return None, (
+                f"Gatus endpoint discovery failed, so no endpoint key can be "
+                f"validated and none is passed through: {error}"
+            )
+        if not isinstance(payload, list):
+            return None, (
+                "Gatus endpoint discovery returned an unexpected shape, so no "
+                "endpoint key can be validated and none is passed through."
+            )
+        keys = tuple(
+            entry["key"]
+            for entry in payload
+            if isinstance(entry, Mapping) and isinstance(entry.get("key"), str)
+        )
+        self._discovered_endpoints = keys
+        self._discovered_at = self._clock()
+        return keys, None
 
     async def _fetch(
         self, plan: QueryPlan
@@ -158,7 +262,7 @@ class HomelabQueryTool(Tool):
         """Issue the planned requests. Never fabricates on failure."""
         payloads: dict[str, Any] = {}
         for role, expression in plan.expressions.items():
-            url, params = self._prometheus_request(plan, expression)
+            url, params = self._prometheus_request(plan, expression, role)
             payload, error = await self._get(
                 url, params, self._prometheus_timeout, "Prometheus"
             )
@@ -184,9 +288,11 @@ class HomelabQueryTool(Tool):
         return payloads, None
 
     def _prometheus_request(
-        self, plan: QueryPlan, expression: str
+        self, plan: QueryPlan, expression: str, role: str = ""
     ) -> tuple[str, dict[str, Any]]:
-        if not plan.range_query or plan.window is None:
+        roles = plan.entry.range_roles
+        is_range = plan.range_query and (roles is None or role in roles)
+        if not is_range or plan.window is None:
             return f"{self._prometheus_url}/api/v1/query", {"query": expression}
         step = range_step_seconds(plan.window, self._max_points)
         end = self._clock()

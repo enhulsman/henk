@@ -42,37 +42,30 @@ configuration key, debug flag, or code path admits one.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 from urllib.parse import quote
 
 from henk.tools import query_renderers as renderers
 
+# The projection rule and the node/job maps live in `query_projection` because
+# the renderers need them too and neither module may import the other. They are
+# re-exported here so the registry stays the one place a reviewer reads them from.
+from henk.tools.query_projection import (  # noqa: F401  (deliberate re-export)
+    ADDRESS_BEARING_LABELS,
+    CADVISOR_JOBS,
+    NODE_EXPORTER_JOBS,
+    NODE_FOR_JOB,
+    describe_target,
+    friendly_target,
+    is_address_shaped,
+    project_labels,
+    scrub_addresses,
+)
+
 # --- Measured constants (backend-probe.md) --------------------------------
-
-#: Node enum value -> node-exporter job label (record 1.3). The registry stores
-#: job names because they carry no address; `instance` labels do.
-NODE_EXPORTER_JOBS: Mapping[str, str] = {
-    "rp5": "node-exporter-pi5",
-    "vps": "node-exporter-vps",
-    "rp2": "node-exporter-pi2",
-}
-
-#: Node enum value -> cadvisor job label. **rp2 is absent on purpose**: it runs
-#: no cadvisor, which is why `container_state`'s node domain is narrower.
-CADVISOR_JOBS: Mapping[str, str] = {
-    "rp5": "cadvisor-pi5",
-    "vps": "cadvisor-vps",
-}
-
-#: The reverse map, so a result can name a target by its friendly enum value.
-#: Jobs with no node of their own (`adguard-exporter`, `pushgateway`) are absent
-#: and are named by their job label instead.
-NODE_FOR_JOB: Mapping[str, str] = {
-    **{job: node for node, job in NODE_EXPORTER_JOBS.items()},
-    **{job: node for node, job in CADVISOR_JOBS.items()},
-}
 
 #: Prometheus's windows. All four sit inside the measured 15-day retention.
 PROMETHEUS_WINDOWS: tuple[str, ...] = ("15m", "1h", "6h", "24h")
@@ -129,36 +122,54 @@ FRESHNESS_TIMESTAMP_METRICS: tuple[str, ...] = (
     "obsidian_backup_verify_last_run_timestamp",
 )
 
-#: Labels and fields that carry an address and must never be rendered. Six of the
-#: seven were measured on live responses; `upstream` comes from the AdGuard
-#: metric this registry deliberately does not use. `server` is listed because it
-#: LOOKS like a safe discriminator and is not: it is a URL containing a tailnet
-#: address.
-ADDRESS_BEARING_LABELS: frozenset[str] = frozenset(
-    {
-        "instance",
-        "server",
-        "scrapeUrl",
-        "globalUrl",
-        "__address__",
-        "hostname",
-        "upstream",
-    }
-)
+# --- Gatus keys: composed the way the deployed instance composes them ------
 
-_ADDRESS_BEARING_LOWER = frozenset(label.lower() for label in ADDRESS_BEARING_LABELS)
+#: Characters a Gatus key may hold, measured across all 19 live keys: lowercase
+#: letters, digits, `-` and the single `_` that joins group to name.
+_GATUS_UNSAFE = re.compile(r"[^a-z0-9-]")
 
 
-def _is_address_shaped(value: str) -> bool:
-    """A value that looks like an address, whatever label it arrives under.
+def sanitize_gatus_segment(segment: str) -> str:
+    """Lowercase, then substitute 1:1 — the measured key transformation.
 
-    The name-based denial above only catches labels someone enumerated; a new
-    exporter label is exactly how the next address would reach a result.
+    Verified on all 19 deployed endpoints: the key's length always equals the
+    length of `lower(group) + "_" + lower(name)`, and the only substitutions
+    observed were ` ` and `.` to `-`. So this is a character map, never a
+    deletion — a deletion would change the length and stop matching.
     """
-    if "://" in value:
-        return True
-    parts = value.split(":", 1)[0].split(".")
-    return len(parts) == 4 and all(part.isdigit() for part in parts)
+    return _GATUS_UNSAFE.sub("-", segment.strip().lower())
+
+
+def compose_gatus_key(group: str, name: str) -> str:
+    """`sanitize(lower(group)) + "_" + sanitize(lower(name))`."""
+    return f"{sanitize_gatus_segment(group)}_{sanitize_gatus_segment(name)}"
+
+
+def resolve_endpoint_key(supplied: str, known: Iterable[str]) -> str | None:
+    """Resolve an event's identifying text against the discovered key set.
+
+    A Gatus event's title is ``Gatus: {group}/{endpoint}`` while the queryable
+    key is the composed, sanitized form — two different shapes for one endpoint.
+    This is the specified derivation, so the agent never constructs a key by
+    guesswork; and every branch ends in a **membership test against the
+    discovered set**, so an unresolvable name yields ``None`` rather than an
+    invented key.
+    """
+    if not isinstance(supplied, str):
+        return None
+    keys = tuple(known)
+    candidates = [supplied.strip()]
+    if candidates[0].lower().startswith("gatus:"):
+        candidates.append(candidates[0].split(":", 1)[1].strip())
+    for candidate in list(candidates):
+        if "/" in candidate:
+            group, _, name = candidate.partition("/")
+            candidates.append(compose_gatus_key(group, name))
+        candidates.append(sanitize_gatus_segment(candidate))
+    for candidate in candidates:
+        if candidate in keys:
+            return candidate
+    return None
 
 
 class QueryBackend(str, Enum):
@@ -265,6 +276,12 @@ class QueryEntry:
     #: True for the two entries that issue Prometheus **range** queries and
     #: return a bounded summary rather than the sample series.
     range_query: bool = False
+    #: Which expression roles are the range queries. ``None`` means all of them.
+    #: `dns_performance` needs the distinction: its measurement is a range, but
+    #: the job-labelled series it derives the node mapping from is an instant
+    #: query — asking for a matrix there would pay for a window of samples to
+    #: read one label set.
+    range_roles: frozenset[str] | None = None
     #: The parameter whose value selects one expression from ``expressions``.
     select_by: str | None = None
     #: Enum value -> job label for this entry's `node` parameter.
@@ -395,17 +412,17 @@ _REGISTRY: dict[str, QueryEntry] = {
                 note="NOT the rule's trigger. Fullness and pressure are "
                 "anti-correlated on this fleet — the vps sits chronically at "
                 "64-90% full while a Pi at 6% fullness hit 128 pages/s — so a "
-                "fullness figure below this bar is normal, not an approaching "
-                "incident.",
+                "fullness figure below this bar is normal here rather than an "
+                "incident in the making.",
             ),
             "memory": Threshold(
                 75.0,
                 "percent used",
                 "above",
                 "High memory usage",
-                note="delivers to Discord, not to henk-events. Three memory bars "
-                "are live at once (Grafana 75, Prometheus-native 90, "
-                "homelab_health's constant 90); 75 is the one that alerts.",
+                note="delivers to Discord, not to henk-events. The "
+                "Prometheus-native rule over the same expression reads 90 and "
+                "delivers nowhere, so 75 is the bar that actually alerts.",
             ),
         },
         range_query=True,
@@ -572,6 +589,7 @@ _REGISTRY: dict[str, QueryEntry] = {
         # magnitude on two of three devices, with the ordering inverted.
         baselines={"rp5": 2.40, "vps": 2.74, "rp2": 74.72},
         range_query=True,
+        range_roles=frozenset({"series"}),
         derives_node_mapping=True,
         caveats=(
             "This metric is AdGuard's own rolling average over its internal "
@@ -741,40 +759,37 @@ def plan_query(
     )
 
 
-# --- Projection: results name jobs, never addresses ------------------------
+def named_container_expression(
+    node: str, container: str, *, known: Iterable[str]
+) -> str:
+    """The `or vector()` form for one named container, from a discovered name.
 
+    Two closed sets, not one. The node comes from `container_state`'s own domain,
+    and the container name comes from ``known`` — the names the query's **own
+    result set** carried. Model free text can reach neither, so this is a bound
+    parameter like any other rather than a hole in the no-free-text rule.
 
-def project_labels(labels: Mapping[str, str]) -> dict[str, str]:
-    """Drop every address-bearing label from a backend's own label set.
-
-    Two filters, because either alone leaks. The name denylist catches the six
-    labels measured on live responses; the value-shape check catches the label
-    nobody has seen yet, which is how the next address would arrive.
+    The guard itself exists because cadvisor drops a container's series entirely
+    when it stops, so a bare selector answers "no series" for the exact container
+    the owner is asking about. This is the fleet's own idiom — `MollySocketLiveness`
+    and `DawarichDumpStale` both use it.
     """
-    projected: dict[str, str] = {}
-    for name, value in labels.items():
-        if name.startswith("__"):
-            continue
-        if name.lower() in _ADDRESS_BEARING_LOWER:
-            continue
-        if isinstance(value, str) and _is_address_shaped(value):
-            continue
-        projected[name] = value
-    return projected
-
-
-def friendly_target(job: str) -> str:
-    """The node enum value for a job, or the job label when it has no node.
-
-    `adguard-exporter` and `pushgateway` have no node of their own, so they are
-    named by their job — which is still address-free.
-    """
-    return NODE_FOR_JOB.get(job, job)
-
-
-def describe_target(job: str, labels: Mapping[str, str] | None = None) -> str:
-    """Name a target by its friendly value, its job, and its safe labels."""
-    projected = project_labels(labels or {})
-    projected.pop("job", None)
-    parts = [f"job={job}"] + [f"{k}={v}" for k, v in sorted(projected.items())]
-    return f"{friendly_target(job)} ({', '.join(parts)})"
+    job = CADVISOR_JOBS.get(node)
+    if job is None:
+        raise QueryRefused(
+            f"container_state does not accept node={node!r}: it is outside this "
+            f"query's domain, which is {', '.join(CADVISOR_JOBS)}. No request "
+            "was issued."
+        )
+    if container not in tuple(known):
+        raise QueryRefused(
+            f"{container!r} is not one of the containers this query reported, so "
+            "it cannot be named in a follow-up expression. Container names come "
+            "from the query's own result set, never from free text. No request "
+            "was issued."
+        )
+    return _fill(
+        QUERY_REGISTRY["container_state"].named_container_template,
+        {"job": job, "container": container},
+        encode=False,
+    )

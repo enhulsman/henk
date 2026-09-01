@@ -1,9 +1,11 @@
-# Apply decisions — `read-depth` §2 (config surface) and §3 (query registry)
+# Apply decisions — `read-depth` §2 (config), §3 (registry), §4 (the six queries)
 
-**Applied:** 2026-09-02. Task groups §2 (2.1–2.6) and §3 (3.1–3.9).
+**Applied:** 2026-09-02. Task groups §2 (2.1–2.6), §3 (3.1–3.9) and §4 (4.1–4.11).
 Baseline before this work: **1503 passed, 12 deselected**. After §2: **1544**.
 After §3: **1662 passed, 12 deselected** (+41 config tests, +118 registry and
-dispatch tests).
+dispatch tests). After §4: **1731 passed, 12 deselected** (+69 renderer,
+discovery and honest-failure tests; three §3 dispatch tests were rewritten rather
+than added to — see §4's "Tests changed, not weakened").
 
 Standing rule for this change, honoured here: every number and every name that
 reaches the registry comes from `notes/backend-probe.md`, and nothing is
@@ -190,3 +192,146 @@ evidence.
 M10 is the one worth keeping in view: a mutation that *looks* like a defect and
 is not can leave a test looking stronger than it is. The identity property does
 hold — it just needed a mutation that actually breaks it.
+
+
+---
+
+## §4 — The six named queries and their renderers
+
+`henk/tools/query_renderers.py` holds the six summaries; `henk/tools/
+query_projection.py` is new and holds the projection rule; `henk/tools/
+homelab_query.py` gained first-use Gatus discovery and event-to-argument
+resolution. The tool is still **not registered** — that is §7 — so
+`henk/tools/__init__.py` is untouched and the deployed toolset is unchanged.
+
+### The projection rule moved to its own module
+
+`query_registry` imports `query_renderers` to bind each entry's renderer, so a
+renderer importing the registry back is a circular import that fails at load.
+Rather than deferring imports inside six functions, the shared primitives —
+node/job maps, `project_labels`, `describe_target`, `friendly_target`,
+`scrub_addresses` — now live in `query_projection`, which neither imports. The
+registry **re-exports** every one of them, so its public surface and every
+existing test import are unchanged.
+
+### `scrub_addresses`: the projection rule had a hole in free text
+
+The spec requires `scrape_targets` to surface each down target's `lastError`,
+and the live shape of that field is
+`Get "http://<addr>:9100/metrics": dial tcp <addr>: connect: connection refused`.
+A projection that filtered only *labels* would therefore publish an address in
+the one field the owner most wants to read — and dropping the field instead
+would lose the answer. So backend-authored free text (scrape errors, Gatus
+condition strings, container names) is scrubbed: URLs, bare IPv4 with optional
+port, and `*.ts.net` hosts are replaced with `<address redacted>`; text carrying
+no address comes back byte-identical. This was not in the task text; it is the
+same requirement applied to a surface the task text did not name.
+
+### Runtime empties land on the third outcome (§3 decision 7's other half)
+
+Every renderer maps an empty in-domain response to "could not be derived", with a
+message that names the condition and says explicitly that it is neither a reading
+of zero nor a rejection. So the two holes the registry short-circuits from the
+probe record (`temperature` on the vps, and `container_state`'s health column on
+rp5) and the holes only runtime can discover are the same outcome to the reader.
+
+### `dns_performance`'s two underivable conditions are kept apart
+
+"rp2's node-exporter series are absent" and "rp2 reports, but no AdGuard series
+carries its host" are both not-derivable, and the owner acts differently on each
+— the first sends them to the host, the second to the exporter's configuration.
+Mutation M24 showed the two branches' messages were interchangeable; both are now
+pinned by their own test.
+
+### Windows, steps, and which roles are range queries
+
+`QueryEntry` gained `range_roles`. `dns_performance` issues a **range** query for
+its measurement and an **instant** query for the job-labelled series it derives
+the node mapping from; without the distinction the mapping query would pay for a
+window of samples to read one label set.
+
+## §4 — Decisions made alone
+
+10. **The `endpoint` argument accepts an event's identifying text, not only a
+    key.** The spec requires the event-to-argument derivation to be *specified*
+    rather than inferred. It is implemented as `resolve_endpoint_key`: strip a
+    `Gatus:` prefix, split `{group}/{endpoint}`, compose
+    `sanitize(lower(group)) + "_" + sanitize(lower(name))` — the measured 1:1
+    character substitution — and then **test membership in the discovered set**.
+    Every branch ends in that membership test, so this widens what the agent may
+    *say* without widening what the tool may *reach*: an unresolvable name is
+    refused by name and no invented key is ever requested.
+
+11. **Discovery TTL is a constructor default (300 s), not a config key.** Task
+    2.3 fixed the config surface and rp5's `config.yaml` is skip-worktree'd. The
+    TTL only bounds how long a *deleted* endpoint stays queryable — a refresh on
+    lookup miss already makes a *new* one queryable immediately — so it is not a
+    value the owner needs to reach.
+
+12. **Discovery failure fails closed even when a key set is already in memory.**
+    The spec's requirement is about the *invocation*. Serving a remembered set
+    would answer from a snapshot of a backend that is currently unreachable, and
+    the whole reason the domain is discovered is that the owner edits it by hand.
+    Mutation M28 confirmed this was untested until a test was added for it.
+
+13. **`named_container_expression` is exercised by tests but not yet called by
+    the tool.** v1 takes no container parameter, so the spec's "a named container
+    absent from the backend still returns a reading" would otherwise be vacuous.
+    The helper takes its container name from **the query's own result set**
+    (`known=`), never from model free text, so it is a bound parameter rather
+    than a hole in the no-free-text rule. Wiring a second round trip into
+    `container_state` would be a design change, not a §4 one.
+
+14. **Ages are derived from Prometheus's own evaluation timestamp**, not from the
+    local clock. It is the correct instant for the sample, it needs no clock
+    injection into the renderers, and it is what makes the frozen-writer test
+    real: the raw timestamp stands still while the evaluation time advances.
+
+15. **The memory threshold's note no longer cites `homelab_health`'s constant.**
+    It said "Grafana 75, Prometheus-native 90, homelab_health's constant 90" — a
+    claim §10 is about to invalidate. It now names only the native rule, which
+    stays true after §10 lands. The `swap_used` note lost the phrase "not an
+    approaching incident" for a phrasing that does not put the forbidden framing
+    into the rendered text at all.
+
+16. **The `freshness_check` widening stays a gap.** Record 1.4's six accepted
+    gaps (the `*_errors_total` / `*_failed_total` / `*_duration_seconds` /
+    `*_rows_total` rules) are all inside the metric families `freshness_check`
+    already selects, so carrying each pipeline's error counter beside its
+    timestamp would take rule coverage to 23 of 23 with no new query, parameter
+    or backend call. **Not implemented here**: the spec delta binds
+    `freshness_check` to raw timestamps and derived ages, and widening its
+    projection is a spec question. Recorded as the follow-up.
+
+## §4 — Tests changed, not weakened
+
+Three §3 tests in `tests/test_query_dispatch.py` were written against a stubbed
+seam that §4 replaced, and were rewritten rather than deleted:
+
+| test | before | after |
+|---|---|---|
+| `..._fails_closed_when_discovery_has_not_run` | "discovery has not run" was reachable because nothing ever discovered | discovery is real, so the reachable state is a discovery **failure**; the test now 503s the discovery route and asserts no key reaches a backend route |
+| `..._refuses_an_undiscovered_key_with_no_request` | asserted **no** request at all | a miss refreshes once — that is what makes a rename queryable — so it now asserts no request **for that key**, which is what the spec says |
+| `..._reaches_the_backend_and_awaits_its_renderer` | pinned the "renderer not implemented" failure | asserts the accepted query renders a summary naming its target |
+
+## §4 — Mutations
+
+| # | mutation | outcome |
+|---|---|---|
+| M20 | `project_labels`' address-bearing **name** denylist disabled | **SURVIVED** — the value-shape filter caught every fixture, so the name filter was untested. A fixture whose `instance` is a MagicDNS-style host (not address-shaped) was added; re-run as M20b, **caught** |
+| M21 | two series rendered as one figure (multiplicity branch removed) | **caught** |
+| M22 | "since when" taken from `results` instead of `events` | **caught** — 2 failures |
+| M23 | a duration invented for a target never up in the window | **caught** |
+| M24 | `dns_performance`'s node-host derivation dropped | **SURVIVED twice** — the query still fell through to the *other* underivable branch, whose message was interchangeable with the first. The two diagnoses are now pinned separately; re-run as M24c, **caught** |
+| M25 | `lastError` no longer scrubbed | **caught** — a placeholder address reached the rendered result |
+| M26 | freshness age computed from a fixed now, so a frozen writer's age stops growing | **caught** |
+| M27 | an empty runtime response rendered as a measurement rather than as not-derivable | **caught** |
+| M28 | discovery failure serves the remembered key set instead of failing closed | **SURVIVED** — every discovery test started from an empty cache, so the fallback path was unreached. A stale-cache-plus-failed-refresh test was added; re-run as M28b, **caught** |
+
+Three survivors out of nine, and all three were the same shape: a defence that
+**another** defence happened to cover for every fixture in the suite. M20 (name
+denylist behind value-shape), M24 (one underivable branch behind another) and M28
+(fail-closed behind an empty cache) were each invisible until a fixture existed
+that only that defence could catch. §3's M10 was the same lesson from the other
+direction, and it is worth stating plainly: a mutation that survives is either a
+missing test or a redundant mechanism, and telling those two apart is the work.

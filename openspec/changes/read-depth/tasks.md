@@ -16,13 +16,13 @@
 
 Probing first prevents shipping a query that returns empty and looks healthy.
 
-- [ ] 1.1 Probe the deployed Gatus for its per-endpoint status route **and its uptime-window vocabulary**; resolve `APPLY-RESOLVED:gatus-window`. Record the working route, or that only the bulk `/api/v1/endpoints/statuses` route exists and the in-process filter fallback is required
-- [ ] 1.2 Enumerate `/api/v1/label/__name__/values` for the `homelab_backup_*`, `homelab_dump_*`, `health_etl_*`, and `obsidian_backup_verify_*` families; record the exact metric names `freshness_check` will select
-- [ ] 1.3 Confirm the `job` label values for **all six** jobs (three node-exporter, two cadvisor, one adguard-exporter) against the live Prometheus, and confirm which are expected to yield exactly one series
-- [ ] 1.4 **Enumerate all 23 native Prometheus rules** and map each to the query that measures its input, or record it as an accepted gap. Coverage asserted from an un-enumerated rule set is not evidence — this is the only artifact that would catch a rule family nobody has considered
-- [ ] 1.5 Pin every threshold: enumerate each Henk-folder Grafana rule's **live expression and threshold** from the provisioning artifact, resolving `APPLY-RESOLVED:memory-bar`. Record alongside 1.4's mapping
-- [ ] 1.6 Pin `dns_performance`: the exact metric name, the `server` label's value set, the derived node↔series mapping, and **measured** per-device baselines resolving `APPLY-RESOLVED:dns-baselines`. Confirm the 1:1 derivation from `up{job=~"node-exporter.*"}` still holds. The docs' recorded baselines are six months stale and MUST NOT be transcribed
-- [ ] 1.7 Write 1.1–1.6's findings into `notes/backend-probe.md` — **shapes and names only**, per the standing rule above. A later reviewer must be able to check each registry value against this record
+- [x] 1.1 Probe the deployed Gatus for its per-endpoint status route **and its uptime-window vocabulary**; resolve `APPLY-RESOLVED:gatus-window`. Record the working route, or that only the bulk `/api/v1/endpoints/statuses` route exists and the in-process filter fallback is required
+- [x] 1.2 Enumerate `/api/v1/label/__name__/values` for the `homelab_backup_*`, `homelab_dump_*`, `health_etl_*`, and `obsidian_backup_verify_*` families; record the exact metric names `freshness_check` will select
+- [x] 1.3 Confirm the `job` label values for **all six** jobs (three node-exporter, two cadvisor, one adguard-exporter) against the live Prometheus, and confirm which are expected to yield exactly one series
+- [x] 1.4 **Enumerate all 23 native Prometheus rules** and map each to the query that measures its input, or record it as an accepted gap. Coverage asserted from an un-enumerated rule set is not evidence — this is the only artifact that would catch a rule family nobody has considered
+- [x] 1.5 Pin every threshold: enumerate each Henk-folder Grafana rule's **live expression and threshold** from the provisioning artifact, resolving `APPLY-RESOLVED:memory-bar`. Record alongside 1.4's mapping
+- [x] 1.6 Pin `dns_performance`: the exact metric name, the `server` label's value set, the derived node↔series mapping, and **measured** per-device baselines resolving `APPLY-RESOLVED:dns-baselines`. Confirm the 1:1 derivation from `up{job=~"node-exporter.*"}` still holds. The docs' recorded baselines are six months stale and MUST NOT be transcribed
+- [x] 1.7 Write 1.1–1.6's findings into `notes/backend-probe.md` — **shapes and names only**, per the standing rule above. A later reviewer must be able to check each registry value against this record
 
 ## 2. Config surface
 
@@ -47,17 +47,17 @@ Probing first prevents shipping a query that returns empty and looks healthy.
 
 ## 4. `homelab_query` — the six named queries
 
-- [ ] 4.1 Write projection tests first. **Fixtures must use placeholder addresses only** (`10.0.0.1`-style, per the existing in-repo convention) — this is the task whose fixtures contain address-shaped data by construction. Assert `instance`, `scrapeUrl`, and `server` values are absent from rendered output and the enum name appears instead
-- [ ] 4.2 Write the series-multiplicity test: a job returning two series is *reported as such*, never rendered as one figure
-- [ ] 4.3 Write `node_resource_trend` tests: seven resources, four windows, summary-only output at every window, point count within `query_range_max_points`, and the **per-resource** comparison rules — disk scoped to `/` as percent-free; `swap_io` primary; `swap_used` labelled not-the-trigger and **not alarming within the fleet's chronic range**; cpu/load/temperature carrying no bar; temperature noting no alert exists in either system
-- [ ] 4.4 Write `scrape_targets` tests: **bare `up` enumerating all six targets with values** so a healthy fleet is distinguishable from a broken query; `lastError` surfaced for down targets; a target never up within the window reported as "down for longer than the window" with **no invented duration**
-- [ ] 4.5 Write `endpoint_history` tests: discovered keys accepted; undiscovered refused; **first-use discovery with no network call during construction**; a rename becoming queryable via refresh-on-miss **without a restart**; discovery failure failing closed per-call; and an unsafe key percent-encoded or rejected
-- [ ] 4.6 Write the event→argument tests: an arriving Gatus event resolves to a queryable endpoint argument without the agent constructing a key by guesswork; an unresolvable event name is reported rather than queried as an invented key
-- [ ] 4.7 Write `freshness_check` tests: raw timestamp beside the derived age; a frozen writer surfacing as a **growing** age across invocations
-- [ ] 4.8 Write `container_state` tests: creation-time labelling; the restart-loop-invisibility statement; **the omission statement** (an absent container may be stopped or removed); and a named container's absence returning a reading rather than no series
-- [ ] 4.9 Write `dns_performance` tests: the derived node↔series mapping; no address in any result; an underivable node reported rather than returned empty; comparison against the **measured** baselines
-- [ ] 4.10 Write backend-failure tests inheriting the existing honest-failure requirement: timeout and non-2xx produce an explicit error naming backend and cause, never fabricated data or partial-presented-as-whole
-- [ ] 4.11 Implement the six queries and their renderers against 4.1–4.10
+- [x] 4.1 Write projection tests first. **Fixtures must use placeholder addresses only** (`10.0.0.1`-style, per the existing in-repo convention) — this is the task whose fixtures contain address-shaped data by construction. Assert `instance`, `scrapeUrl`, and `server` values are absent from rendered output and the enum name appears instead
+- [x] 4.2 Write the series-multiplicity test: a job returning two series is *reported as such*, never rendered as one figure
+- [x] 4.3 Write `node_resource_trend` tests: seven resources, four windows, summary-only output at every window, point count within `query_range_max_points`, and the **per-resource** comparison rules — disk scoped to `/` as percent-free; `swap_io` primary; `swap_used` labelled not-the-trigger and **not alarming within the fleet's chronic range**; cpu/load/temperature carrying no bar; temperature noting no alert exists in either system
+- [x] 4.4 Write `scrape_targets` tests: **bare `up` enumerating all six targets with values** so a healthy fleet is distinguishable from a broken query; `lastError` surfaced for down targets; a target never up within the window reported as "down for longer than the window" with **no invented duration**
+- [x] 4.5 Write `endpoint_history` tests: discovered keys accepted; undiscovered refused; **first-use discovery with no network call during construction**; a rename becoming queryable via refresh-on-miss **without a restart**; discovery failure failing closed per-call; and an unsafe key percent-encoded or rejected
+- [x] 4.6 Write the event→argument tests: an arriving Gatus event resolves to a queryable endpoint argument without the agent constructing a key by guesswork; an unresolvable event name is reported rather than queried as an invented key
+- [x] 4.7 Write `freshness_check` tests: raw timestamp beside the derived age; a frozen writer surfacing as a **growing** age across invocations
+- [x] 4.8 Write `container_state` tests: creation-time labelling; the restart-loop-invisibility statement; **the omission statement** (an absent container may be stopped or removed); and a named container's absence returning a reading rather than no series
+- [x] 4.9 Write `dns_performance` tests: the derived node↔series mapping; no address in any result; an underivable node reported rather than returned empty; comparison against the **measured** baselines
+- [x] 4.10 Write backend-failure tests inheriting the existing honest-failure requirement: timeout and non-2xx produce an explicit error naming backend and cause, never fabricated data or partial-presented-as-whole
+- [x] 4.11 Implement the six queries and their renderers against 4.1–4.10
 
 ## 5. `homelab_docs` — corpus retrieval
 

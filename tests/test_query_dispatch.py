@@ -326,20 +326,34 @@ def test_the_discovered_parameter_advertises_no_enum_and_says_why():
 # --- endpoint_history: a discovered domain that still fails closed ---------
 
 
-async def test_endpoint_history_fails_closed_when_discovery_has_not_run():
-    result = await _tool(discovered=None).run(
+async def test_endpoint_history_fails_closed_when_discovery_cannot_reach_gatus():
+    # §4 made discovery real, so "the domain has not been discovered" is no
+    # longer a state a caller can sit in: first use discovers. What remains — and
+    # what the spec actually requires — is that a discovery FAILURE closes the
+    # tool rather than opening it. No key is passed through to a backend route.
+    def failing_discovery(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/api/v1/endpoints/statuses"):
+            return httpx.Response(503, json={})
+        raise AssertionError(f"a failed discovery still issued {request.url}")
+
+    result = await _tool(failing_discovery, discovered=None).run(
         query_name="endpoint_history", endpoint="core_web-front", window="24h"
     )
     assert result.ok is False
-    assert "endpoint" in result.error
+    assert "Gatus" in result.error and "discovery" in result.error.lower()
 
 
-async def test_endpoint_history_refuses_an_undiscovered_key_with_no_request():
-    result = await _tool(discovered=DISCOVERED_ENDPOINTS).run(
+async def test_endpoint_history_refuses_an_undiscovered_key_with_no_request_for_it():
+    # A lookup miss refreshes the discovered set once (that is what makes a
+    # rename queryable without a restart), so the assertion the spec makes is
+    # that no request is issued FOR THAT KEY — not that nothing is requested.
+    recorder = Recorder(payload=[{"key": key} for key in DISCOVERED_ENDPOINTS])
+    result = await _tool(recorder, discovered=DISCOVERED_ENDPOINTS).run(
         query_name="endpoint_history", endpoint="core_absent", window="24h"
     )
     assert result.ok is False
     assert "core_absent" in result.error
+    assert not any("core_absent" in str(request.url) for request in recorder.requests)
 
 
 async def test_endpoint_history_accepts_a_discovered_key():
@@ -394,13 +408,20 @@ def test_the_tool_is_read_only_and_carries_no_authorization_tier():
     assert tool.name == "homelab_query"
 
 
-async def test_an_accepted_query_reaches_the_backend_and_awaits_its_renderer():
-    # §4 replaces the pending branch with the real summary. Until then the tool
-    # says so explicitly rather than returning something that looks like data —
-    # and, critically for the refusal tests above, an accepted query DOES issue a
-    # request, so "no request was issued" is a real signal.
-    recorder = Recorder()
+async def test_an_accepted_query_reaches_the_backend_and_is_rendered():
+    # Critically for the refusal tests above: an accepted query DOES issue a
+    # request, so "no request was issued" is a real signal rather than a property
+    # of a tool that never calls anything.
+    recorder = Recorder(
+        payload={
+            "status": "success",
+            "data": {
+                "resultType": "vector",
+                "result": [{"metric": {"job": "cadvisor-pi5"}, "value": [1.0, "1"]}],
+            },
+        }
+    )
     result = await _tool(recorder).run(query_name="scrape_targets")
     assert recorder.requests
-    assert result.ok is False
-    assert "scrape_targets" in result.error
+    assert result.ok is True, result.error
+    assert "cadvisor-pi5" in result.content
