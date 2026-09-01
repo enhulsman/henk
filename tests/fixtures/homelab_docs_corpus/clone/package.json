@@ -1,0 +1,6 @@
+{
+  "name": "synthetic-docs-site",
+  "private": true,
+  "comment": "SYNTHETIC-BUILD-CONFIG-SENTINEL - build metadata, never indexed",
+  "scripts": { "build": "astro build" }
+}
