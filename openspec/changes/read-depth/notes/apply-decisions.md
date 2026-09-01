@@ -335,3 +335,72 @@ denylist behind value-shape), M24 (one underivable branch behind another) and M2
 that only that defence could catch. §3's M10 was the same lesson from the other
 direction, and it is worth stating plainly: a mutation that survives is either a
 missing test or a redundant mechanism, and telling those two apart is the work.
+
+---
+
+## §6 — Audit assertions
+
+**Applied:** 2026-09-02. Tasks 6.1–6.4, in `tests/test_audit_read_depth.py`
+(+12 tests; 1828 → 1840 in this checkout, with §5 already merged). No `henk/`
+file was modified: §6 is an assertion about a mechanism that already exists.
+
+`RESULT_CAPTURING_TOOLS` is untouched and still `frozenset({publish_handoff})`.
+No redaction code was added, and its removal was **not** mutation-tested — that
+would break `handoff_message_id` for the one tool that legitimately consumes a
+result.
+
+### The tests run the real path, not a hand-built record
+
+Each test executes a real tool (`homelab_query` against a `MockTransport`,
+`homelab_docs` against the committed synthetic corpus), feeds its **genuinely
+rendered** output to the production `_StatsAccumulator` in real SDK block shapes,
+drives that through `AgentCore`'s audit writer with a real `AuditLog`, and reads
+the JSONL back off disk. A record assembled by hand would prove nothing about the
+path production takes.
+
+### §6 — Decisions made alone
+
+17. **"No substring of the result body" is enforced against a *control record*,
+    not against a hand-maintained vocabulary list.** The literal reading is
+    unsatisfiable (every single character is a substring), and the first
+    implementation — sweep tokens of ≥4 characters — produced two false
+    positives immediately: `hash` from `memory_hash` and `read` from the
+    `read-only` tool class. Exempting those by name would have been the start of
+    a list that quietly grows until it exempts a real leak. Instead every session
+    is written **twice**, once with the real bodies and once with empty ones, and
+    a token counts as leaked only if it appears in the real record and *not* in
+    the control. The control also supports a stronger assertion than any token
+    sweep: the two records are compared **byte-for-byte** (timestamps
+    normalised), so the property asserted is that the result body had no
+    influence on the record at all.
+
+18. **A deliberate leak-detector test carries the whole file's non-vacuity.**
+    `test_the_harness_would_catch_a_leak` runs the same corpus section through
+    `publish_handoff` — the one tool that *does* opt in — and asserts the text
+    **does** reach `result_id`. Without it, every other assertion in the file
+    would pass against a harness that wrote nothing.
+
+19. **The failure path is asserted as well as the success path.** A backend error
+    message is backend-authored free text and the surface most likely to quote an
+    address (§4's `scrub_addresses` exists for exactly that reason on the
+    rendering side). It is a result like any other and is covered by its own test.
+
+20. **6.4's address assertion is paired with a body assertion.** Mutation M31
+    showed that a test naming one value passes against a capture that truncates
+    before that value. The section it came from is now asserted absent too, so
+    6.4 binds on its own rather than only in company.
+
+### §6 — Mutations
+
+| # | mutation | outcome |
+|---|---|---|
+| M29 | `homelab_query` added to `RESULT_CAPTURING_TOOLS` | **caught** — 8 failures |
+| M30 | `homelab_docs` added to `RESULT_CAPTURING_TOOLS` | **caught** — 5 failures |
+| M31 | every non-opted-in tool captures a 40-character "preview" of its result | **caught** — 7 failures; but 6.4's address test and the `6h` parameter case both **survived**, because both values sit past character 40 |
+| M31b | the same mutation, after 6.4 gained a body-level assertion | **caught** — 8 failures, 6.4 among them |
+
+M31 is the §6 entry worth carrying forward, and it is §4's M20/M24/M28 lesson in
+a new costume: an assertion naming **one value** is only as strong as that
+value's position in the payload. A partial capture is a plausible defect — "just
+log a preview" — and it defeated the narrowest test in the file while eight
+others caught it.

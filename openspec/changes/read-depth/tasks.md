@@ -61,20 +61,20 @@ Probing first prevents shipping a query that returns empty and looks healthy.
 
 ## 5. `homelab_docs` — corpus retrieval
 
-- [ ] 5.1 Build a corpus fixture mirroring the real shape — nested directories, frontmatter, a >50 KB document, deep heading hierarchies, repository/build files that must not be indexed, and **a symlink pointing outside the docs subpath**. Placeholder addresses only
-- [ ] 5.2 Write sectioniser tests: heading-boundary splitting, heading-path construction, frontmatter excluded, a >50 KB document yielding sections rather than itself
-- [ ] 5.3 Write section-id tests: `read` accepts only indexed ids; unknown and traversal-shaped values both refused; **assert no filesystem join ever occurs on the supplied value**
-- [ ] 5.4 Write id-stability tests: a rebuild after a corpus change **preserves ids for unchanged heading paths**, so a search-then-read across an update cannot silently return different content
-- [ ] 5.5 Write index-scope tests: only documentation files by extension under the docs subpath are indexed; repository metadata and build config are not; **the symlink yields no index entry**
-- [ ] 5.6 Write allowlist tests: **filtering happens at index build** — a non-allowlisted file contributes **no search candidate and no snippet**, not merely an unreadable id; empty/unset allowlist surfaces nothing; entries empty after normalization discarded; entries resolved relative to the **docs root**; composition is glob-then-allowlist
-- [ ] 5.7 Write search tests: ranking over section text plus heading-path boost, result count honoured, and a regex-metacharacter query matched literally with no pattern compilation
-- [ ] 5.8 Write truncation tests: an oversized section truncated **and saying so, naming the section**; a section within budget returned whole with no notice
-- [ ] 5.9 Write freshness tests: fresh stamp reported; past the bound serves content with an explicit staleness marker; missing and unparseable stamps both yield "freshness unknown"; **an old commit with a recent pull is NOT marked stale** (the bound applies to last-pull only)
-- [ ] 5.10 Write the silent-pull-failure test: advancing time past the bound without touching the corpus makes results self-identify as stale
-- [ ] 5.11 Write index-invalidation tests: a changed last-pull value rebuilds the index and serves new content; an unchanged stamp reuses it
-- [ ] 5.12 Write availability tests: config error (enabled, no path) fails startup; **missing/empty/unreadable/unstamped corpus registers the tool and returns an explicit per-call error naming path and condition**; runtime loss behaves identically to startup absence; an empty corpus is distinguishable from a search with no match; a mid-operation unreadable file errors rather than returning partial content
-- [ ] 5.13 Write the two-gates test: corpus-unavailable and allowlist-empty produce **distinct** diagnostics
-- [ ] 5.14 Implement the sectioniser, index, allowlist, keyword ranker, stamp reader, and both actions against 5.2–5.13
+- [x] 5.1 Build a corpus fixture mirroring the real shape — nested directories, frontmatter, a >50 KB document, deep heading hierarchies, repository/build files that must not be indexed, and **a symlink pointing outside the docs subpath**. Placeholder addresses only
+- [x] 5.2 Write sectioniser tests: heading-boundary splitting, heading-path construction, frontmatter excluded, a >50 KB document yielding sections rather than itself
+- [x] 5.3 Write section-id tests: `read` accepts only indexed ids; unknown and traversal-shaped values both refused; **assert no filesystem join ever occurs on the supplied value**
+- [x] 5.4 Write id-stability tests: a rebuild after a corpus change **preserves ids for unchanged heading paths**, so a search-then-read across an update cannot silently return different content
+- [x] 5.5 Write index-scope tests: only documentation files by extension under the docs subpath are indexed; repository metadata and build config are not; **the symlink yields no index entry**
+- [x] 5.6 Write allowlist tests: **filtering happens at index build** — a non-allowlisted file contributes **no search candidate and no snippet**, not merely an unreadable id; empty/unset allowlist surfaces nothing; entries empty after normalization discarded; entries resolved relative to the **docs root**; composition is glob-then-allowlist
+- [x] 5.7 Write search tests: ranking over section text plus heading-path boost, result count honoured, and a regex-metacharacter query matched literally with no pattern compilation
+- [x] 5.8 Write truncation tests: an oversized section truncated **and saying so, naming the section**; a section within budget returned whole with no notice
+- [x] 5.9 Write freshness tests: fresh stamp reported; past the bound serves content with an explicit staleness marker; missing and unparseable stamps both yield "freshness unknown"; **an old commit with a recent pull is NOT marked stale** (the bound applies to last-pull only)
+- [x] 5.10 Write the silent-pull-failure test: advancing time past the bound without touching the corpus makes results self-identify as stale
+- [x] 5.11 Write index-invalidation tests: a changed last-pull value rebuilds the index and serves new content; an unchanged stamp reuses it
+- [x] 5.12 Write availability tests: config error (enabled, no path) fails startup; **missing/empty/unreadable/unstamped corpus registers the tool and returns an explicit per-call error naming path and condition**; runtime loss behaves identically to startup absence; an empty corpus is distinguishable from a search with no match; a mid-operation unreadable file errors rather than returning partial content
+- [x] 5.13 Write the two-gates test: corpus-unavailable and allowlist-empty produce **distinct** diagnostics
+- [x] 5.14 Implement the sectioniser, index, allowlist, keyword ranker, stamp reader, and both actions against 5.2–5.13
 
 ## 6. Audit assertions (not implementation — the mechanism already exists)
 
@@ -82,10 +82,10 @@ Result capture is already global and default-deny; only the handoff tool opts in
 tasks **assert** that property, they do not build it. Do not add redaction code, and do not
 mutation-test its removal — removing it would break every other tool.
 
-- [ ] 6.1 Write a test asserting **neither** new tool is in the result-capturing set
-- [ ] 6.2 Write a test asserting no audit record for a `homelab_query` session contains any substring of the rendered result body, and that bound parameter values are absent
-- [ ] 6.3 Write a test asserting no audit record contains corpus section text or search snippets, and that the search query string itself is absent
-- [ ] 6.4 Write a targeted test using a fixture section containing a **placeholder** address, asserting that address appears in no audit field
+- [x] 6.1 Write a test asserting **neither** new tool is in the result-capturing set
+- [x] 6.2 Write a test asserting no audit record for a `homelab_query` session contains any substring of the rendered result body, and that bound parameter values are absent
+- [x] 6.3 Write a test asserting no audit record contains corpus section text or search snippets, and that the search query string itself is absent
+- [x] 6.4 Write a targeted test using a fixture section containing a **placeholder** address, asserting that address appears in no audit field
 
 ## 7. Registration and startup
 
