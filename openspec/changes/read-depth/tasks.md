@@ -98,13 +98,13 @@ mutation-test its removal — removing it would break every other tool.
 
 - [ ] 8.1 Mint a repo-scoped read-only deploy key for the docs repo on its own GitHub account; confirm passphrase-free and host-held
 - [ ] 8.2 Clone to the root-owned service directory `/opt/homelab-docs/`, deliberately **not** the existing personal checkout
-- [ ] 8.3 Commit `deploy/homelab-docs-stamp.sh` to **this repo** with unit tests covering the success and failure branches — a writer that stamps on every *attempt* rather than every *success* inverts the freshness signal. Deploy from the committed script
+- [x] 8.3 Commit `deploy/homelab-docs-stamp.sh` to **this repo** with unit tests covering the success and failure branches — a writer that stamps on every *attempt* rather than every *success* inverts the freshness signal. Deploy from the committed script
 - [ ] 8.4 Install the daily pull timer; confirm the stamp is written **after** content updates and that a **failed** pull leaves the last-pull value untouched so the age grows
-- [ ] 8.5 Read all 17 corpus files against the Tier W wall; record the finding in `notes/`. Owner decision 2026-08-22: initial allowlist membership is **all 17 files** — record the reasoning, not just the outcome
+- [x] 8.5 Read all 17 corpus files against the Tier W wall; record the finding in `notes/`. Owner decision 2026-08-22: initial allowlist membership is **all 17 files** — record the reasoning, not just the outcome
 - [ ] 8.6 Add the read-only bind mount to the compose file **with automatic host-path creation disabled**; verify a write from inside the container fails
 - [ ] 8.7 Set the corpus path allowlist in rp5's hand-maintained `config.yaml`
 - [ ] 8.8 Flip the corpus enable key in rp5's `config.yaml` — the hard stop, as with reminders
-- [ ] 8.9 Append the 8.1/8.2/8.4 procedure to `~/.claude-config/tooling-backlog.md` as an automation candidate, with the verbatim commands as its spec. The stamp writer is excluded — it is version-controlled now
+- [x] 8.9 Append the 8.1/8.2/8.4 procedure to `~/.claude-config/tooling-backlog.md` as an automation candidate, with the verbatim commands as its spec. The stamp writer is excluded — it is version-controlled now
 
 ## 9. Verification and close-out
 

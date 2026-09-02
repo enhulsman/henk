@@ -575,3 +575,29 @@ already names the stamp path and the specific condition.
 > broken corpus registers the tool and fails honestly per call, because an absent tool
 > leaves the agent answering documentation questions from its priors with no signal
 > that the documentation was unreachable.
+
+## §8 — repo-side halves (2026-09-02)
+
+### 8.3 `deploy/homelab-docs-stamp.sh`
+
+Tests first (`tests/test_deploy_homelab_docs_stamp.py`, 11 cases, real git repos in
+`tmp_path`, isolated from the developer's global git config). All passed on the first
+implementation run, so four mutations were run and every one was caught: stamp on a
+failed attempt (3 failures), commit captured *before* the pull (1), `--ff-only`
+dropped (1 — the test env carries a git identity precisely so the mutant merges
+instead of failing on "who are you"), exclude line skipped (1). Decisions: `flock`
+with exit 75 on contention, atomic tmp+rename in the clone root, `printf` JSON (no
+`jq` dependency; the three values are shell-safe by construction), and the stamp
+name goes into `.git/info/exclude` rather than the tracked `.gitignore`.
+
+### 8.5 Tier W review
+
+`notes/tier-w-corpus-review.md`. Zero credential values in 17 files; 12 carry tailnet
+addresses and 7 mention the owner's employer — both owner-scoped and permitted. The
+allowlist YAML for rp5 is in that note.
+
+### 8.6 compose half
+
+The `homelab_docs` bind mount is in `docker-compose.yml` in long form with
+`create_host_path: false`; inert while `homelab_docs.enabled` is false. The
+in-container write-fails check (8.6's second clause) is owner-run at deploy.
