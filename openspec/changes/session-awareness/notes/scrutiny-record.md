@@ -20,6 +20,6 @@ was then applied to the artifacts in one pass and re-verified (two-phase token s
 - Henk enforces its own default-deny label allowlist in-process (`personal_data.session_project_allowlist`); the publisher is where filtering *decides*, not the only place it happens.
 - Both `cwd` and `foreground_cwd` are gated; deny wins at any depth; the load-time refusal is an explicit unsafe-root set, not an ancestor rule; the publisher config is a closed schema (a typo in `deny_roots` must fail loudly).
 - Rendering is a gate then headline/body/notes, with every sentence pinned beside a literal marker and a self-match + uniqueness test.
-- **Session titles and branches are deferred** to a `session-titles` follow-up (design.md "Deferred: session titles"). The owner can reverse this before apply; reversing re-imports the same-turn taint finding as the first task.
+- **Session titles and branches are deferred** to a `session-titles` follow-up (design.md "Deferred: session titles"). Owner decision 2026-09-02: ship without titles. Not to be re-raised at apply.
 
 **Lessons carried to memory:** verify the plan's own verification apparatus (markers, sweep tokens, named mechanisms) empirically before resubmitting; a consolidation must be diffed against the *original* artifacts, not the previous plan.

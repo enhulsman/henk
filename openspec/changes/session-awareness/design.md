@@ -700,11 +700,10 @@ henk-sessions deny`. No data migration; the store is untouched.
 
 ## Open Questions
 
-- **Reversing the titles deferral.** Part E narrowed v1 to publish no free text, and that
-  is the one scope decision in this change the owner can reverse *before* apply rather
-  than after. Reversing it means lifting *Deferred: session titles* back into D4, the
-  publisher schema, and the spec — and taking on the `core.py:542-548` taint finding as a
-  prerequisite. Proposed: leave it deferred.
+- ~~**Reversing the titles deferral.**~~ **Decided by the owner 2026-09-02: v1 ships
+  without titles.** Free text stays deferred to the `session-titles` follow-up, whose first
+  task is the `core.py:542-548` same-turn taint finding. The apply session does not re-raise
+  this.
 - **Heartbeat interval.** 15 minutes chosen against a 5-minute tick and a 25-minute
   staleness bound. A tighter triple (5/10/15) costs three times the messages for a
   status-question tool; not obviously worth it.
