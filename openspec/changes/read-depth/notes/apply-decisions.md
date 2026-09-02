@@ -521,3 +521,57 @@ looked like it had failed and the two failures persisted into a clean run.
 module behaved otherwise, which is exactly the confusing signature. `touch` on the
 source file resolved it. When a revert appears not to take, suspect the cache
 before the code.
+
+## Close-out (orchestrating session, 2026-09-02)
+
+### 7.4 — the new baseline
+
+`1885 passed, 12 deselected` on `1bb8f5f`, up from 1503 at the proposal commit. The
+delta is entirely additive test files plus the amended `homelab_health` tests; no
+pre-existing test was deleted. `openspec validate --all`: 16/16.
+
+### 9.7 — markers closed, design corrected
+
+`grep -r 'APPLY-RESOLVED' openspec/changes/read-depth/specs/` returns nothing.
+`gatus-window` → `{1h, 24h, 7d, 30d}`; `memory-bar` → `> 75 % used`. `design.md` D5's
+table, D3's job count (now "six node-bearing jobs plus `pushgateway`"), the D9
+counterexample figures, and the Open Questions all carry the pinned values. The
+D9 passage previously had the VPS and Pi2 figures swapped — corrected from the
+15-day range query in `backend-probe.md` §1.6.
+
+### 9.9 — owner-acknowledgement drift
+
+Four cited anchors were stale (`signal.py:146-151` → `217-222`, `signal.py:153` →
+`224`, `approval.py:297-308` → `297-298`, and the `config.py:386`/`:300` contrast,
+whose code has since been refactored into `_require_safe_length`). Rewritten to the
+current lines; the argument itself is unchanged.
+
+### A spec inconsistency to fix at archive (not a code defect)
+
+`homelab-docs/spec.md`'s availability requirement lists "unstamped" among the host
+states that must "return an explicit error", while its freshness requirement says a
+missing or unparseable stamp is served **with a marker**, and has a concrete scenario
+for it. §5 implemented serve-with-marker (the concrete scenario wins, and D11 cites
+that behaviour as a reason the do-not-register design was wrong). At archive, drop
+"unstamped" from the availability sentence or reword it to "unreadable"; the marker
+already names the stamp path and the specific condition.
+
+### Recorded follow-ups, deliberately not done here
+
+- Widen `freshness_check`'s projection to the error-counter/duration metrics so the six
+  accepted-gap rules (`HealthEtl{Errors,Slow,MetricSilent}`, `Backup{,Rotate}Errors`,
+  `ObsidianBackupVerifyFailed`) become measurable — a spec change, cheap, no new query.
+- `named_container_expression` is tested but not wired to a discovered-name parameter.
+- Series multiplicity in `homelab_health` (one series per job is measured today).
+- Retire `homelab_health` into a seventh `overview` query (already in Open Questions).
+
+### Purpose text for `openspec/specs/homelab-docs/spec.md` at archive
+
+> Read-only retrieval over the homelab documentation corpus, delivered to the container
+> as a bind mount the host keeps current — never fetched by Henk. Two actions, `search`
+> and `read`, over a section index built once per stamp change and filtered by a
+> default-deny path allowlist at build time. Every result carries the age of the last
+> successful pull and is marked stale past a configured bound rather than hidden, and a
+> broken corpus registers the tool and fails honestly per call, because an absent tool
+> leaves the agent answering documentation questions from its priors with no signal
+> that the documentation was unreachable.

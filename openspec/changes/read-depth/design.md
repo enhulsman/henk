@@ -105,8 +105,8 @@ node-exporter is not reporting. Each gets its own message.
 This is the decision that keeps the repo publication-safe. Prometheus's `instance`
 labels are `<tailnet-address>:9100` — committing the registry with instance selectors
 would put three tailnet addresses in this repo and the pre-commit hook would reject it.
-The scrape config names its jobs, and those names carry no addresses. **Six jobs**, not
-five:
+The scrape config names its jobs, and those names carry no addresses. **Six node-bearing
+jobs**, not five — plus a seventh scrape target that belongs to no node (below):
 
 | enum value | node-exporter job | cadvisor job |
 |---|---|---|
@@ -116,7 +116,10 @@ five:
 
 plus **`adguard-exporter`**, a single job on rp5 that scrapes all three AdGuard instances
 and backs `dns_performance`. It has no node of its own in the enum, which is why
-`scrape_targets` cannot render node names from a parameter domain (see below).
+`scrape_targets` cannot render node names from a parameter domain (see below). The apply
+probe found a **seventh** target, `pushgateway`, also node-less and alerted on by
+`InstanceDown` and `HenkInstanceDown`. `scrape_targets` therefore enumerates whatever bare
+`up` returns and hardcodes no count.
 
 The registry therefore stores job names, and rp5's `config.yaml` needs no address either.
 
@@ -211,9 +214,9 @@ record; this table is orientation):
 - `dns_performance`: `node` ∈ {`rp5`, `vps`, `rp2`}; `window` as above. The parameter is
   named `node`, matching `node_resource_trend` — two names for one domain inside a single
   closed registry is an inconsistency the model will get wrong.
-- `endpoint_history`: `endpoint` discovered (D7); `window` `APPLY-RESOLVED:gatus-window`
-  — Gatus's uptime vocabulary is fixed and undocumented in the homelab docs, so it
-  cannot be assumed to share `node_resource_trend`'s windows.
+- `endpoint_history`: `endpoint` discovered (D7); `window` ∈ {`1h`, `24h`, `7d`, `30d`}
+  — pinned from the live server's own rejection message (probe notes §1.1). It overlaps
+  `node_resource_trend`'s windows on `1h` and `24h` only, so the two domains stay separate.
 - `scrape_targets`, `freshness_check`: no parameters. `scrape_targets`' lookback window is
   the literal `24h`.
 
@@ -231,8 +234,8 @@ the rules do not share a shape:
 |---|---|---|
 | `disk` | scoped to `mountpoint="/"`, reported as the rule's own `< 15% free` | the rule is `avail/size*100 < 15` on `/` only — not "85% used", and not across all filesystems |
 | `swap_io` | `> 50 pages/s` sustained — **the primary swap signal** | this is what `HenkSwapPressure` actually fires on |
-| `swap_used` | reported, explicitly labelled **not the rule's trigger** and not alarming on this fleet | fullness and pressure are *anti-correlated* here: the vps sits chronically at 64–86% (86.3% peak) while a Pi at 6.2% fullness hit 128.7 pages/s. "84% — approaching the 95% bar" would be an alarm about a documented non-condition |
-| `memory` | `APPLY-RESOLVED:memory-bar`; noted as delivering to Discord, not to Henk | the obvious 90% is `homelab_health`'s hardcoded constant, **not** a verified property of the Grafana rule |
+| `swap_used` | reported, explicitly labelled **not the rule's trigger** and not alarming on this fleet | fullness and pressure are *anti-correlated* here: the vps sits chronically in the 60s–80s (89.7% 7-day peak, measured 2026-09-02) while a Pi at 6.2% fullness hit 128.7 pages/s. "84% — approaching the 95% bar" would be an alarm about a documented non-condition |
+| `memory` | `> 75% used` — the `High memory usage` Grafana rule's live bar, pinned 2026-09-02; noted as delivering to Discord, not to Henk | the obvious 90% was `homelab_health`'s hardcoded constant, **not** a property of the Grafana rule: three bars (Grafana 75, native `HighMemory` 90, `homelab_health` 90) were live at once until §10 aligned the tool to 75 |
 | `cpu` | figure only, no bar | deliberately unrouted; a busy homelab CPU is rarely the incident |
 | `load` | figure only, no bar | no rule exists |
 | `temperature` | figure only, no bar; note rp2 has no active cooling and **no alert in either brain** | no rule exists — this is a real monitoring gap the query surfaces for free |
@@ -361,8 +364,10 @@ fresh.
 **A measured counterexample, recorded because it sharpens the claim rather than breaking
 it.** "Docs slightly out of date are still largely correct" is true of prose and false of
 figures: `services/monitoring.md`'s DNS baselines (Pi5 ~17ms, VPS ~41ms, Pi2 ~134ms,
-measured 2026-02-08) read **2.3ms / 57ms / 2.1ms** live — an order of magnitude off on two
-of three devices, with the ordering inverted, in the file this tool will consult most. The
+measured 2026-02-08) read **2.2ms / 2.3ms / 56ms** live on 2026-08-18 (and 2.4 / 2.7 / 74.7ms as 24h averages
+on 2026-09-02) — an order of magnitude off on two of three devices, in the file this tool
+will consult most. An earlier draft of this very sentence carried the VPS and Pi2 figures
+swapped: the transcribe defect struck the passage written to record it. The
 decision survives; the argument now carries the counterexample. The distinction worth
 holding: **durable prose guidance ages well; measured figures do not.** The apply-time
 measurements are pushed back upstream rather than left wrong for the next reader, who is
@@ -580,10 +585,15 @@ removed independently. The query half's `homelab_health` amendment is a **code r
 
 ## Open Questions
 
-- The deployed Gatus version's per-endpoint status route and its uptime-window vocabulary —
-  probe at apply (`APPLY-RESOLVED:gatus-window`; fallback known-good).
-- The exact textfile metric `__name__` values for `freshness_check` — enumerate at apply.
-- The `High memory usage` rule's live threshold (`APPLY-RESOLVED:memory-bar`).
+- ~~The deployed Gatus version's per-endpoint status route and its uptime-window vocabulary~~
+  — resolved at apply: `/api/v1/endpoints/{key}/statuses` exists (no in-process filter
+  fallback needed) and the uptime vocabulary is `{1h, 24h, 7d, 30d}`. Gatus keeps only
+  ~1.7 h of check `results`; since-when comes from `events`.
+- ~~The exact textfile metric `__name__` values for `freshness_check`~~ — resolved: eight
+  names across four families, recorded in probe notes §1.2 (`obsidian_backup_push_*` was a
+  fourth family the task list omitted).
+- ~~The `High memory usage` rule's live threshold~~ — resolved: `> 75 % used`, folder
+  `NodeExporter`, `for: 5m`, delivering to Discord.
 - Whether `endpoint_history`'s domain should later become a declared list if the Gatus
   endpoint set stabilises. Discovery is right while the owner still edits that config by hand.
 - Whether `homelab_health` should eventually retire into a seventh `overview` query — one

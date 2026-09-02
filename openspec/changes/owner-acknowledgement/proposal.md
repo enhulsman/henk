@@ -9,7 +9,7 @@ negative, as things a *stranger* must never receive. The positive case for the o
 specified.
 
 There is a second, unobvious benefit. The adapter carries a standing `DEPLOY-VERIFY` note
-(`henk/channel/signal.py:146-151`) about which identity Signal reports for the owner — UUID vs
+(`henk/channel/signal.py:217-222`) about which identity Signal reports for the owner — UUID vs
 E.164 — because a mismatch against `owner.id` makes the allowlist silently drop every owner
 message. A read receipt is a live signal that the allowlist matched: its absence means a silent
 drop. This makes that hazard diagnosable for the first time.
@@ -78,9 +78,11 @@ Recorded here so they are not rediscovered. Each was verified against source.
    in the design and task list while leaving the spec sentence intact is the specific trap to
    avoid: the spec is the binding record.
 2. **The flag's effective default is the inline literal in `from_dict`**, not the dataclass
-   attribute and not this repo's `config.yaml`. `config.py:386` reads
-   `int(signal_sec.get("safe_length", 2000))`; contrast `config.py:300`, which does use the
-   dataclass attribute. rp5's `config.yaml` is locally modified and will not carry a new key. Pin
+   attribute and not this repo's `config.yaml`. `config.py:1014` (in `_require_safe_length`) reads
+   `signal_sec.get("safe_length", SignalConfig.safe_length)` and `config.py:585` reads
+   `events_sec.get("enabled", EventsConfig.enabled)` — the builder only honours the
+   dataclass attribute because it is written to read it; a builder that never reads the key
+   is the trap (read-depth's §2 tests assert against exactly that). rp5's `config.yaml` is locally modified and will not carry a new key. Pin
    `False` in **both** places and test that a config omitting every new key yields `False`, or the
    staged rollout deploys with acknowledgement already on.
 3. **`Owner-only allowlist` and the `## Purpose` both state absolutely that a stranger gets no
@@ -102,7 +104,7 @@ Recorded here so they are not rediscovered. Each was verified against source.
    edges plus a refresh task, so it must be an `@asynccontextmanager`. Cite `_framed_turn` for its
    try/finally *discipline*, not as a shape to copy.
 7. **The indicator would refresh through the approval gate's owner-wait.**
-   `gate/approval.py:297-308` sends the prompt then awaits up to `approval_timeout_seconds`
+   `gate/approval.py:297-298` sends the prompt then awaits up to `approval_timeout_seconds`
    (300s) **inside** `session.run_turn` — inside the bracketed turn. The refresh would assert
    "Henk is typing" ~37 times while Henk is in fact blocked *on the owner*, who is the one being
    asked to act. Suspend the indicator while an approval is pending.
@@ -113,7 +115,7 @@ Recorded here so they are not rediscovered. Each was verified against source.
    the stop by the acknowledge timeout; cancel **and await** the refresh task with
    `CancelledError` suppressed; on cancellation rely on Signal's ~15s expiry rather than shielding
    a network call on the shutdown path.
-9. **`channel_ref` will be `"0"` for timestamp-less envelopes.** `signal.py:153` reads
+9. **`channel_ref` will be `"0"` for timestamp-less envelopes.** `signal.py:224` reads
    `raw_ts = data.get("timestamp") or env.get("timestamp") or 0`, and `POST /v1/receipts` requires
    a valid timestamp — a guaranteed 400 that best-effort logging turns into per-message noise.
    Spec `acknowledge` as a no-op when the reference is absent.

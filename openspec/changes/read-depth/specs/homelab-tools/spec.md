@@ -49,7 +49,8 @@ be exactly:
 - `dns_performance`: `node` ∈ {`rp5`, `vps`, `rp2`}; `window` ∈ {`15m`, `1h`, `6h`, `24h`}.
   The parameter SHALL be named `node`, matching `node_resource_trend`.
 - `endpoint_history`: `endpoint` — discovered (see "The endpoint-history domain is
-  discovered"); `window` ∈ `APPLY-RESOLVED:gatus-window`.
+  discovered"); `window` ∈ {`1h`, `24h`, `7d`, `30d`} — Gatus's accepted uptime durations, pinned
+  2026-09-02 from the live server's own rejection message (`notes/backend-probe.md` §1.1).
 - `scrape_targets`, `freshness_check`: no parameters. `scrape_targets`' lookback window
   SHALL be `24h`.
 
@@ -124,7 +125,8 @@ SHALL be compared as follows:
   alarming on this fleet. Swap fullness and swap pressure are anti-correlated here, so a
   fullness figure approaching a fullness bar SHALL NOT be presented as an approaching
   incident.
-- `memory`: compared against `APPLY-RESOLVED:memory-bar`, and noted as delivering to
+- `memory`: compared against the `High memory usage` Grafana rule's live bar, **> 75 %
+  used** (pinned 2026-09-02 from the provisioning API, `notes/backend-probe.md` §1.5), and noted as delivering to
   Discord rather than to this agent.
 - `cpu`, `load`, `temperature`: reported with **no threshold comparison**, because no rule
   defines one. For `temperature` the result SHALL note that no alert exists in either

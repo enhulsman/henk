@@ -92,7 +92,7 @@ mutation-test its removal — removing it would break every other tool.
 - [x] 7.1 Write startup tests per 5.12's split: config error kills startup; host state does not
 - [x] 7.2 Write a toolset test asserting both tools register with read-only class, and that **no network call occurs during runtime construction** (discovery is first-use)
 - [x] 7.3 Implement registration and the startup config check
-- [ ] 7.4 Run the full suite. Note the 1503-passed baseline is **invalidated** by the `homelab_health` amendment in §10 — record the new baseline and account for the delta rather than expecting 1503
+- [x] 7.4 Run the full suite. Note the 1503-passed baseline is **invalidated** by the `homelab_health` amendment in §10 — record the new baseline and account for the delta rather than expecting 1503
 
 ## 8. Host provisioning on rp5 (owner-gated)
 
@@ -114,9 +114,9 @@ mutation-test its removal — removing it would break every other tool.
 - [ ] 9.4 Exercise each of the six queries live; record **shapes and conclusions** in `notes/apply-enumerations.md`, flagging any empty result and why. No raw response bodies
 - [ ] 9.5 Exercise the corpus tool live: a search, a read, and a deliberately stale stamp, confirming the marker reaches a real Signal reply
 - [ ] 9.6 Confirm no corpus file or excerpt is tracked here and none is in the built image; let `.githooks/pre-commit` run on every commit. Run the hook over `notes/*.md` deliberately before committing them
-- [ ] 9.7 **Archive gate**: replace every `APPLY-RESOLVED:` placeholder in the spec deltas with its pinned value from `notes/backend-probe.md`, then assert `grep -r 'APPLY-RESOLVED' openspec/changes/read-depth/specs/` returns nothing. Two markers exist today — `gatus-window` and `memory-bar`. Also update `design.md`'s D5 table and Open Questions with the same pinned values, so the design record does not keep asserting an unknown that has since been measured (`design.md` is excluded from the grep assertion only because `tasks.md` names the token literally)
+- [x] 9.7 **Archive gate**: replace every `APPLY-RESOLVED:` placeholder in the spec deltas with its pinned value from `notes/backend-probe.md`, then assert `grep -r 'APPLY-RESOLVED' openspec/changes/read-depth/specs/` returns nothing. Two markers exist today — `gatus-window` and `memory-bar`. Also update `design.md`'s D5 table and Open Questions with the same pinned values, so the design record does not keep asserting an unknown that has since been measured (`design.md` is excluded from the grep assertion only because `tasks.md` names the token literally)
 - [ ] 9.8 Update the README tools table; write the `homelab-docs` capability Purpose; run `/docs-update` for the rp5 clone, timer, and mount, and **push the apply-time DNS measurements back into `services/monitoring.md`**, whose baselines are six months stale. Present the doc diff before committing
-- [ ] 9.9 Re-grep `owner-acknowledgement/proposal.md`'s cited line numbers and correct drift from the new config keys
+- [x] 9.9 Re-grep `owner-acknowledgement/proposal.md`'s cited line numbers and correct drift from the new config keys
 - [ ] 9.10 `openspec validate --all`, then `/opsx:archive`
 
 ## 10. `homelab_health` amendment (user-visible behaviour change)
@@ -124,8 +124,8 @@ mutation-test its removal — removing it would break every other tool.
 Sequenced last among the code groups because it depends on §1's pinned record, but it ships
 with the query half.
 
-- [ ] 10.1 Write tests first: `homelab_health` and `node_resource_trend` evaluate the same node and resource against the **same** threshold value, so one cannot call a measurement healthy while the other reports a crossing
-- [ ] 10.2 Write a test asserting no raw `instance` value appears in `homelab_health`'s output
-- [ ] 10.3 Replace the hardcoded 90/90/8.0 constants with the pinned record's values; apply the projection rule to its renderer
-- [ ] 10.4 Update the existing `homelab_health` tests that assert the old thresholds and output shape
-- [ ] 10.5 Record in the apply notes that rollback of this half is a **code revert**, not a config flip
+- [x] 10.1 Write tests first: `homelab_health` and `node_resource_trend` evaluate the same node and resource against the **same** threshold value, so one cannot call a measurement healthy while the other reports a crossing
+- [x] 10.2 Write a test asserting no raw `instance` value appears in `homelab_health`'s output
+- [x] 10.3 Replace the hardcoded 90/90/8.0 constants with the pinned record's values; apply the projection rule to its renderer
+- [x] 10.4 Update the existing `homelab_health` tests that assert the old thresholds and output shape
+- [x] 10.5 Record in the apply notes that rollback of this half is a **code revert**, not a config flip
