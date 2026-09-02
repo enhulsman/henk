@@ -80,7 +80,7 @@ flowchart LR
   disp --> gate[Approval gate]
   disp --> core[Agent core\nserial, per-conversation session]
   core --> sdk[Claude Agent SDK\nclosed toolset + can_use_tool]
-  sdk --> tools[homelab_health / todo_read / notify]
+  sdk --> tools[homelab_health / homelab_query / todo_read / notify\n+ opt-in homelab_docs over a read-only corpus mount]
   tools --> homelab[(Gatus / Prometheus / obsidian-todo / ntfy\nover tailnet as tag:henk)]
   sdk -. Anthropic API .-> anthropic[(api.anthropic.com)]
 ```
@@ -191,7 +191,7 @@ existing `henk_audit` volume (already in the rp5 backup allowlist).
 | `henk/audit/` | Append-only JSONL audit writer, decision-time mutation receipts, + the versioned record **JSON Schema** (the transferable artifact) |
 | `henk/store/` | One SQLite file on the audit volume: capped memory repository, capture inbox behind the swappable `InboxStore` seam, reminders repository + the explicit transaction boundary |
 | `henk/reminders/` | Time resolution (DST-correct, zone-explicit), the polling delivery scheduler, and the delivered-reminder note |
-| `henk/tools/` | `homelab_health`, `todo_read`, `notify`, `publish_handoff`, `store_memory`, `capture`, `inbox_read`, `remind`, `cancel_reminder`, `reminders_read` (+ deferred `taiga_read`) and the production registry |
+| `henk/tools/` | `homelab_health`, `homelab_query` (+ its reviewable `query_registry`, renderers, and the address projection), `homelab_docs` (corpus sectioniser, allowlisted index, stamp reader), `todo_read`, `notify`, `publish_handoff`, `store_memory`, `capture`, `inbox_read`, `remind`, `cancel_reminder`, `reminders_read` (+ deferred `taiga_read`) and the production registry |
 | `henk/app.py`, `henk/runtime.py`, `henk/__main__.py` | Composition, production wiring, entrypoint |
 | `config.yaml` | Non-secret settings | `.env` | Secrets (git-ignored) |
 | `~/.claude-config/bin/henk-pickup` | Pull-based CLI to fetch handoffs from any tailnet host (lives in the claude-config repo) |
@@ -226,6 +226,20 @@ existing `henk_audit` volume (already in the rp5 backup allowlist).
   `fact_length_limit` (500), `recall_render_limit` (8000 chars ≈ 2k tokens — when
   it bites, the oldest facts are left out of the *render* with a count and nothing
   is deleted), `inbox_page_size` (20).
+- `homelab_query.*` (read-depth) — `enabled` (**defaults to true**; the tool rides the
+  same `tag:henk` egress as `homelab_health` and needs nothing provisioned) and
+  `query_range_max_points` (60). It reuses `endpoints.gatus` / `endpoints.prometheus`
+  timeouts; there is no separate timeout key and **no key ever holds an address** —
+  the DNS node mapping is derived at call time.
+- `homelab_docs.*` (read-depth) — `enabled` (**defaults to false**; flipping it is the
+  hard stop, as with reminders), `path` (the read-only corpus mount; `enabled` with no
+  `path` is a startup error, while a missing/empty/unstamped directory registers the tool
+  and fails honestly per call), `stamp_max_age_seconds` (93600 = 26h, bounds the
+  **last-pull** time only), `read_byte_budget` (8000), `search_result_count` (5).
+- `personal_data.docs_path_allowlist` — **default-deny** list of corpus paths (relative
+  to the docs root) `homelab_docs` may index. Filtering happens at index build, so a
+  non-allowlisted file yields no candidate and no snippet. **Empty/unset → surfaces
+  nothing**, with a diagnostic distinct from "corpus unavailable".
 - `reminders.*` — `enabled` (**defaults to false**, and that is the feature: a
   build that confidently accepts "remind me at six" and then says nothing at six
   has spent the owner's trust on a promise it cannot keep). When true it also
@@ -269,7 +283,9 @@ publish on `henk-handoffs`.
 
 | Tool | Class | Tier / scope | Backend |
 |---|---|---|---|
-| `homelab_health` | read-only | — | Gatus API (rp5:8080) + Prometheus HTTP API (vps:9090) over the tailnet — no SSH |
+| `homelab_health` | read-only | — | Gatus API (rp5:8080) + Prometheus HTTP API (vps:9090) over the tailnet — no SSH. Since read-depth its bars are the **same threshold objects** `homelab_query` uses (memory > 75 % used, disk < 15 % free on `/`, load reported with no bar), so the two tools cannot disagree |
+| `homelab_query` | read-only | — | six **named** queries over the same two backends — `node_resource_trend`, `scrape_targets`, `endpoint_history`, `freshness_check`, `container_state`, `dns_performance` — from a closed, reviewable registry: no free-form PromQL, every parameter a closed enum, every threshold traceable to a live alert rule, and `instance` / `scrapeUrl` / `server` values projected out so no tailnet address reaches a reply. Registered when `homelab_query.enabled` (default true) |
+| `homelab_docs` | read-only | — | `search` and `read` over the homelab documentation corpus, delivered as a **read-only bind mount** (no network, no credential in the container). Default-deny path allowlist applied at index build; every result carries the last-pull age and is marked stale past 26 h rather than hidden. Registered only when `homelab_docs.enabled` (default **false**) |
 | `todo_read` | read-only | — | obsidian-todo-api (vps:8089), GET only; **default-deny note-path allowlist** (`personal_data.todo_note_allowlist`) — surfaces only allowlisted personal notes, drops everything else in-process; empty allowlist → surfaces nothing |
 | `notify` | notify-only | — | ntfy (vps:2586), fixed topic, every message prefixed `[AI]`, no destination arg |
 | `publish_handoff` | notify-only | — | ntfy (vps:2586), fixed `henk-handoffs` topic, `[AI]`-prefixed, no destination arg; returns the message id |
@@ -279,6 +295,12 @@ publish on `henk-handoffs`.
 | `remind` | **mutating** | standing / owner-turn-only | one reminder into the local SQLite store (pending cap 100, refused naming the number); the reply echoes the **resolved** due time with its weekday, so a mis-read time is visible immediately |
 | `cancel_reminder` | **mutating** | standing / owner-turn-only | sets one pending reminder to `cancelled`; nothing is ever deleted, so what was asked for survives |
 | `reminders_read` | read-only | — | pending reminders, soonest first (page 20) |
+
+`homelab_docs` needs host provisioning that Henk never performs itself: a root-owned
+clone of the docs repo on rp5, a daily pull timer that writes the freshness stamp
+**after** the content, and the compose mount with host-path auto-creation disabled.
+Until the owner flips `homelab_docs.enabled`, the deployed toolset is unchanged apart
+from `homelab_query`.
 
 The reminder tools are registered only when `reminders.enabled` is true; with the
 capability off they are absent from the toolset entirely and the two commands
