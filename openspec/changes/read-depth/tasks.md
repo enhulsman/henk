@@ -89,9 +89,9 @@ mutation-test its removal — removing it would break every other tool.
 
 ## 7. Registration and startup
 
-- [ ] 7.1 Write startup tests per 5.12's split: config error kills startup; host state does not
-- [ ] 7.2 Write a toolset test asserting both tools register with read-only class, and that **no network call occurs during runtime construction** (discovery is first-use)
-- [ ] 7.3 Implement registration and the startup config check
+- [x] 7.1 Write startup tests per 5.12's split: config error kills startup; host state does not
+- [x] 7.2 Write a toolset test asserting both tools register with read-only class, and that **no network call occurs during runtime construction** (discovery is first-use)
+- [x] 7.3 Implement registration and the startup config check
 - [ ] 7.4 Run the full suite. Note the 1503-passed baseline is **invalidated** by the `homelab_health` amendment in §10 — record the new baseline and account for the delta rather than expecting 1503
 
 ## 8. Host provisioning on rp5 (owner-gated)

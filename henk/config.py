@@ -84,6 +84,29 @@ REMINDER_TOOL_SUMMARIES: tuple[tuple[str, str], ...] = (
     ("reminders_read", "list the owner's pending reminders, soonest first."),
 )
 
+#: Appended when `homelab_query.enabled` / `homelab_docs.enabled` (read-depth).
+#: Separate one-entry tuples rather than one group, because the two flags are
+#: independent: the query half ships on (it rides an existing egress grant) while
+#: the corpus half ships off until rp5 has a clone, a timer and an allowlist.
+#: Like `REMINDER_TOOL_SUMMARIES`, each is a capability flag — with a flag off the
+#: prompt is byte-identical to the one before that capability existed.
+QUERY_TOOL_SUMMARIES: tuple[tuple[str, str], ...] = (
+    (
+        "homelab_query",
+        "answer a specific homelab question — since when, how much, which one — "
+        "by running one of six named, owner-reviewed queries over the monitoring "
+        "backends. It takes no query expression: every argument is chosen from a "
+        "fixed set.",
+    ),
+)
+DOCS_TOOL_SUMMARIES: tuple[tuple[str, str], ...] = (
+    (
+        "homelab_docs",
+        "search and read the owner's homelab documentation, a section at a time. "
+        "Every result states how old the corpus is; say so when it is stale.",
+    ),
+)
+
 #: The v1 owner command set, and the reminder commands that join it when enabled.
 BASE_OWNER_COMMANDS = (
     "/new (fresh conversation), /remember, /forget, /memories, /capture, /inbox, "
@@ -106,7 +129,12 @@ COUNT_WORDS = {
 }
 
 
-def build_system_prompt(*, reminders_enabled: bool = False) -> str:
+def build_system_prompt(
+    *,
+    reminders_enabled: bool = False,
+    homelab_query_enabled: bool = False,
+    homelab_docs_enabled: bool = False,
+) -> str:
     """Compose the session system prompt from one source of truth.
 
     The enumeration and the spelled-out count both come from the tuples above. The
@@ -114,18 +142,34 @@ def build_system_prompt(*, reminders_enabled: bool = False) -> str:
     honest if the enumeration matches the registry, so the count must not be a
     literal someone has to remember to update — it was one, and this change would
     have been the second place to forget it.
+
+    **Every capability flag defaults to off**, including the two whose *config*
+    default is on. The builder's defaults describe "no capability beyond v1", so a
+    build with a flag off produces the prompt as it stood before that capability
+    existed; the real flags come from :meth:`Config.from_dict`, which is the only
+    caller that knows what this deployment actually registered.
     """
-    summaries = BASE_TOOL_SUMMARIES + (
-        REMINDER_TOOL_SUMMARIES if reminders_enabled else ()
+    summaries = (
+        BASE_TOOL_SUMMARIES
+        + (REMINDER_TOOL_SUMMARIES if reminders_enabled else ())
+        + (QUERY_TOOL_SUMMARIES if homelab_query_enabled else ())
+        + (DOCS_TOOL_SUMMARIES if homelab_docs_enabled else ())
     )
     count = COUNT_WORDS[len(summaries)]
     # With reminders on, "no scheduling" would be a lie: `remind` schedules a
     # message. Cron and workflows stay excluded — a reminder is not automation.
-    excluded = (
-        "no cron, workflows, web, files, or shell"
-        if reminders_enabled
-        else "no scheduling, cron, workflows, web, files, or shell"
+    # With the corpus on, "no files" is a lie in the same way: `homelab_docs` reads
+    # documentation files off a read-only mount. It reads them by section id from
+    # its own index and cannot be handed a path, which is what the tool line says —
+    # but "no files" beside a tool that reads files is the kind of small untruth
+    # the model then has to reconcile.
+    excluded_terms = (
+        ([] if reminders_enabled else ["scheduling"])
+        + ["cron", "workflows", "web"]
+        + ([] if homelab_docs_enabled else ["files"])
+        + ["shell"]
     )
+    excluded = "no " + ", ".join(excluded_terms[:-1]) + ", or " + excluded_terms[-1]
     commands = BASE_OWNER_COMMANDS + (
         ", " + REMINDER_OWNER_COMMANDS if reminders_enabled else ""
     )
@@ -720,7 +764,11 @@ class Config:
                 # reminders off it is byte-identical to the pre-change prompt.
                 system_prompt=agent_sec.get(
                     "system_prompt",
-                    build_system_prompt(reminders_enabled=reminders.enabled),
+                    build_system_prompt(
+                        reminders_enabled=reminders.enabled,
+                        homelab_query_enabled=homelab_query.enabled,
+                        homelab_docs_enabled=homelab_docs.enabled,
+                    ),
                 ),
             ),
             signal=SignalConfig(

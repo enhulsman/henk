@@ -79,11 +79,28 @@ DELIVERY_ONLY_COLUMNS = (
 )
 
 
+def _read_depth_off(raw: dict) -> dict:
+    """Turn read depth's two flags off in a raw config dict.
+
+    This file's claim is about the REMINDERS kill switch: with no `reminders`
+    section, nothing reminders ever added is observable. `read-depth` later added
+    `homelab_query`, whose flag defaults ON — a deliberate toolset change (its
+    query half rides an egress grant that already exists, so there is nothing for
+    an off state to protect). Holding the reminders claim exact therefore means
+    holding read depth's own flags at off here, rather than widening the baseline
+    to absorb another change's tool and losing the property this file guards.
+    """
+    raw = dict(raw)
+    raw["homelab_query"] = {"enabled": False}
+    raw["homelab_docs"] = {"enabled": False}
+    return raw
+
+
 def _disabled_config(tmp_path: Path) -> Config:
     """A config with no `reminders` section at all — the deployed shape."""
     raw = _minimal_raw("+31600000000")
     assert "reminders" not in raw
-    config = Config.from_dict(raw, env={})
+    config = Config.from_dict(_read_depth_off(raw), env={})
     object.__setattr__(config.store, "path", str(tmp_path / "inert.db"))
     return config
 
@@ -114,11 +131,19 @@ def test_the_registry_is_byte_identical_to_before(tmp_path: Path):
 
 
 def test_the_system_prompt_is_byte_identical_to_before(tmp_path: Path):
+    # The two loader-composed entries pass through `_read_depth_off` for the reason
+    # given there: this asserts the reminders kill switch, and `read-depth`'s query
+    # half deliberately ships on. The two builder entries need no such treatment —
+    # every capability flag defaults to OFF in `build_system_prompt`, so its
+    # defaults still describe the prompt as it stood before either change.
+    import yaml
+
+    sample_raw = yaml.safe_load(SAMPLE.read_text(encoding="utf-8"))
     for prompt in (
         AgentConfig().system_prompt,
         build_system_prompt(),
-        Config.from_dict(_minimal_raw("+1"), env={}).agent.system_prompt,
-        Config.load(SAMPLE, env={}).agent.system_prompt,
+        Config.from_dict(_read_depth_off(_minimal_raw("+1")), env={}).agent.system_prompt,
+        Config.from_dict(_read_depth_off(sample_raw), env={}).agent.system_prompt,
     ):
         assert (
             hashlib.sha256(prompt.encode()).hexdigest()

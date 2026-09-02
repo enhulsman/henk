@@ -404,3 +404,120 @@ a new costume: an assertion naming **one value** is only as strong as that
 value's position in the payload. A partial capture is a plausible defect — "just
 log a preview" — and it defeated the narrowest test in the file while eight
 others caught it.
+
+---
+
+## §7 — Registration and startup
+
+**Applied:** 2026-09-02. Tasks 7.1–7.3 (7.4 deliberately left open: the final
+baseline is recorded once §10's `homelab_health` amendment merges). New file
+`tests/test_read_depth_registration.py` (+30 tests). After §6 this checkout stood
+at **1840 passed, 12 deselected**; after §7 it stands at **1870**.
+
+### What was implemented
+
+| file | change |
+|---|---|
+| `henk/tools/__init__.py` | both tools registered, each behind its own flag; a startup WARNING when the corpus allowlist is empty |
+| `henk/config.py` | `QUERY_TOOL_SUMMARIES` / `DOCS_TOOL_SUMMARIES`, two new `build_system_prompt` flags, and the loader passing the real values |
+| `tests/test_production_registry.py` | `EXPECTED` gains `homelab_query`; `homelab_docs` asserted absent by name; the enumeration test reads the composed prompt |
+| `tests/test_reminders_inert.py` | `_read_depth_off` keeps the reminders kill-switch claim exact (see decision 23) |
+
+Constructor arguments follow the existing tools exactly: `homelab_query` takes the
+shared `client`, `endpoints.gatus` / `endpoints.prometheus` base URLs **and their
+own timeouts** (no new timeout key), and `homelab_query.query_range_max_points`.
+`homelab_docs` takes the corpus path, its three bounds, and its allowlist from
+`personal_data.docs_path_allowlist` — the same shape `todo_read` uses, warning
+included.
+
+### What the deployed toolset becomes
+
+rp5's `config.yaml` is skip-worktree'd and carries no read-depth keys, so the
+loader's defaults *are* the deployed values:
+
+- **`homelab_query` registers** (`enabled` defaults true). It rides the `tag:henk`
+  egress `homelab_health` already uses, so there is nothing to provision.
+- **`homelab_docs` does not** (`enabled` defaults false), until the owner sets the
+  path, the allowlist and the flag — migration steps 5 and 6.
+
+So rp5 goes from ten registered tools to eleven (reminders are live there), and
+the prompt's count word moves with it because both derive from one tuple.
+
+### §7 — Decisions made alone
+
+21. **Every capability flag defaults to OFF in `build_system_prompt`, including
+    the one whose config default is ON.** The builder's defaults now mean "v1 plus
+    nothing", so `build_system_prompt()` and `AgentConfig()`'s dataclass default
+    stay byte-identical to the pre-reminders prompt; the *loader* is the only
+    caller that knows what this deployment registered, and it passes all three
+    real flags. The alternative — mirroring the config defaults — would have made
+    the dataclass default match a default deployment but broken
+    `test_the_count_and_the_enumeration_derive_from_one_source` and both prompt
+    byte-identity assertions for no gain, since the property that actually matters
+    is asserted directly: `test_the_composed_prompt_matches_the_registry_this_config_produces`
+    compares the enumeration against the registry **in order** across all eight
+    combinations of the three flags.
+
+22. **The two new tools are appended after the reminders group, not slotted
+    beside `homelab_health`.** Grouping the homelab tools together would read
+    better, but the enumeration and the registry are compared element-wise, so
+    both orders have to agree — and appending is the shape the reminders group
+    already established. Twelve is now the largest toolset this build can produce,
+    which is exactly the top of `COUNT_WORDS`; a thirteenth tool raises a
+    `KeyError` in the composer rather than shipping a wrong count, and the
+    all-flags-on test is what reaches that boundary.
+
+23. **`test_reminders_inert` was narrowed, not weakened.** That file asserts the
+    *reminders* kill switch: with no `reminders` section, the registry, the prompt
+    and the command set are byte-identical to before. `homelab_query` ships on, so
+    four assertions there broke. The fix is `_read_depth_off`, which turns read
+    depth's own flags off in the raw config — holding the reminders claim exactly
+    as strong as it was, rather than widening its baseline to absorb another
+    change's tool and losing the property the file exists for. Two of the four
+    prompt entries need no treatment at all, which is decision 21 paying for
+    itself.
+
+24. **`homelab_docs` enabled with an empty allowlist registers and warns**, the
+    `todo_read` precedent verbatim. D13 requires the two default-deny gates to
+    produce distinct diagnostics at call time; this is the startup half of the
+    same idea — safe, useless, and loud rather than silently unhelpful.
+
+25. **The prompt no longer claims "no files" when the corpus tool is on.**
+    `homelab_docs` reads documentation files off a read-only mount. It reads them
+    by section id and cannot be handed a path, which is what its tool line says —
+    but "no files" beside a tool that reads files is the same small untruth
+    `reminders` removed when it dropped "no scheduling". The excluded-capability
+    list is now composed from the flags, and both pre-existing combinations render
+    byte-identically to the strings they replaced.
+
+26. **7.2's "no network call during construction" is asserted twice, at two
+    levels.** Once on `build_production_registry` with a transport that raises on
+    any request, and once on `build_runtime` with `httpx.AsyncClient` patched so
+    the client it builds *itself* carries that transport — `build_runtime`'s
+    docstring makes the promise, so the promise is tested where it is made. The
+    registry-level test additionally asserts `_discovered_endpoints is None`,
+    because a seeded key set would mean discovery ran somewhere regardless of
+    which transport saw it.
+
+### §7 — Mutations
+
+Most §7 tests were red before the implementation existed. The four that passed on
+first run did so **vacuously** — nothing was registered yet — so each was mutated
+once registration existed.
+
+| # | mutation | outcome |
+|---|---|---|
+| M32 | the docs tool registered unconditionally (the `enabled` guard dropped) | **caught** — 6 failures across three files |
+| M33 | the query tool registered unconditionally | **caught** — 4 failures |
+| M34 | a missing corpus directory turned into a `ConfigError` at load — D11 layer 2 inverted | **caught** — 7 failures, `missing` first among them |
+| M35 | `discovered_endpoints=()` passed at registration, so discovery is seeded at construction | **caught** — 1 failure, the first-use assertion |
+| M36 | the two new groups swapped in the prompt's enumeration order | **caught** — 2 failures, both from the all-flags-on ordering cases |
+
+M36 came with a lesson that is not about the code: the mutation was reverted with
+`cp` **in the same second** the interpreter had cached the mutated bytecode, and
+CPython's mtime-and-size `.pyc` check accepted the stale cache — so the revert
+looked like it had failed and the two failures persisted into a clean run.
+`inspect.getsource` reads the file and showed the correct source while the loaded
+module behaved otherwise, which is exactly the confusing signature. `touch` on the
+source file resolved it. When a revert appears not to take, suspect the cache
+before the code.

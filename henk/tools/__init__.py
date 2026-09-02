@@ -18,7 +18,9 @@ from henk.tools.base import (
     TurnType,
 )
 from henk.tools.capture import CaptureTool, InboxReadTool
+from henk.tools.homelab_docs import HomelabDocsTool
 from henk.tools.homelab_health import HomelabHealthTool
+from henk.tools.homelab_query import HomelabQueryTool
 from henk.tools.memory import StoreMemoryTool
 from henk.tools.notify import NotifyTool
 from henk.tools.publish_handoff import PublishHandoffTool
@@ -39,7 +41,9 @@ __all__ = [
     "ToolResult",
     "TurnType",
     "CaptureTool",
+    "HomelabDocsTool",
     "HomelabHealthTool",
+    "HomelabQueryTool",
     "InboxReadTool",
     "StoreMemoryTool",
     "TaigaReadTool",
@@ -107,6 +111,11 @@ def build_production_registry(
     folder-boundary prefix and drops everything else; an empty/unset allowlist
     surfaces nothing (fail closed). Registering with an empty effective allowlist is
     safe but useless, so a startup WARNING is emitted in that case.
+
+    ``homelab_query`` and ``homelab_docs`` are the read-depth pair, each behind its
+    own flag and each read-only. ``homelab_query`` ships **enabled**; ``homelab_docs``
+    ships **disabled** and registers on host state alone being bad, so a broken
+    corpus is a per-call error rather than a silently absent tool.
 
     ``taiga_read`` remains deliberately NOT registered (fast-follow): the Taiga
     instance holds mixed personal/work projects, so it needs the same default-deny
@@ -179,4 +188,46 @@ def build_production_registry(
         )
         # Read-only, so it bypasses the gate and takes no receipt.
         registry.register(RemindersReadTool(stores.reminders, resolver))
+    # Read depth. Both halves are read-only and both are behind their own flag,
+    # because they stage differently: the queries ride the `tag:henk` egress
+    # `homelab_health` already uses (rp5:8080, vps:9090), so they ship ON with no
+    # host provisioning to wait for; the corpus needs a clone, a pull timer and a
+    # path allowlist on rp5 first, so it ships OFF and the owner flips it last.
+    if config.homelab_query.enabled:
+        # Both backends keep the timeout their own endpoint section declares —
+        # no new timeout key, so `homelab_health` and `homelab_query` cannot time
+        # out at different bounds against the same backend. Nothing is discovered
+        # here: `endpoint_history`'s domain is read at FIRST USE, which is what
+        # keeps `build_runtime`'s "nothing network-facing is opened here" true.
+        registry.register(
+            HomelabQueryTool(
+                client,
+                gatus_url=config.gatus.base_url,
+                prometheus_url=config.prometheus.base_url,
+                gatus_timeout=config.gatus.timeout_seconds,
+                prometheus_timeout=config.prometheus.timeout_seconds,
+                max_points=config.homelab_query.query_range_max_points,
+            )
+        )
+    if config.homelab_docs.enabled:
+        # Registered on HOST STATE alone being bad — a missing, empty, unreadable
+        # or unstamped corpus still registers and fails honestly per call (design
+        # D11 layer 2). An absent tool produces no honest failure at all: the model
+        # would answer documentation questions from its priors with no marker that
+        # the corpus was unreachable. Only a CONFIG error (enabled with no path)
+        # refuses, and it does so at load, before this function is reached.
+        docs = HomelabDocsTool(
+            path=config.homelab_docs.path,
+            allowlist=config.personal_data.docs_path_allowlist,
+            stamp_max_age_seconds=config.homelab_docs.stamp_max_age_seconds,
+            read_byte_budget=config.homelab_docs.read_byte_budget,
+            search_result_count=config.homelab_docs.search_result_count,
+        )
+        if not docs.effective_allowlist:
+            logger.warning(
+                "homelab_docs registered but always empty — no allowlist "
+                "configured (personal_data.docs_path_allowlist); it will surface "
+                "nothing"
+            )
+        registry.register(docs)
     return registry

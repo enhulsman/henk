@@ -44,6 +44,9 @@ EXPECTED = {
         (TurnType.OWNER,),
     ),
     "inbox_read": (ToolClass.READ_ONLY, None, None),
+    # read-depth's query half ships enabled: it rides the tag:henk egress
+    # homelab_health already uses, so there is no host provisioning to stage.
+    "homelab_query": (ToolClass.READ_ONLY, None, None),
 }
 
 
@@ -52,6 +55,10 @@ def test_registry_contains_exactly_the_intended_toolset(registry):
     # taiga_read stays deliberately unregistered: the Taiga instance mixes personal
     # and work projects and its project-id allowlist does not exist yet.
     assert "taiga_read" not in registry.names()
+    # homelab_docs stays unregistered until the owner flips its key: the corpus
+    # arrives as a bind mount from a host-side clone rp5 does not have yet, so
+    # enabling it sooner registers a tool that can only answer "corpus unavailable".
+    assert "homelab_docs" not in registry.names()
 
 
 def test_each_tool_carries_its_declared_class_tier_and_scope(registry):
@@ -78,19 +85,30 @@ def test_the_registry_now_deliberately_contains_mutating_tools(registry):
 # --- The enumerated toolset must match the registry (task 6.2) ------------
 
 
-def test_default_system_prompt_enumerates_every_registered_tool(registry):
+def test_composed_system_prompt_enumerates_every_registered_tool(registry):
     # Henk's honest-capability framing is only honest if the enumeration and the
     # registry agree. This is the drift that would make him claim a tool he does
     # not have, or hide one he does.
-    from henk.config import BASE_TOOL_SUMMARIES, COUNT_WORDS, AgentConfig
+    #
+    # Read off the prompt this CONFIG composes, not off `AgentConfig()`'s dataclass
+    # default. Every capability flag defaults to off in the builder while some
+    # default to on in the loader (read-depth's query half does), so the dataclass
+    # default describes "v1 plus nothing" rather than this deployment — comparing
+    # against it would assert the wrong pair the moment a flag's two defaults
+    # differ, which they now do.
+    from henk.config import BASE_TOOL_SUMMARIES, COUNT_WORDS, QUERY_TOOL_SUMMARIES
 
-    prompt = AgentConfig().system_prompt
+    config = Config.load(SAMPLE, env={})
+    prompt = config.agent.system_prompt
     for name in registry.names():
         assert name in prompt, f"{name} is registered but not enumerated"
     # The count is DERIVED, not asserted as a literal: reminders-core made this the
     # second place a hardcoded "seven" would have had to be updated, so both the
     # prompt and this test now read one source.
-    assert [name for name, _ in BASE_TOOL_SUMMARIES] == registry.names()
+    expected = BASE_TOOL_SUMMARIES + (
+        QUERY_TOOL_SUMMARIES if config.homelab_query.enabled else ()
+    )
+    assert [name for name, _ in expected] == registry.names()
     assert COUNT_WORDS[len(registry.names())] in prompt
 
 
