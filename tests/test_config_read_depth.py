@@ -186,11 +186,20 @@ def test_the_corpus_allowlist_sits_with_the_other_tier_w_allowlists():
     # todo-tool section, because the data axis is reviewed as one surface. The
     # corpus allowlist is the same kind of boundary (design D13) and belongs
     # beside it, not in the tool's own section.
+    #
+    # ENUMERATED so a field cannot be added silently — the point is that widening
+    # the Tier-W data axis has to be a deliberate, reviewed edit here. Amended by
+    # `session-awareness` (task 2.7) for `session_project_allowlist`, the label
+    # allowlist for the workstation session feed: the source estate mixes personal
+    # and work sessions, so it is the same kind of boundary and sits in the same
+    # reviewable surface rather than in the new `sessions` section. Its own tests
+    # live in `tests/test_config_sessions.py`.
     fields = {f.name for f in dataclasses.fields(PersonalDataConfig)}
     assert fields == {
         "todo_note_allowlist",
         "taiga_project_allowlist",
         "docs_path_allowlist",
+        "session_project_allowlist",
     }
 
 

@@ -37,17 +37,17 @@
 
 ## 2. Config surface (Henk side)
 
-- [ ] 2.1 Write config tests first: every `sessions` key resolves to its default when the section is absent, exercised through `Config.from_dict` with an empty mapping — assert against a builder that never reads the key, not against dataclass attributes
-- [ ] 2.2 Write the owner-acknowledgement finding-2 test: a config omitting every new key yields `enabled == False`, pinned in both the dataclass and the `from_dict` literal
-- [ ] 2.3 Write validator tests: non-positive durations rejected by name; `lookback_seconds < stale_after_seconds` rejected naming both; `topic` containing `/` or `,` rejected; validation runs with `enabled: false`; the `stale_after_seconds` default is 1500
-- [ ] 2.4 Write the no-new-secret test: `Secrets.from_env` field set is unchanged, and no `sessions` key names a token or a URL
-- [ ] 2.5 Write the allowlist default-resolution test: a configuration mapping omitting `personal_data.session_project_allowlist` resolves through `Config.from_dict` to an empty allowlist, asserted through a consumer rather than a dataclass attribute
-- [ ] 2.6 Write the allowlist normalisation tests: entries are matched exactly after a whitespace strip; an entry empty after the strip is discarded and does not broaden scope; an empty allowlist surfaces nothing
-- [ ] 2.7 Update the pinned `PersonalDataConfig` field-set test (`tests/test_config_read_depth.py:189-194`) and its comment for the new key — that test exists so a silent field addition is impossible, so the update is deliberate and reviewed, not incidental
-- [ ] 2.8 Add the new keys at their default values to the sample `config.yaml`, and write the agreement test pinning the sample against the dataclass defaults
-- [ ] 2.9 Implement `SessionsConfig`, the `_SESSIONS_SETTINGS` bounded-settings table, `session_project_allowlist` on `PersonalDataConfig`, the `from_dict` read blocks, and `_validate_sessions_settings`, following the read-depth pattern so defaults are not duplicated across dataclass and builder
-- [ ] 2.10 Write the count-table test: the production registry with reminders, query, docs, and sessions all enabled composes a system prompt whose spelled-out count matches the registered tool count; then extend `COUNT_WORDS` (`henk/config.py:122-129`) to `thirteen`
-- [ ] 2.11 Write the prompt-summary test and implement `SESSIONS_TOOL_SUMMARIES` plus a `sessions_enabled` argument on `build_system_prompt` (`henk/config.py:132-156`): enabled composes a prompt carrying the summary — "sessions_read — the owner's Claude Code sessions on the workstation, as last reported. Every result states how old the report is; say so when it is stale, and never present listed sessions as all sessions." — and disabled composes one that omits it
+- [x] 2.1 Write config tests first: every `sessions` key resolves to its default when the section is absent, exercised through `Config.from_dict` with an empty mapping — assert against a builder that never reads the key, not against dataclass attributes
+- [x] 2.2 Write the owner-acknowledgement finding-2 test: a config omitting every new key yields `enabled == False`, pinned in both the dataclass and the `from_dict` literal
+- [x] 2.3 Write validator tests: non-positive durations rejected by name; `lookback_seconds < stale_after_seconds` rejected naming both; `topic` containing `/` or `,` rejected; validation runs with `enabled: false`; the `stale_after_seconds` default is 1500
+- [x] 2.4 Write the no-new-secret test: `Secrets.from_env` field set is unchanged, and no `sessions` key names a token or a URL
+- [x] 2.5 Write the allowlist default-resolution test: a configuration mapping omitting `personal_data.session_project_allowlist` resolves through `Config.from_dict` to an empty allowlist, asserted through a consumer rather than a dataclass attribute
+- [x] 2.6 Write the allowlist normalisation tests: entries are matched exactly after a whitespace strip; an entry empty after the strip is discarded and does not broaden scope; an empty allowlist surfaces nothing
+- [x] 2.7 Update the pinned `PersonalDataConfig` field-set test (`tests/test_config_read_depth.py:189-194`) and its comment for the new key — that test exists so a silent field addition is impossible, so the update is deliberate and reviewed, not incidental
+- [x] 2.8 Add the new keys at their default values to the sample `config.yaml`, and write the agreement test pinning the sample against the dataclass defaults
+- [x] 2.9 Implement `SessionsConfig`, the `_SESSIONS_SETTINGS` bounded-settings table, `session_project_allowlist` on `PersonalDataConfig`, the `from_dict` read blocks, and `_validate_sessions_settings`, following the read-depth pattern so defaults are not duplicated across dataclass and builder
+- [x] 2.10 Write the count-table test: the production registry with reminders, query, docs, and sessions all enabled composes a system prompt whose spelled-out count matches the registered tool count; then extend `COUNT_WORDS` (`henk/config.py:122-129`) to `thirteen`
+- [x] 2.11 Write the prompt-summary test and implement `SESSIONS_TOOL_SUMMARIES` plus a `sessions_enabled` argument on `build_system_prompt` (`henk/config.py:132-156`): enabled composes a prompt carrying the summary — "sessions_read — the owner's Claude Code sessions on the workstation, as last reported. Every result states how old the report is; say so when it is stale, and never present listed sessions as all sessions." — and disabled composes one that omits it
 
 ## 3. The publisher — classification
 

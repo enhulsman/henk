@@ -87,10 +87,18 @@ endpoints:
 # owner writes `devices/workstation.md`, not the mount's internal prefix. Empty
 # here on purpose — the owner's membership decision lives in the deployed rp5
 # config, and an unset allowlist surfaces nothing rather than everything.
+#
+# session_project_allowlist is the default-deny label allowlist for the workstation
+# session feed (sessions below). Entries are the publisher's configured PROJECT
+# LABELS — never paths — matched exactly after a whitespace strip; a blank entry is
+# discarded rather than treated as a wildcard. The workstation estate mixes personal
+# and work sessions, so this gate applies even though the publisher already filters:
+# empty here surfaces NOTHING, which is the state this repo ships.
 personal_data:
   todo_note_allowlist: []
   taiga_project_allowlist: []
   docs_path_allowlist: []
+  session_project_allowlist: []
 
 # Event intake (henk-events v1.2). `enabled: false` is the rollback flag — the
 # subscriber never starts and Henk behaves exactly as v1. Topics ride the single
@@ -253,3 +261,37 @@ homelab_docs:
   # ranker misses paraphrases and the mitigation is candidates rather than a
   # smarter matcher; bounded, because each one carries a snippet.
   search_result_count: 5
+
+# Session awareness (sessions_read). Ships DISABLED, and that is the feature: the
+# snapshot Henk reads is produced by a publisher that runs on the owner's
+# workstation and posts to a dedicated ntfy topic, and none of that exists until
+# the publisher, the write-only ntfy user, the topic grant and the label allowlist
+# have been provisioned by hand. Enabled before then, the tool can only report
+# that nothing is in scope.
+#
+# Enabling is a deliberate TWO-key edit on rp5, and the two keys must move
+# TOGETHER: `personal_data.session_project_allowlist` above AND this flag. Setting
+# the flag alone loads fine and then answers every question with "no sessions are
+# in scope" — the expected symptom of a half-applied step, not a bug.
+#
+# There is deliberately NO key here for a base URL, a timeout, or a token: the
+# topic is read over `endpoints.ntfy` above with the credential Henk already holds,
+# and a second timeout source would let two tools time out at different bounds
+# against one backend.
+sessions:
+  enabled: false
+  # The topic the workstation publisher posts to. ONE topic name: no `/` and no
+  # `,`. A comma is ntfy's topic-list separator, so a comma here would silently
+  # widen the read to a second topic; startup refuses both.
+  topic: "henk-sessions"
+  # How old a snapshot may be before every result carries a staleness headline.
+  # 1500s = the publisher's 900s heartbeat plus two 300s ticks of slack (what the
+  # heartbeat boundary rule can actually cost): a healthy publisher is never called
+  # stale, a dead timer is within 25 minutes. Also the window of the first poll.
+  stale_after_seconds: 1500
+  # How far back the second poll stage looks when the fresh window holds no usable
+  # snapshot. 21600s = 6h: long enough to say "last reported at 03:12" after a
+  # night's sleep, well inside the ntfy instance's 72h cache. Must be at least
+  # stale_after_seconds, or a merely stale snapshot would be reported as never
+  # published.
+  lookback_seconds: 21600

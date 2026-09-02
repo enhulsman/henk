@@ -107,6 +107,20 @@ DOCS_TOOL_SUMMARIES: tuple[tuple[str, str], ...] = (
     ),
 )
 
+#: Appended when `sessions.enabled` (session-awareness D12). Same contract as the
+#: two above: with the flag off the prompt is byte-identical to the one before this
+#: capability existed. The summary carries the two honesty clauses the capability
+#: depends on — every result states the snapshot's age, and the listed sessions are
+#: a filtered view rather than the estate.
+SESSIONS_TOOL_SUMMARIES: tuple[tuple[str, str], ...] = (
+    (
+        "sessions_read",
+        "the owner's Claude Code sessions on the workstation, as last reported. "
+        "Every result states how old the report is; say so when it is stale, and "
+        "never present listed sessions as all sessions.",
+    ),
+)
+
 #: The v1 owner command set, and the reminder commands that join it when enabled.
 BASE_OWNER_COMMANDS = (
     "/new (fresh conversation), /remember, /forget, /memories, /capture, /inbox, "
@@ -126,6 +140,7 @@ COUNT_WORDS = {
     10: "ten",
     11: "eleven",
     12: "twelve",
+    13: "thirteen",
 }
 
 
@@ -134,6 +149,7 @@ def build_system_prompt(
     reminders_enabled: bool = False,
     homelab_query_enabled: bool = False,
     homelab_docs_enabled: bool = False,
+    sessions_enabled: bool = False,
 ) -> str:
     """Compose the session system prompt from one source of truth.
 
@@ -154,6 +170,7 @@ def build_system_prompt(
         + (REMINDER_TOOL_SUMMARIES if reminders_enabled else ())
         + (QUERY_TOOL_SUMMARIES if homelab_query_enabled else ())
         + (DOCS_TOOL_SUMMARIES if homelab_docs_enabled else ())
+        + (SESSIONS_TOOL_SUMMARIES if sessions_enabled else ())
     )
     count = COUNT_WORDS[len(summaries)]
     # With reminders on, "no scheduling" would be a lie: `remind` schedules a
@@ -329,11 +346,21 @@ class PersonalDataConfig:
     scoping requirement rather than claiming an exemption from it. Entries are
     paths relative to the **documentation root**, so the owner writes
     ``devices/workstation.md``, not the mount's internal prefix.
+
+    ``session_project_allowlist`` scopes the workstation session feed
+    (session-awareness D12), and lives here for the same reason: the source estate
+    mixes the owner's personal and work sessions, so the capability falls under the
+    existing scoping requirement and being downstream of the publisher's own filter
+    does not discharge it. Entries are the publisher's configured **project
+    labels** — never paths — matched exactly after a whitespace strip by
+    :func:`normalise_label_allowlist`, which the loader applies once so the tool's
+    gate cannot re-derive the rule slightly differently.
     """
 
     todo_note_allowlist: tuple[str, ...] = ()
     taiga_project_allowlist: tuple[str, ...] = ()
     docs_path_allowlist: tuple[str, ...] = ()
+    session_project_allowlist: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -400,6 +427,43 @@ class HomelabDocsConfig:
     #: keyword ranker misses paraphrases and the mitigation is candidates rather
     #: than a smarter matcher (design D8); bounded, because each carries a snippet.
     search_result_count: int = 5
+
+
+@dataclass(frozen=True)
+class SessionsConfig:
+    """Session awareness. Defaults to **disabled**, and that is the feature.
+
+    The snapshot Henk reads is produced by a publisher that runs on the owner's
+    workstation and posts to a dedicated ntfy topic. None of that exists until the
+    publisher, the write-only ntfy user, the topic grant and the label allowlist
+    have been provisioned by hand, and a tool enabled before then can only ever
+    report that nothing is in scope. Off is the honest state until migration step 8
+    is done, and enabling it is a deliberate TWO-key host-side edit:
+    ``personal_data.session_project_allowlist`` and this flag, together.
+
+    There is deliberately **no key here for a base URL, a timeout, or a token**.
+    The topic is read over ``endpoints.ntfy`` with the credential Henk already
+    holds, and a second timeout source would let two tools time out at different
+    bounds against the same backend. There is also no key that widens what a
+    snapshot may carry: the rendered field set is closed in code (design D3), and
+    it widens through code review alone.
+    """
+
+    enabled: bool = False
+    #: The topic the workstation publisher posts to. ONE topic name — no ``/`` and
+    #: no ``,`` — because ntfy accepts a comma-separated list and a comma here
+    #: would silently widen the read to a second topic.
+    topic: str = "henk-sessions"
+    #: How old a snapshot may be before every result carries a staleness headline.
+    #: 1500s = the publisher's 900s heartbeat plus two 300s ticks of slack, which
+    #: is what the heartbeat boundary rule can actually cost (design D7/D10): a
+    #: healthy publisher is never called stale, a dead timer is within 25 minutes.
+    stale_after_seconds: int = 1500
+    #: How far back the second poll stage looks when the fresh window holds no
+    #: usable snapshot. 21600s = 6h: long enough to say "last reported at 03:12"
+    #: after a night's sleep rather than only "nothing in the last hour", and well
+    #: inside the ntfy instance's 72h cache (design D9).
+    lookback_seconds: int = 21600
 
 
 @dataclass(frozen=True)
@@ -576,6 +640,7 @@ class Config:
     personal_data: PersonalDataConfig = field(default_factory=PersonalDataConfig)
     homelab_query: HomelabQueryConfig = field(default_factory=HomelabQueryConfig)
     homelab_docs: HomelabDocsConfig = field(default_factory=HomelabDocsConfig)
+    sessions: SessionsConfig = field(default_factory=SessionsConfig)
     secrets: Secrets = field(default_factory=Secrets)
 
     @classmethod
@@ -724,6 +789,11 @@ class Config:
                 pd_sec.get("taiga_project_allowlist", []) or []
             ),
             docs_path_allowlist=tuple(pd_sec.get("docs_path_allowlist", []) or []),
+            # Normalised HERE, once, so the tool's gate reads an already-canonical
+            # tuple and cannot re-derive the strip-and-discard rule differently.
+            session_project_allowlist=normalise_label_allowlist(
+                pd_sec.get("session_project_allowlist")
+            ),
         )
 
         query_sec = raw.get("homelab_query", {}) or {}
@@ -742,6 +812,19 @@ class Config:
             ),
         )
         _validate_read_depth_settings(homelab_query, homelab_docs)
+
+        sessions_sec = raw.get("sessions", {}) or {}
+        # A non-string topic is deliberately passed through unchanged rather than
+        # coerced, so `_validate_sessions_settings` refuses it naming the setting.
+        raw_topic = sessions_sec.get("topic", SessionsConfig.topic)
+        sessions = SessionsConfig(
+            enabled=bool(sessions_sec.get("enabled", SessionsConfig.enabled)),
+            topic=raw_topic.strip() if isinstance(raw_topic, str) else raw_topic,
+            **_bounded_settings(
+                "sessions", sessions_sec, SessionsConfig, _SESSIONS_SETTINGS
+            ),
+        )
+        _validate_sessions_settings(sessions)
 
         config = cls(
             owner=OwnerConfig(
@@ -768,6 +851,7 @@ class Config:
                         reminders_enabled=reminders.enabled,
                         homelab_query_enabled=homelab_query.enabled,
                         homelab_docs_enabled=homelab_docs.enabled,
+                        sessions_enabled=sessions.enabled,
                     ),
                 ),
             ),
@@ -814,6 +898,7 @@ class Config:
             personal_data=personal_data,
             homelab_query=homelab_query,
             homelab_docs=homelab_docs,
+            sessions=sessions,
             secrets=Secrets.from_env(env),
         )
         # Post-assembly on purpose: the two values it relates deliberately live in
@@ -914,6 +999,14 @@ _DOCS_SETTINGS: tuple[tuple[str, Any], ...] = (
     ("search_result_count", int),
 )
 
+#: The two session-awareness durations, in the same table-driven shape. ``int``
+#: rather than ``float`` because both are interpolated into ntfy's ``since=<N>s``
+#: query parameter, where a float renders ``1500.0s`` and the server refuses it.
+_SESSIONS_SETTINGS: tuple[tuple[str, Any], ...] = (
+    ("stale_after_seconds", int),
+    ("lookback_seconds", int),
+)
+
 #: A range summary needs at least a first and a last sample; with one point,
 #: first/last/min/max collapse and "direction of travel" is unanswerable.
 MIN_RANGE_POINTS = 2
@@ -988,6 +1081,95 @@ def _validate_read_depth_settings(
             "typo into an empty directory that reads exactly like 'no match'. "
             "Set homelab_docs.path to the mounted corpus directory, or set "
             "homelab_docs.enabled to false."
+        )
+
+
+def normalise_label_allowlist(entries: Any) -> tuple[str, ...]:
+    """Canonicalise a label allowlist: strip each entry, discard the empties.
+
+    The ONE home for the rule, applied by the loader so every consumer — the
+    ``sessions_read`` gate included — reads an already-canonical tuple and cannot
+    re-derive it slightly differently. Two behaviours, each earned:
+
+    - **Whitespace-stripped, then matched exactly.** The owner writes this list by
+      hand on rp5, in YAML, and a trailing space is invisible in an editor. Exact
+      matching (rather than a prefix rule) is what keeps a sibling label whose name
+      merely starts the same way out of scope.
+    - **An entry empty after the strip is discarded.** A blank line in the host's
+      YAML list would otherwise become an entry that matches a session whose
+      ``project`` is itself empty — scope widened by a typo, in the one direction
+      this allowlist exists to prevent.
+
+    A non-string entry is refused rather than coerced: ``str(7)`` would install a
+    label no publisher can emit, and the operator would see an empty result with
+    nothing to explain it.
+    """
+    if entries is None:
+        return ()
+    if isinstance(entries, str) or not isinstance(entries, (list, tuple)):
+        raise ConfigError(
+            "personal_data.session_project_allowlist must be a list of project "
+            f"labels; got {entries!r}"
+        )
+    normalised: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, str):
+            raise ConfigError(
+                "personal_data.session_project_allowlist entries must be strings "
+                f"(project labels); got {entry!r}"
+            )
+        stripped = entry.strip()
+        if stripped:
+            normalised.append(stripped)
+    return tuple(normalised)
+
+
+def _validate_sessions_settings(sessions: "SessionsConfig") -> None:
+    """Refuse a session-awareness configuration that cannot mean what it says.
+
+    Validated unconditionally, NOT only when the capability is enabled: a bad value
+    that surfaces the moment someone flips ``sessions.enabled`` surfaces on the
+    host, over SSH, at the worst possible moment. Every message names the setting
+    for the same reason — the error text is all the operator gets.
+
+    Three refusals:
+
+    - **Non-positive durations.** A zero staleness bound marks every snapshot
+      stale, training the owner to ignore the marker; a zero lookback finds nothing
+      and reports "nothing published" against a healthy publisher.
+    - **A lookback below the staleness bound.** The escalating second poll would
+      then look back less far than the window that already failed, so a snapshot
+      that is merely *stale* is reported as never published — and "no sessions" and
+      "a stale report" are different facts the owner must be able to tell apart.
+    - **A ``topic`` that is not one name.** ntfy accepts a comma-separated topic
+      list, so a comma here silently widens the read to a second topic; a ``/``
+      changes the request path rather than the topic. Both are refused at load.
+    """
+    for name, _cast in _SESSIONS_SETTINGS:
+        value = getattr(sessions, name)
+        if value <= 0:
+            raise ConfigError(
+                f"sessions.{name} must be strictly positive; got {value!r}"
+            )
+    if sessions.lookback_seconds < sessions.stale_after_seconds:
+        raise ConfigError(
+            f"sessions.lookback_seconds ({sessions.lookback_seconds!r}) must be at "
+            "least sessions.stale_after_seconds "
+            f"({sessions.stale_after_seconds!r}): a lookback shorter than the "
+            "staleness bound reports 'nothing published' for a snapshot that is "
+            "merely stale, which is a different fact."
+        )
+    topic = sessions.topic
+    if not isinstance(topic, str) or not topic.strip():
+        raise ConfigError(
+            f"sessions.topic must be a non-empty ntfy topic name; got {topic!r}"
+        )
+    if "/" in topic or "," in topic:
+        raise ConfigError(
+            f"sessions.topic must be a SINGLE ntfy topic name; got {topic!r}. A "
+            "comma is ntfy's topic-list separator and would silently widen the "
+            "read to a second topic; a '/' changes the request path rather than "
+            "the topic."
         )
 
 
