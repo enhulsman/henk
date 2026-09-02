@@ -1322,3 +1322,1014 @@ def test_the_transcript_fixture_would_notice_an_open(transcripts) -> None:
     with open(target, encoding="utf-8") as handle:
         handle.read()
     assert transcripts.opened == [str(target)]
+
+
+# =========================================================================== #
+# Task group 4 — fields, aggregate, snapshot, budget
+# =========================================================================== #
+
+# --------------------------------------------------------------------------- #
+# Fixture: the claude-estate side (probe 1.2)
+# --------------------------------------------------------------------------- #
+
+GENERATED_AT = "2026-09-02T10:40:00Z"
+
+#: A placeholder hostname, present in no source the publisher reads, asserted
+#: absent from the serialised bytes beside the real ``socket.gethostname()``.
+FIXTURE_HOSTNAME = "placeholder-workstation"
+
+#: A placeholder branch name. v1 never runs ``branch --show-current`` at all; the
+#: forbidden-fields test asserts the shape of value is absent anyway, because the
+#: deferred titles follow-up is the only thing that may ever add it.
+FIXTURE_BRANCH = "feature/placeholder-branch"
+
+
+def estate_row(pane: str, age_s: int = 0, **extra):
+    """One ``claude-estate status --json`` row, carrying all eleven probed keys.
+
+    Nine of them must never be read (probe 1.2), so every one of them carries a
+    real-looking placeholder value here: a mutation that starts consuming ``cwd``,
+    ``resume``, ``session``, ``title``, or ``class`` finds something to leak, and
+    ``test_serialised_snapshot_carries_no_forbidden_value`` is what catches it.
+    """
+    row = {
+        "age_s": age_s,
+        "class": "stale",
+        "cwd": f"/home/owner/Coding/estate-cwd-{pane.replace(':', '-')}",
+        "kind": "claude",
+        "pane_id": pane,
+        "resume": f"claude --resume 11111111-2222-3333-4444-{pane.replace(':', '')}",
+        "session": f"99999999-8888-7777-6666-{pane.replace(':', '')}",
+        "status": "working",
+        "tab_id": "wA:t1",
+        "title": f"placeholder-estate-title-{pane.replace(':', '-')}",
+        "workspace_id": "wA",
+    }
+    row.update(extra)
+    return row
+
+
+#: Ages for the fixture estate. ``wF:p6`` is deliberately absent: an admitted pane
+#: that claude-estate does not know about must publish ``age_s: null`` while its
+#: neighbours carry integers (task 4.5).
+ESTATE_AGES = {
+    "wA:p1": 42,
+    "wB:p2": 91000,
+    "wC:p3": 7,
+    "wD:p4": 800,
+    "wE:p5": 12,
+    "wG:p7": 3600,
+    "wH:p8": 5,
+    "wI:p9": 91000,
+    "wJ:p10": 0,
+}
+
+
+def estate_envelope(ages=None, rows=None) -> str:
+    """The exact shape probe 1.2 recorded: ``{"agents": [rows], "summary": {...}}``."""
+    import json as _json
+
+    if rows is None:
+        source = ESTATE_AGES if ages is None else ages
+        rows = [estate_row(pane, age) for pane, age in source.items()]
+    return _json.dumps(
+        {"agents": list(rows), "summary": {"total": len(list(rows)), "fresh": 1}}
+    )
+
+
+class RecordingRow(dict):
+    """A row that records every key lookup, so a test can prove the nine keys the
+    publisher must never read were never touched."""
+
+    def __init__(self, data) -> None:
+        super().__init__(data)
+        self.accessed: list[str] = []
+
+    def __getitem__(self, key):
+        self.accessed.append(key)
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        self.accessed.append(key)
+        return super().get(key, default)
+
+
+#: Panes the fixture estate admits under ``BASE_CONFIG``, and the ones it denies.
+ADMITTED_PANES = ("wA:p1", "wF:p6", "wI:p9")
+DENIED_PANES = ("wB:p2", "wC:p3", "wD:p4", "wE:p5", "wG:p7", "wH:p8", "wJ:p10")
+
+
+#: A configuration whose labels equal no component of any fixture path, so the
+#: forbidden-fields test can assert every path component absent with no exception
+#: carved out for a label that happens to look like a directory name (task 4.3).
+DISTINCT_LABEL_CONFIG = """
+allow_owners = ["owner-a"]
+deny_roots = ["/home/owner/Coding/work"]
+
+[[allow_roots]]
+path = "/home/owner/Coding"
+label = "alpha-one"
+
+[[allow_roots]]
+path = "/home/owner/Coding/henk"
+label = "beta-two"
+
+[[allow_roots]]
+path = "/home/owner/Documents/homelab-docs-site"
+label = "gamma-three"
+"""
+
+
+def snapshot_of(config, *, ages=None, estate_ok=True, agents=None, git=None):
+    """Compose the whole publisher pipeline over the fixture estate."""
+    return sp.snapshot_from_sources(
+        herdr_envelope(agents),
+        None if ages is None else estate_envelope(ages),
+        estate_ok,
+        config,
+        FakeGit() if git is None else git,
+        fake_realpath,
+        generated_at=GENERATED_AT,
+    )
+
+
+@pytest.fixture
+def distinct_config(tmp_path):
+    return load(tmp_path, DISTINCT_LABEL_CONFIG)
+
+
+# --------------------------------------------------------------------------- #
+# Task 4.1 — exactly four keys, under every configuration the schema accepts
+# --------------------------------------------------------------------------- #
+
+FOUR_KEYS = ["pane", "project", "status", "age_s"]
+
+
+#: Configurations the closed schema accepts, spanning the aggregate switch, an
+#: extra deny root, a different cadence, and a different label set. The published
+#: key list may not vary across any of them.
+FIELD_SET_CONFIGS = [
+    BASE_CONFIG,
+    "publish_unlisted = true\n" + BASE_CONFIG,
+    BASE_CONFIG.replace(
+        'deny_roots = ["/home/owner/Coding/work"]',
+        'deny_roots = ["/home/owner/Coding/work", "/home/owner/Downloads"]',
+    ),
+    "publish_unlisted = false\nheartbeat_seconds = 60\ntick_seconds = 30\n" + BASE_CONFIG,
+    DISTINCT_LABEL_CONFIG,
+]
+
+
+@pytest.mark.parametrize("text", FIELD_SET_CONFIGS)
+def test_every_admitted_session_carries_exactly_the_four_keys(tmp_path, text) -> None:
+    """Task 4.1: the key list is a property of the code, not of the configuration —
+    ``fields`` is refused at load (see
+    ``test_unknown_entry_key_fields_is_refused_naming_key_and_entry``), so there is
+    no configuration path to a fifth key."""
+    config = load(tmp_path, text)
+    snapshot, _, _ = snapshot_of(config, ages=ESTATE_AGES)
+    assert snapshot["sessions"], "the fixture estate admits at least one session"
+    for session in snapshot["sessions"]:
+        assert list(session) == FOUR_KEYS, session
+
+
+def test_the_four_keys_are_in_the_documented_order(config) -> None:
+    snapshot, _, _ = snapshot_of(config, ages=ESTATE_AGES)
+    for session in snapshot["sessions"]:
+        assert list(session) == FOUR_KEYS
+
+
+def test_a_fifth_key_has_no_configuration_route(tmp_path) -> None:
+    """The refusal that makes task 4.1's claim total, restated at the boundary the
+    field projection depends on."""
+    text = BASE_CONFIG + """
+[[allow_roots]]
+path = "/home/owner/Coding/dotfiles"
+label = "dotfiles"
+fields = ["title"]
+"""
+    with pytest.raises(sp.ConfigError) as excinfo:
+        load(tmp_path, text)
+    assert "fields" in str(excinfo.value)
+
+
+def test_admitted_sessions_are_exactly_the_admitted_classifications(config) -> None:
+    snapshot, counts, classifications = snapshot_of(config, ages=ESTATE_AGES)
+    assert {session["pane"] for session in snapshot["sessions"]} == set(ADMITTED_PANES)
+    assert counts.admitted == len(ADMITTED_PANES)
+    assert counts.denied == len(DENIED_PANES)
+    assert len(classifications) == len(ESTATE)
+
+
+def test_status_is_published_verbatim(config) -> None:
+    snapshot, _, _ = snapshot_of(config, ages=ESTATE_AGES)
+    published = {session["pane"]: session["status"] for session in snapshot["sessions"]}
+    assert published == {"wA:p1": "working", "wF:p6": "done", "wI:p9": "idle"}
+
+
+def test_an_unrecognised_status_is_still_published_verbatim(config) -> None:
+    record = agent("wZ:p0", "/home/owner/Coding/henk", "something-new")
+    snapshot, _, _ = snapshot_of(config, ages={"wZ:p0": 1}, agents=[record])
+    assert snapshot["sessions"] == [
+        {"pane": "wZ:p0", "project": "henk", "status": "something-new", "age_s": 1}
+    ]
+
+
+# --------------------------------------------------------------------------- #
+# Task 4.2 — `project` is the configured label
+# --------------------------------------------------------------------------- #
+
+
+def test_project_is_the_configured_label_not_the_cwd_basename(distinct_config) -> None:
+    snapshot, _, _ = snapshot_of(distinct_config, ages=ESTATE_AGES)
+    labels = {session["pane"]: session["project"] for session in snapshot["sessions"]}
+    assert labels == {"wA:p1": "beta-two", "wF:p6": "gamma-three", "wI:p9": "beta-two"}
+    for session in snapshot["sessions"]:
+        assert session["project"] not in {"henk", "homelab-docs-site", "Coding"}
+
+
+def test_the_label_of_a_deeply_nested_cwd_is_still_the_root_entry_label(
+    distinct_config,
+) -> None:
+    record = agent("wZ:p0", "/home/owner/Coding/henk/deep/nested/dir")
+    snapshot, _, _ = snapshot_of(distinct_config, ages={"wZ:p0": 3}, agents=[record])
+    assert snapshot["sessions"][0]["project"] == "beta-two"
+
+
+def test_the_label_comes_from_the_cwd_root_when_foreground_sits_elsewhere(
+    distinct_config,
+) -> None:
+    snapshot, _, _ = snapshot_of(distinct_config, ages=ESTATE_AGES)
+    session = next(s for s in snapshot["sessions"] if s["pane"] == "wI:p9")
+    assert session["project"] == "beta-two"  # cwd's root, not foreground_cwd's
+
+
+# --------------------------------------------------------------------------- #
+# Task 4.3 — the forbidden fields, asserted on the serialised bytes
+# --------------------------------------------------------------------------- #
+
+
+def _path_components(path: str) -> set[str]:
+    return {part for part in path.split("/") if part}
+
+
+def _fixture_path_components() -> set[str]:
+    components: set[str] = set()
+    for record in ESTATE:
+        for key in ("cwd", "foreground_cwd"):
+            value = record.get(key)
+            if isinstance(value, str):
+                components |= _path_components(value)
+                components |= _path_components(fake_realpath(value))
+    return components
+
+
+#: herdr's `agent_status` is published verbatim, so a path component that is a
+#: substring of a status value cannot be asserted absent from the body. The
+#: exemption is derived, asserted to be exactly one component, and the *whole*
+#: paths that component comes from are still asserted absent below.
+PUBLISHED_STATUS_VALUES = ("idle", "done", "working", "blocked", "unknown")
+
+
+def _status_shadowed_components() -> set[str]:
+    return {
+        component
+        for component in _fixture_path_components()
+        if any(component in status for status in PUBLISHED_STATUS_VALUES)
+    }
+
+
+def test_only_one_path_component_is_shadowed_by_a_published_status() -> None:
+    """The exemption the forbidden-fields check carves out, pinned so it cannot
+    silently widen: `work` is a substring of the status `working`."""
+    assert _status_shadowed_components() == {"work"}
+
+
+def test_fixture_labels_differ_from_every_path_component(distinct_config) -> None:
+    """The strictness precondition of the forbidden-fields test: no label may equal
+    a path component, or the check below would need an exception carved out for it
+    and would stop proving anything about path components."""
+    labels = {entry.label for entry in distinct_config.allow_roots}
+    assert labels.isdisjoint(_fixture_path_components()), labels
+    assert len(labels) == 3
+
+
+def test_serialised_snapshot_carries_no_forbidden_value(distinct_config) -> None:
+    """Task 4.3, asserted on the bytes rather than on the object: a leak that the
+    object shape happens to hide (a value nested under a key, a stringified record)
+    is still a leak."""
+    import socket
+
+    snapshot, _, _ = snapshot_of(distinct_config, ages=ESTATE_AGES)
+    body = sp.serialise(snapshot).decode("utf-8")
+
+    forbidden: set[str] = set()
+    # Every reported and canonical path, and every one of their components.
+    for record in ESTATE:
+        for key in ("cwd", "foreground_cwd"):
+            value = record.get(key)
+            if isinstance(value, str):
+                forbidden.add(value)
+                forbidden.add(fake_realpath(value))
+    forbidden |= _fixture_path_components() - _status_shadowed_components()
+    # herdr's never-consumed fields.
+    for record in ESTATE:
+        forbidden.add(record["terminal_title_stripped"])
+        forbidden.add(record["terminal_title"])
+        forbidden.add(record["agent_session"]["value"])
+        forbidden.add(record["tab_id"])
+        forbidden.add(record["terminal_id"])
+    # claude-estate's never-consumed fields.
+    for pane, age in ESTATE_AGES.items():
+        row = estate_row(pane, age)
+        for key in ("resume", "session", "title", "class", "cwd"):
+            forbidden.add(row[key])
+    # Neither machine's identity, and no branch name.
+    forbidden.add(socket.gethostname())
+    forbidden.add(socket.gethostname().lower())
+    forbidden.add(FIXTURE_HOSTNAME)
+    forbidden.add(FIXTURE_BRANCH)
+
+    for value in sorted(forbidden):
+        assert value not in body, value
+
+    # Two herdr keys are forbidden as keys, not only as values.
+    for key in ("revision", "state_change_seq", "foreground_cwd", "agent_session"):
+        assert key not in body, key
+
+
+def test_the_workspace_id_appears_only_inside_a_published_pane_id(distinct_config) -> None:
+    """The one value that cannot be asserted flatly absent, and why.
+
+    Probe 1.1 recorded that a pane id is `<workspace segment>:<pane segment>` and
+    that `workspace_id` is the bare `w` segment — so herdr's workspace id is
+    structurally inside the addressing token D4 publishes on purpose. What must
+    never appear is that id anywhere *else*, the tab id, or any human-authored
+    workspace or tab label; this test pins the narrow shape of the exception
+    instead of deleting the check.
+    """
+    import re as _re
+
+    snapshot, _, _ = snapshot_of(distinct_config, ages=ESTATE_AGES)
+    body = sp.serialise(snapshot).decode("utf-8")
+    panes = {session["pane"] for session in snapshot["sessions"]}
+    workspace_ids = {record["workspace_id"] for record in ESTATE}
+    assert workspace_ids == {"wA"}
+    for workspace_id in workspace_ids:
+        found = [match.start() for match in _re.finditer(_re.escape(workspace_id), body)]
+        assert found, "the fixture must actually contain the segment"
+        for start in found:
+            token = body[start : body.index('"', start)]
+            assert token in panes, token
+    for record in ESTATE:
+        assert record["tab_id"] not in body
+
+
+def test_forbidden_values_are_absent_with_the_aggregate_on_and_a_degraded_key(
+    tmp_path,
+) -> None:
+    """The same assertion over the two optional keys, so neither can be the leak."""
+    config = load(tmp_path, "publish_unlisted = true\n" + DISTINCT_LABEL_CONFIG)
+    snapshot, _, _ = snapshot_of(config, ages=ESTATE_AGES)
+    snapshot["degraded"] = {"dropped": 2}
+    body = sp.serialise(snapshot).decode("utf-8")
+    for value in sorted(_fixture_path_components() - _status_shadowed_components()):
+        assert value not in body, value
+    assert '"unlisted"' in body
+
+
+def test_the_forbidden_fields_check_would_notice_a_leak(distinct_config) -> None:
+    """The check is only evidence if it bites: a session object carrying a cwd is
+    caught by exactly the assertion above."""
+    snapshot, _, _ = snapshot_of(distinct_config, ages=ESTATE_AGES)
+    snapshot["sessions"][0]["cwd"] = "/home/owner/Coding/henk"
+    body = sp.serialise(snapshot).decode("utf-8")
+    leaked = [
+        value
+        for value in _fixture_path_components() - _status_shadowed_components()
+        if value in body
+    ]
+    assert leaked, "the path-component check must catch a cwd in a session object"
+
+
+# --------------------------------------------------------------------------- #
+# Task 4.4 — the unlisted aggregate
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("extra", ["", "publish_unlisted = false\n"])
+def test_no_unlisted_key_when_the_aggregate_is_off(tmp_path, extra) -> None:
+    config = load(tmp_path, extra + BASE_CONFIG)
+    snapshot, counts, _ = snapshot_of(config, ages=ESTATE_AGES)
+    assert "unlisted" not in snapshot
+    assert counts.denied == len(DENIED_PANES), "the count exists, it is just not published"
+
+
+def test_the_aggregate_is_exactly_two_integers_when_opted_in(tmp_path) -> None:
+    config = load(tmp_path, "publish_unlisted = true\n" + BASE_CONFIG)
+    snapshot, _, _ = snapshot_of(config, ages=ESTATE_AGES)
+    assert snapshot["unlisted"] == {"count": 7, "blocked": 1}
+    assert list(snapshot["unlisted"]) == ["count", "blocked"]
+    assert len(snapshot["unlisted"]) == 2
+
+
+def test_the_aggregate_says_nothing_else_about_denied_sessions(tmp_path) -> None:
+    config = load(tmp_path, "publish_unlisted = true\n" + BASE_CONFIG)
+    snapshot, _, _ = snapshot_of(config, ages=ESTATE_AGES)
+    body = sp.serialise(snapshot).decode("utf-8")
+    for pane in DENIED_PANES:
+        assert pane not in body, pane
+
+
+def test_the_aggregate_counts_only_blocked_among_the_denied(tmp_path) -> None:
+    config = load(tmp_path, "publish_unlisted = true\n" + BASE_CONFIG)
+    agents = [
+        agent("wZ:p1", "/home/owner/Downloads/scratch", "blocked"),
+        agent("wZ:p2", "/home/owner/Downloads/scratch", "blocked"),
+        agent("wZ:p3", "/home/owner/Downloads/scratch", "idle"),
+        agent("wZ:p4", "/home/owner/Coding/henk", "blocked"),  # admitted, not counted
+    ]
+    snapshot, counts, _ = snapshot_of(config, ages={}, agents=agents)
+    assert snapshot["unlisted"] == {"count": 3, "blocked": 2}
+    assert counts.admitted == 1
+
+
+def test_the_aggregate_is_present_and_zeroed_when_nothing_was_denied(tmp_path) -> None:
+    config = load(tmp_path, "publish_unlisted = true\n" + BASE_CONFIG)
+    agents = [agent("wZ:p1", "/home/owner/Coding/henk", "working")]
+    snapshot, _, _ = snapshot_of(config, ages={}, agents=agents)
+    assert snapshot["unlisted"] == {"count": 0, "blocked": 0}
+
+
+# --------------------------------------------------------------------------- #
+# Task 4.5 — the age join
+# --------------------------------------------------------------------------- #
+
+
+def test_both_sources_yield_integer_ages_and_the_claude_estate_source(config) -> None:
+    snapshot, _, _ = snapshot_of(config, ages=ESTATE_AGES)
+    assert snapshot["age_source"] == "claude-estate"
+    ages = {session["pane"]: session["age_s"] for session in snapshot["sessions"]}
+    assert ages["wA:p1"] == 42
+    assert ages["wI:p9"] == 91000
+    assert all(
+        isinstance(value, int) for value in ages.values() if value is not None
+    )
+
+
+def test_a_pane_herdr_reports_and_claude_estate_does_not_gets_null(config) -> None:
+    snapshot, _, _ = snapshot_of(config, ages=ESTATE_AGES)
+    ages = {session["pane"]: session["age_s"] for session in snapshot["sessions"]}
+    assert ages["wF:p6"] is None, "absent from the estate rows on purpose"
+    assert ages["wA:p1"] == 42 and ages["wI:p9"] == 91000
+    assert snapshot["age_source"] == "claude-estate", "one absent pane is not a failure"
+
+
+def test_claude_estate_failure_nulls_every_age_and_says_so(config) -> None:
+    snapshot, _, _ = snapshot_of(config, ages=ESTATE_AGES, estate_ok=False)
+    assert snapshot["age_source"] == "none"
+    assert [session["age_s"] for session in snapshot["sessions"]] == [None, None, None]
+    assert len(snapshot["sessions"]) == len(ADMITTED_PANES), "the publish still proceeds"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [None, "", "   \n", "not json", "[]", '{"agents": {}}', '{"summary": {}}', "null"],
+)
+def test_an_unusable_estate_payload_is_the_none_source(config, text) -> None:
+    snapshot, _, _ = sp.snapshot_from_sources(
+        herdr_envelope(),
+        text,
+        True,
+        config,
+        FakeGit(),
+        fake_realpath,
+        generated_at=GENERATED_AT,
+    )
+    assert snapshot["age_source"] == "none"
+    assert all(session["age_s"] is None for session in snapshot["sessions"])
+
+
+def test_an_estate_with_zero_rows_is_still_the_claude_estate_source(config) -> None:
+    """An empty row list is claude-estate answering, not claude-estate failing —
+    ``age_source`` must not be decided on the truthiness of the join table."""
+    snapshot, _, _ = snapshot_of(config, ages={})
+    assert snapshot["age_source"] == "claude-estate"
+    assert all(session["age_s"] is None for session in snapshot["sessions"])
+
+
+@pytest.mark.parametrize("text", [None, "", "not json", "[]", '{"agents": 3}'])
+def test_parse_estate_returns_none_for_an_unusable_payload(text) -> None:
+    assert sp.parse_estate(text) is None
+
+
+def test_parse_estate_returns_the_pane_to_age_join_table() -> None:
+    assert sp.parse_estate(estate_envelope({"wA:p1": 42, "wB:p2": 0})) == {
+        "wA:p1": 42,
+        "wB:p2": 0,
+    }
+
+
+@pytest.mark.parametrize("age", [None, "42", -1, 1.5, True, [42], {}])
+def test_a_row_whose_age_is_not_a_non_negative_int_is_treated_as_absent(age) -> None:
+    rows = [estate_row("wA:p1", 0), estate_row("wB:p2", 0)]
+    rows[0]["age_s"] = age
+    table = sp.parse_estate(estate_envelope(rows=rows))
+    assert table == {"wB:p2": 0}, table
+
+
+def test_a_row_without_a_usable_pane_id_is_skipped() -> None:
+    rows = [estate_row("wA:p1", 5), estate_row("wB:p2", 6)]
+    del rows[0]["pane_id"]
+    rows[1] = dict(rows[1], pane_id=12)
+    assert sp.parse_estate(estate_envelope(rows=rows)) == {}
+
+
+def test_a_row_carrying_only_the_two_consumed_keys_is_enough() -> None:
+    rows = [{"pane_id": "wA:p1", "age_s": 42}]
+    assert sp.parse_estate(estate_envelope(rows=rows)) == {"wA:p1": 42}
+
+
+def test_the_nine_other_estate_keys_are_never_accessed() -> None:
+    """A JSON round trip cannot carry a recording Mapping, so the join reads the
+    rows through one seam and this test drives that seam directly (probe 1.2: nine
+    of the eleven keys, ``cwd``/``resume``/``session``/``title`` among them, must
+    never be read)."""
+    row = RecordingRow(estate_row("wA:p1", 42))
+    assert sp._estate_ages([row]) == {"wA:p1": 42}
+    assert set(row.accessed) == {"pane_id", "age_s"}, row.accessed
+
+
+# --------------------------------------------------------------------------- #
+# Task 4.6 — fail-closed sources
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "text,needle",
+    [
+        ("", "no output"),
+        ("not json", "JSON"),
+        ('{"id": "x"}', "result"),
+        ('{"id": "x", "result": {"type": "something_else", "agents": []}}', "agent_list"),
+        ('{"id": "x", "result": {"type": "agent_list", "agents": {}}}', "agents"),
+    ],
+)
+def test_a_broken_herdr_payload_fails_the_whole_run(config, text, needle) -> None:
+    """The exit code, the absence of an HTTP request, and the untouched state file
+    are §5's ``main``; what group 4 owns is that the composition raises rather than
+    publishing a partial estate as a whole one."""
+    with pytest.raises(sp.EstateError) as excinfo:
+        sp.snapshot_from_sources(
+            text, estate_envelope(), True, config, FakeGit(), fake_realpath,
+            generated_at=GENERATED_AT,
+        )
+    assert needle in str(excinfo.value)
+
+
+@pytest.mark.parametrize("field", ["pane_id", "agent_status", "cwd"])
+def test_a_record_missing_a_required_field_fails_the_whole_run(config, field) -> None:
+    record = agent("wZ:p0", "/home/owner/Coding/henk")
+    del record[field]
+    with pytest.raises(sp.EstateError) as excinfo:
+        snapshot_of(config, ages=ESTATE_AGES, agents=[record, ESTATE[0]])
+    assert field in str(excinfo.value)
+
+
+def test_a_broken_estate_source_does_not_fail_the_run(config) -> None:
+    """The asymmetry the design insists on: herdr is fail-closed, claude-estate is
+    fail-soft (D2)."""
+    snapshot, _, _ = sp.snapshot_from_sources(
+        herdr_envelope(), "not json", True, config, FakeGit(), fake_realpath,
+        generated_at=GENERATED_AT,
+    )
+    assert snapshot["age_source"] == "none"
+
+
+# --------------------------------------------------------------------------- #
+# Task 4.7 — the snapshot shape
+# --------------------------------------------------------------------------- #
+
+PLAIN_TOP_LEVEL = [
+    "schema",
+    "generated_at",
+    "publisher",
+    "age_source",
+    "heartbeat_s",
+    "tick_s",
+    "sessions",
+]
+
+
+def test_the_plain_snapshot_top_level_is_exactly_the_seven_keys(config) -> None:
+    snapshot, _, _ = snapshot_of(config, ages=ESTATE_AGES)
+    assert list(snapshot) == PLAIN_TOP_LEVEL
+    assert snapshot["schema"] == 1
+    assert snapshot["heartbeat_s"] == config.heartbeat_seconds == 900
+    assert snapshot["tick_s"] == config.tick_seconds == 300
+
+
+def test_the_opted_in_and_degraded_snapshot_adds_exactly_two_keys(tmp_path) -> None:
+    config = load(tmp_path, "publish_unlisted = true\n" + BASE_CONFIG)
+    snapshot, counts, _ = snapshot_of(config, ages=ESTATE_AGES)
+    assert list(snapshot) == PLAIN_TOP_LEVEL + ["unlisted"]
+    over = _budget_snapshot(count=80, label_len=24, config=config, unlisted=True)
+    final, dropped = sp.degrade(over)
+    assert dropped > 0
+    assert list(final) == PLAIN_TOP_LEVEL + ["unlisted", "degraded"]
+    assert counts.dropped == 0, "the fixture estate fits"
+
+
+def test_heartbeat_and_tick_follow_the_configuration(tmp_path) -> None:
+    config = load(tmp_path, "heartbeat_seconds = 1200\ntick_seconds = 60\n" + BASE_CONFIG)
+    snapshot, _, _ = snapshot_of(config, ages=ESTATE_AGES)
+    assert (snapshot["heartbeat_s"], snapshot["tick_s"]) == (1200, 60)
+
+
+def test_the_publisher_identity_is_the_prefix_henk_matches_on(config) -> None:
+    snapshot, _, _ = snapshot_of(config, ages=ESTATE_AGES)
+    assert snapshot["publisher"] == sp.PUBLISHER
+    assert snapshot["publisher"].startswith("session-publisher/")
+
+
+def test_generated_at_is_utc_iso_8601(config) -> None:
+    import re as _re
+
+    snapshot, _, _ = snapshot_of(config, ages=ESTATE_AGES)
+    assert _re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", snapshot["generated_at"])
+    assert snapshot["generated_at"] == GENERATED_AT
+
+
+def test_a_zero_session_snapshot_is_valid(tmp_path) -> None:
+    """Every live session denied, the aggregate off: an empty ``sessions`` array is
+    a snapshot, not an error — D10's ``No live sessions`` rendering depends on it."""
+    config = load(tmp_path, 'allow_owners = ["owner-a"]\n')
+    snapshot, counts, _ = snapshot_of(config, ages=ESTATE_AGES)
+    assert snapshot["sessions"] == []
+    assert "unlisted" not in snapshot
+    assert (counts.admitted, counts.denied, counts.labels) == (0, len(ESTATE), ())
+    body = sp.serialise(snapshot)
+    assert len(body) <= sp.BODY_BUDGET_BYTES
+    import json as _json
+
+    assert _json.loads(body.decode("utf-8"))["sessions"] == []
+
+
+def test_an_empty_estate_is_a_zero_session_snapshot(config) -> None:
+    snapshot, counts, _ = snapshot_of(config, ages={}, agents=[])
+    assert snapshot["sessions"] == []
+    assert (counts.admitted, counts.denied, counts.dropped) == (0, 0, 0)
+
+
+def test_the_counts_carry_the_admitted_label_set_for_the_journal_line(config) -> None:
+    """Task 5.7 logs these; group 4 computes them (D7's journal line is what catches
+    a re-pointed or relabelled root)."""
+    _, counts, _ = snapshot_of(config, ages=ESTATE_AGES)
+    assert counts.labels == ("henk", "homelab-docs")
+    assert (counts.admitted, counts.denied, counts.dropped) == (3, 7, 0)
+
+
+def test_serialise_is_compact_ascii_and_preserves_key_order(config) -> None:
+    """One serialiser, so the bytes the budget measured are the bytes §5 publishes."""
+    snapshot, _, _ = snapshot_of(config, ages=ESTATE_AGES)
+    body = sp.serialise(snapshot)
+    assert isinstance(body, bytes)
+    assert b", " not in body and b": " not in body
+    assert body.startswith(b'{"schema":1,"generated_at":')
+    body.decode("ascii")  # ensure_ascii, so a non-ASCII label cannot widen the body
+    assert sp.serialise({"b": 1, "a": 2}) == b'{"b":1,"a":2}'
+    assert sp.serialise({"x": "é"}) == b'{"x":"\\u00e9"}'
+
+
+def test_the_budget_loop_measures_through_serialise(monkeypatch, config) -> None:
+    """The budget and the publish body must not be able to disagree: the loop calls
+    the same function §5 posts."""
+    calls: list[int] = []
+    real = sp.serialise
+
+    def counting(snapshot):
+        body = real(snapshot)
+        calls.append(len(body))
+        return body
+
+    monkeypatch.setattr(sp, "serialise", counting)
+    sp.degrade(_budget_snapshot(count=80, label_len=24, config=config))
+    assert calls, "degrade must measure through serialise"
+
+
+# --------------------------------------------------------------------------- #
+# Task 4.8 — the byte budget and the degrade order
+# --------------------------------------------------------------------------- #
+
+#: The status cycle the budget fixture uses: two of the three priority bands plus
+#: three statuses that fall into the third.
+BUDGET_STATUSES = ("working", "idle", "blocked", "done", "unknown")
+
+
+def _budget_classifications(count: int, label_len: int, *, ages: bool = True):
+    """``count`` admitted classifications with labels of a chosen width, so a test
+    can put the serialised body on either side of the budget deliberately."""
+    items = []
+    for index in range(1, count + 1):
+        label = f"p{index:02d}".ljust(label_len, "x")[:label_len]
+        items.append(
+            sp.Classification(
+                pane=f"w1:p{index:02d}",
+                status=BUDGET_STATUSES[index % len(BUDGET_STATUSES)],
+                admitted=True,
+                label=label,
+                denials=(),
+            )
+        )
+    return items
+
+
+def _budget_ages(items, *, null: bool = False):
+    if null:
+        return {}
+    return {item.pane: (index * 7) % 900 for index, item in enumerate(items)}
+
+
+def _budget_snapshot(count: int, label_len: int, *, config=None, unlisted=False, null_ages=False):
+    if config is None:
+        config = sp.PublisherConfig(publish_unlisted=unlisted)
+    items = _budget_classifications(count, label_len)
+    snapshot, _ = sp.build_snapshot(
+        items, _budget_ages(items, null=null_ages), config, generated_at=GENERATED_AT
+    )
+    return snapshot
+
+
+def _bands(snapshot):
+    ranks = {"blocked": 0, "working": 1}
+    return [ranks.get(session["status"], 2) for session in snapshot["sessions"]]
+
+
+def test_a_forty_session_snapshot_is_under_budget_and_untouched() -> None:
+    snapshot = _budget_snapshot(count=40, label_len=3)
+    assert len(sp.serialise(snapshot)) <= sp.BODY_BUDGET_BYTES
+    before = list(snapshot["sessions"])
+    final, dropped = sp.degrade(snapshot)
+    assert dropped == 0
+    assert "degraded" not in final
+    assert len(final["sessions"]) == 40
+    assert sorted(s["pane"] for s in final["sessions"]) == sorted(
+        s["pane"] for s in before
+    )
+
+
+def test_an_under_budget_snapshot_is_still_returned_in_priority_order() -> None:
+    """The order is applied once, whether or not anything is dropped, so the
+    comparison key §5 computes cannot depend on herdr's enumeration order."""
+    final, dropped = sp.degrade(_budget_snapshot(count=40, label_len=3))
+    assert dropped == 0
+    assert _bands(final) == sorted(_bands(final))
+
+
+@pytest.mark.parametrize("count,label_len", [(40, 32), (80, 12), (200, 3)])
+def test_an_over_budget_snapshot_is_degraded_to_fit(count, label_len) -> None:
+    snapshot = _budget_snapshot(count=count, label_len=label_len)
+    assert len(sp.serialise(snapshot)) > sp.BODY_BUDGET_BYTES, "fixture must overflow"
+    kept_before = [session["pane"] for session in snapshot["sessions"]]
+    final, dropped = sp.degrade(snapshot)
+    body = sp.serialise(final)
+    assert len(body) <= sp.BODY_BUDGET_BYTES
+    assert dropped > 0
+    assert final["degraded"] == {"dropped": dropped}
+    assert len(final["sessions"]) == count - dropped
+    assert set(kept_before) >= {session["pane"] for session in final["sessions"]}
+
+
+@pytest.mark.parametrize("null_ages", [False, True])
+def test_the_degrade_drops_the_tail_of_the_priority_order(null_ages) -> None:
+    snapshot = _budget_snapshot(count=80, label_len=16, null_ages=null_ages)
+    ordered = sorted(snapshot["sessions"], key=sp.session_order_key)
+    final, dropped = sp.degrade(snapshot)
+    assert final["sessions"] == ordered[: len(ordered) - dropped]
+    dropped_panes = {session["pane"] for session in ordered[len(ordered) - dropped :]}
+    kept_panes = {session["pane"] for session in final["sessions"]}
+    assert dropped_panes and kept_panes.isdisjoint(dropped_panes)
+
+
+@pytest.mark.parametrize("null_ages", [False, True])
+def test_every_blocked_session_survives_before_any_working_one(null_ages) -> None:
+    snapshot = _budget_snapshot(count=200, label_len=8, null_ages=null_ages)
+    total_blocked = sum(1 for s in snapshot["sessions"] if s["status"] == "blocked")
+    total_working = sum(1 for s in snapshot["sessions"] if s["status"] == "working")
+    final, dropped = sp.degrade(snapshot)
+    assert dropped > 0
+    statuses = [session["status"] for session in final["sessions"]]
+    assert statuses.count("blocked") == total_blocked, "no blocked session is dropped"
+    assert _bands(final) == sorted(_bands(final))
+    # The blocked band alone does not fill the budget here, so working survives too
+    # and the third band is what gets cut.
+    assert 0 < statuses.count("working") <= total_working
+    assert len(sp.serialise(final)) <= sp.BODY_BUDGET_BYTES
+
+
+def test_when_the_budget_fits_only_part_of_the_first_band() -> None:
+    """The extreme the order exists for: when even the blocked band overflows, what
+    survives is blocked sessions and nothing else."""
+    items = [
+        sp.Classification(
+            pane=f"w1:p{index:03d}",
+            status="blocked" if index < 20 else "working",
+            admitted=True,
+            label=f"label-{index:03d}".ljust(150, "y"),
+            denials=(),
+        )
+        for index in range(60)
+    ]
+    snapshot, _ = sp.build_snapshot(
+        items, {item.pane: 5 for item in items}, sp.PublisherConfig(),
+        generated_at=GENERATED_AT,
+    )
+    final, dropped = sp.degrade(snapshot)
+    assert dropped > 0
+    statuses = {session["status"] for session in final["sessions"]}
+    assert statuses == {"blocked"}, "no working session survives a first-band overflow"
+    assert 0 < len(final["sessions"]) < 20
+    assert len(sp.serialise(final)) <= sp.BODY_BUDGET_BYTES
+
+
+def test_the_third_band_is_ordered_by_ascending_age_with_nulls_last() -> None:
+    items = [
+        sp.Classification(pane="w1:pA", status="idle", admitted=True, label="a", denials=()),
+        sp.Classification(pane="w1:pB", status="done", admitted=True, label="b", denials=()),
+        sp.Classification(pane="w1:pC", status="unknown", admitted=True, label="c", denials=()),
+        sp.Classification(pane="w1:pD", status="idle", admitted=True, label="d", denials=()),
+        sp.Classification(pane="w1:pE", status="working", admitted=True, label="e", denials=()),
+        sp.Classification(pane="w1:pF", status="blocked", admitted=True, label="f", denials=()),
+    ]
+    ages = {"w1:pA": 900, "w1:pC": 10, "w1:pD": 100, "w1:pE": 50000, "w1:pF": 90000}
+    snapshot, _ = sp.build_snapshot(items, ages, sp.PublisherConfig(), generated_at=GENERATED_AT)
+    final, dropped = sp.degrade(snapshot)
+    assert dropped == 0
+    assert [session["pane"] for session in final["sessions"]] == [
+        "w1:pF",  # blocked, whatever its age
+        "w1:pE",  # working, whatever its age
+        "w1:pC",  # 10
+        "w1:pD",  # 100
+        "w1:pA",  # 900
+        "w1:pB",  # null age, last
+    ]
+
+
+def test_session_order_key_bands_and_nulls() -> None:
+    def key(status, age):
+        return sp.session_order_key(
+            {"pane": "w1:p1", "project": "p", "status": status, "age_s": age}
+        )
+
+    assert key("blocked", None) < key("working", 0)
+    assert key("working", 99999) < key("idle", 0)
+    assert key("idle", 5) < key("idle", 6)
+    assert key("idle", 10**9) < key("idle", None)
+    assert key("done", None) == key("unknown", None), "the third band is one band"
+    assert key("blocked", 5) == key("blocked", 900), "age never reorders the first band"
+
+
+def test_the_order_is_stable_within_a_band() -> None:
+    items = [
+        sp.Classification(
+            pane=f"w1:p{i}", status="blocked", admitted=True, label=f"l{i}", denials=()
+        )
+        for i in range(6)
+    ]
+    snapshot, _ = sp.build_snapshot(
+        items, {item.pane: 3 for item in items}, sp.PublisherConfig(),
+        generated_at=GENERATED_AT,
+    )
+    final, _ = sp.degrade(snapshot)
+    assert [session["pane"] for session in final["sessions"]] == [
+        f"w1:p{i}" for i in range(6)
+    ]
+
+
+def test_the_degrade_is_tight_one_fewer_drop_would_not_have_fitted() -> None:
+    """The loop re-measures after every drop, so it stops at the first fit: putting
+    the last-dropped session back must overflow the budget again."""
+    snapshot = _budget_snapshot(count=80, label_len=16)
+    ordered = sorted(snapshot["sessions"], key=sp.session_order_key)
+    final, dropped = sp.degrade(snapshot)
+    assert dropped > 0
+    one_fewer = dict(final)
+    one_fewer["sessions"] = ordered[: len(ordered) - dropped + 1]
+    if dropped - 1:
+        one_fewer["degraded"] = {"dropped": dropped - 1}
+    else:  # pragma: no cover - the fixture always drops more than one
+        one_fewer.pop("degraded", None)
+    assert len(sp.serialise(one_fewer)) > sp.BODY_BUDGET_BYTES
+
+
+def _degrade_measuring_before_the_key(snapshot):
+    """The mutation task 4.10 must not ship: drop until the body fits *without* the
+    ``degraded`` key, then add the key — which puts the published body back over the
+    budget whenever the remaining slack is smaller than the key."""
+    snapshot = dict(snapshot)
+    sessions = sorted(snapshot["sessions"], key=sp.session_order_key)
+    snapshot["sessions"] = sessions
+    dropped = 0
+    while sessions and len(sp.serialise(snapshot)) > sp.BODY_BUDGET_BYTES:
+        sessions.pop()
+        dropped += 1
+    if dropped:
+        snapshot["degraded"] = {"dropped": dropped}
+    return snapshot, dropped
+
+
+def test_the_degraded_key_is_measured_inside_the_budget() -> None:
+    """A fixture tuned so the slack after the last drop is smaller than the
+    ``degraded`` key itself: measuring before adding the key overshoots, and the
+    published body must not."""
+    for label_len in range(4, 40):
+        candidate = _budget_snapshot(count=120, label_len=label_len)
+        naive, _ = _degrade_measuring_before_the_key(candidate)
+        if len(sp.serialise(naive)) > sp.BODY_BUDGET_BYTES:
+            break
+    else:  # pragma: no cover - the search always finds one
+        pytest.fail("no fixture width makes the naive measurement overshoot")
+    final, dropped = sp.degrade(candidate)
+    assert dropped > 0
+    assert final["degraded"] == {"dropped": dropped}
+    assert len(sp.serialise(final)) <= sp.BODY_BUDGET_BYTES
+    assert len(final["sessions"]) < len(naive["sessions"])
+
+
+def test_the_degraded_count_grows_with_its_own_digits() -> None:
+    """Ten or more drops widens the ``degraded`` key by a byte; the re-measurement
+    after every drop is what absorbs it."""
+    snapshot = _budget_snapshot(count=400, label_len=6)
+    final, dropped = sp.degrade(snapshot)
+    assert dropped >= 100
+    assert final["degraded"] == {"dropped": dropped}
+    assert len(sp.serialise(final)) <= sp.BODY_BUDGET_BYTES
+
+
+def test_degrade_leaves_the_input_snapshot_alone() -> None:
+    snapshot = _budget_snapshot(count=120, label_len=16)
+    before = len(snapshot["sessions"])
+    sp.degrade(snapshot)
+    assert len(snapshot["sessions"]) == before
+    assert "degraded" not in snapshot
+
+
+def test_degrade_of_a_zero_session_snapshot_is_a_no_op() -> None:
+    final, dropped = sp.degrade(_budget_snapshot(count=0, label_len=4))
+    assert (final["sessions"], dropped) == ([], 0)
+    assert "degraded" not in final
+
+
+def test_the_budget_is_the_documented_number() -> None:
+    assert sp.BODY_BUDGET_BYTES == 3800
+
+
+def test_snapshot_from_sources_reports_the_drop_count_in_the_counts(tmp_path) -> None:
+    """The journal line's ``dropped`` comes from the composition, not from a second
+    measurement (task 5.7 logs it)."""
+    config = load(tmp_path, BASE_CONFIG)
+    agents = [
+        agent(f"w1:p{index:03d}", "/home/owner/Coding/henk", "working")
+        for index in range(300)
+    ]
+    snapshot, counts, classifications = sp.snapshot_from_sources(
+        herdr_envelope(agents), estate_envelope({}), True, config, FakeGit(),
+        fake_realpath, generated_at=GENERATED_AT,
+    )
+    assert counts.admitted == 300
+    assert counts.dropped > 0
+    assert len(snapshot["sessions"]) == counts.admitted - counts.dropped
+    assert snapshot["degraded"] == {"dropped": counts.dropped}
+    assert len(classifications) == 300
+    assert len(sp.serialise(snapshot)) <= sp.BODY_BUDGET_BYTES
+
+
+# --------------------------------------------------------------------------- #
+# Task 4.9 — the whole composition reads no transcript
+# --------------------------------------------------------------------------- #
+
+
+def test_a_full_snapshot_run_opens_no_transcript(tmp_path, transcripts) -> None:
+    config = load(tmp_path, "publish_unlisted = true\n" + BASE_CONFIG)
+    snapshot, counts, _ = snapshot_of(config, ages=ESTATE_AGES)
+    assert snapshot["sessions"] and counts.admitted == 3
+    assert transcripts.opened == []
+
+
+def test_the_estate_sources_record_is_the_seam_group_five_fills() -> None:
+    sources = sp.EstateSources(
+        herdr_text=herdr_envelope(), estate_text=estate_envelope(), estate_ok=True
+    )
+    assert sources.estate_ok is True
+    failed = sp.EstateSources(herdr_text=herdr_envelope(), estate_text=None, estate_ok=False)
+    assert (failed.estate_text, failed.estate_ok) == (None, False)
+    snapshot, _, _ = sp.snapshot_from_sources(
+        failed.herdr_text,
+        failed.estate_text,
+        failed.estate_ok,
+        sp.PublisherConfig(),
+        FakeGit(),
+        fake_realpath,
+        generated_at=GENERATED_AT,
+    )
+    assert snapshot["age_source"] == "none"

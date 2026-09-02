@@ -103,3 +103,35 @@ Decisions taken in the group:
   a deeper path under a drive mount loads.
 - Review-gate fix: the publisher identity string was aligned to the design's
   `session-publisher/0.1`.
+
+### Group 4 — publisher fields, aggregate, snapshot, budget
+
+`tests/test_session_publisher.py`: **258 passed** after the group (+94, purely additive).
+
+| Mutation | Failures | Caught by (representative) |
+|---|---|---|
+| fifth key (`cwd`) on the session object | 13 | exactly-four-keys (three configs), documented key order, forbidden-fields on the serialised bytes |
+| `project` derived from the cwd basename | 11 | configured-label tests, admitted-label-set counts, forbidden-fields |
+| degrade drops from the head | 6 | tail-of-priority-order tests, every-blocked-survives-before-working |
+| budget measured before the `degraded` key is added | 3 | degraded-key-inside-the-budget, count-grows-with-its-own-digits |
+| `unlisted` emitted regardless of `publish_unlisted` | 4 | no-unlisted-when-off, exact top-level key set |
+| `age_source: "claude-estate"` on estate failure | 11 | unusable-estate-payload (five shapes), broken-estate-does-not-fail-the-run |
+| `age_source` decided on truthiness instead of `is None` | 1 | zero-row estate is still the claude-estate source |
+| the join reads a tenth estate key | 1 | the nine-other-keys-never-accessed recorder test |
+
+Decisions taken in the group:
+
+- The age join is a separate function fed with row mappings, so a recording mapping can
+  prove that only `pane_id` and `age_s` are ever indexed (the four never-leave-the-machine
+  estate fields are never read, not merely never published).
+- An empty estate row list is a working age source with nothing to say
+  (`age_source: "claude-estate"`, every age `null`); a missing, non-JSON, or wrong-shaped
+  payload is `age_source: "none"`. The two are distinguished by `is None`, not truthiness.
+- One `serialise` function is both the measured and the published body, asserted by
+  monkeypatching it inside the budget loop.
+- Two derived, pinned exemptions in the forbidden-fields byte test: the placeholder path
+  component `work` is a substring of the verbatim status `working`, and the workspace id is
+  structurally the first segment of the published pane id (probe §1.1). Both exemptions are
+  asserted to be exactly that narrow; full paths and `tab_id` stay asserted absent.
+- Sessions are ordered by the degrade key whether or not anything is dropped, so the
+  comparison key (group 5) cannot depend on herdr's enumeration order.

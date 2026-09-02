@@ -62,11 +62,23 @@ import re  # noqa: E402
 import subprocess  # noqa: E402
 import tempfile  # noqa: E402
 import tomllib  # noqa: E402
-from dataclasses import dataclass  # noqa: E402
+from dataclasses import dataclass, replace  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Callable, Iterable, Mapping, Protocol, Sequence  # noqa: E402
 
 PUBLISHER = "session-publisher/0.1"
+
+#: ntfy's default body limit is 4096 bytes and an over-limit body is silently
+#: promoted to an attachment (probe 1.4), which would make Henk fetch a second
+#: URL. The budget is the limit less headroom, and the degrade loop below is what
+#: keeps a publish inside it (D6).
+BODY_BUDGET_BYTES = 3800
+
+#: The two statuses that outrank age in the degrade order. Everything else — and
+#: an unrecognised status is deliberately everything else — sorts in the third
+#: band by ascending age (D6).
+_STATUS_BANDS = {"blocked": 0, "working": 1}
+_OTHER_BAND = 2
 
 #: The same shape Henk enforces at render, so a legal configuration can never
 #: produce a session Henk would classify as unusable (D3).
@@ -685,23 +697,263 @@ def render_dry_run(
 
 
 # --------------------------------------------------------------------------- #
-# Seams owned by later task groups
+# The age source
 # --------------------------------------------------------------------------- #
 
 
-def build_snapshot(*args, **kwargs):
-    """Project admitted sessions onto the four published keys, join `age_s` from
-    `claude-estate`, and assemble the snapshot object (task group 4: tasks 4.1-4.7,
-    4.10). Not implemented here."""
-    raise NotImplementedError("task group 4 owns the snapshot builder")
+@dataclass(frozen=True)
+class EstateSources:
+    """The two CLI payloads one tick read, as text.
+
+    Group 5's entry point fills this from two bounded subprocesses and passes its
+    three fields to `snapshot_from_sources`; everything below the entry point takes
+    text, so the whole pipeline is testable without a subprocess.
+
+    `estate_ok` is False when `claude-estate` was absent or exited non-zero. It is
+    kept separate from `estate_text` because an empty payload from a working CLI
+    ("no rows") and a missing CLI are different facts: the first is an age source
+    with nothing to say, the second is `age_source: "none"` (D2).
+    """
+
+    herdr_text: str
+    estate_text: str | None = None
+    estate_ok: bool = True
 
 
-def degrade(*args, **kwargs):
-    """Drop sessions from the tail of the `blocked` -> `working` -> ascending-`age_s`
-    order until the serialised body fits the byte budget, re-measuring after each
-    drop, and record `degraded.dropped` (task group 4: task 4.8). Not implemented
-    here."""
-    raise NotImplementedError("task group 4 owns the budget loop")
+def _estate_ages(rows: Iterable[object]) -> dict[str, int]:
+    """The pane-to-age join table, reading **only** `pane_id` and `age_s`.
+
+    Probe 1.2 recorded eleven keys per row, four of which (`cwd`, `resume`,
+    `session`, `title`) must never leave the machine. This function is written so
+    that only the two consumed keys are ever indexed — no key iteration, no row
+    copy, no `repr` — and a test drives it with a recording Mapping to prove the
+    other nine were not touched. It exists as a separate function from
+    `parse_estate` for exactly that reason: a JSON round trip cannot carry a
+    recording Mapping.
+
+    An `age_s` that is not a non-negative integer is treated as absent for that
+    pane, which publishes `age_s: null` for it rather than a value the publisher
+    cannot vouch for.
+    """
+    ages: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, (dict, Mapping)):
+            continue
+        pane = row.get("pane_id")
+        if not isinstance(pane, str) or not pane:
+            continue
+        age = row.get("age_s")
+        if isinstance(age, bool) or not isinstance(age, int) or age < 0:
+            continue
+        ages[pane] = age
+    return ages
+
+
+def parse_estate(text: str | None) -> dict[str, int] | None:
+    """The `claude-estate status --json` join table, or `None` when there is none.
+
+    Probe 1.2: the payload is `{"agents": [rows], "summary": {...}}`. `None` is the
+    "no age source" signal — an absent, empty, non-JSON, or wrong-shaped payload —
+    and the snapshot then declares `age_source: "none"` with every `age_s` null.
+    An empty *row list* is not that: it is a working age source with nothing to
+    report, and returns an empty table, so the caller must distinguish the two by
+    `is None` rather than by truthiness.
+
+    claude-estate declares itself "NOT A SECURITY BOUNDARY"; it is a data source
+    here and never a gate, which is why nothing in this function can admit a
+    session.
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return None
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    rows = payload.get("agents")
+    if not isinstance(rows, list):
+        return None
+    return _estate_ages(rows)
+
+
+# --------------------------------------------------------------------------- #
+# The snapshot
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class SnapshotCounts:
+    """What the per-run journal line states (D7, task 5.7).
+
+    The admitted label set is the artefact that catches a re-pointed or relabelled
+    allow root, which Henk's own label gate cannot see (D1).
+    """
+
+    admitted: int
+    denied: int
+    dropped: int
+    labels: tuple[str, ...]
+
+
+def build_snapshot(
+    classifications: Sequence[Classification],
+    ages: dict[str, int] | None,
+    config: PublisherConfig,
+    *,
+    generated_at: str,
+) -> tuple[dict, SnapshotCounts]:
+    """Project the admitted classifications onto the four published keys and
+    assemble the snapshot object (D4, D5, D6).
+
+    Each session object is built key by key, in the documented order, from values
+    that already exist as scalars: the pane id, the *configured* label of the root
+    that admitted `cwd`, herdr's `agent_status` verbatim, and the joined age. There
+    is no path, no title, and no configuration flag that can add a fifth key —
+    widening the set is a schema change, and the closed config schema refuses
+    `fields` by name so it cannot arrive as a setting (D3, D4).
+
+    `ages` is `None` when there is no age source; every `age_s` is then `null` and
+    the snapshot says `age_source: "none"`. A pane absent from a working join table
+    is also `null`, and that is not a failure of the source.
+    """
+    admitted = [item for item in classifications if item.admitted]
+    denied = [item for item in classifications if not item.admitted]
+
+    sessions: list[dict] = []
+    for item in admitted:
+        session = {
+            "pane": item.pane,
+            "project": item.label,
+            "status": item.status,
+            "age_s": None if ages is None else ages.get(item.pane),
+        }
+        sessions.append(session)
+
+    snapshot: dict = {
+        "schema": 1,
+        "generated_at": generated_at,
+        "publisher": PUBLISHER,
+        "age_source": "none" if ages is None else "claude-estate",
+        "heartbeat_s": config.heartbeat_seconds,
+        "tick_s": config.tick_seconds,
+        "sessions": sessions,
+    }
+
+    if config.publish_unlisted:
+        # Two integers and nothing else about the sessions the gates refused: no
+        # label, no age, no status breakdown beyond blocked (D5). Absent entirely
+        # when the owner has not opted in, so Henk cannot tell "none" from "not
+        # reporting" — which is the point.
+        snapshot["unlisted"] = {
+            "count": len(denied),
+            "blocked": sum(1 for item in denied if item.status == "blocked"),
+        }
+
+    counts = SnapshotCounts(
+        admitted=len(admitted),
+        denied=len(denied),
+        dropped=0,
+        labels=tuple(sorted({item.label for item in admitted if item.label})),
+    )
+    return snapshot, counts
+
+
+def serialise(snapshot: Mapping[str, object]) -> bytes:
+    """The published bytes, and the bytes the budget measures.
+
+    One function for both, so the body that fitted cannot differ from the body that
+    is posted. Compact separators keep sessions cheap; `ensure_ascii` means a label
+    outside ASCII cannot widen the body after the measurement; key order is the
+    insertion order the builder chose and is never sorted.
+    """
+    return json.dumps(
+        snapshot, separators=(",", ":"), ensure_ascii=True, sort_keys=False
+    ).encode("utf-8")
+
+
+def session_order_key(session: Mapping[str, object]) -> tuple[int, int, int]:
+    """The degrade order: `blocked` first, `working` second, everything else third
+    by ascending `age_s` with `null` ages last (D6).
+
+    An unrecognised status sorts into the third band deliberately: herdr's status
+    detection is heuristic and remotely versioned, so a status this publisher has
+    never heard of must not outrank a status it has. Age never reorders the first
+    two bands — "is anything waiting on me" does not depend on how long it has
+    been waiting.
+    """
+    band = _STATUS_BANDS.get(session.get("status"), _OTHER_BAND)  # type: ignore[arg-type]
+    if band != _OTHER_BAND:
+        return (band, 0, 0)
+    age = session.get("age_s")
+    if isinstance(age, bool) or not isinstance(age, int):
+        return (_OTHER_BAND, 1, 0)
+    return (_OTHER_BAND, 0, age)
+
+
+def degrade(snapshot: Mapping[str, object]) -> tuple[dict, int]:
+    """Order the sessions once, then drop from the tail until the serialised body
+    fits `BODY_BUDGET_BYTES`, and record how many went (D6).
+
+    Two details are load-bearing. The body is **re-measured after every drop**, and
+    it is measured **with the `degraded` key already present** — the key costs
+    bytes, and it widens again at ten and a hundred drops, so measuring without it
+    would publish a body over the budget and let ntfy promote it to an attachment.
+    And the order is applied whether or not anything is dropped, so the comparison
+    key group 5 computes cannot depend on herdr's enumeration order.
+
+    The input snapshot is left alone; the returned one is a shallow copy sharing
+    the session objects. `degraded` is absent when nothing was dropped.
+    """
+    ordered = sorted(snapshot.get("sessions") or [], key=session_order_key)
+    result = dict(snapshot)
+    result["sessions"] = ordered
+    result.pop("degraded", None)
+
+    dropped = 0
+    while ordered and len(serialise(result)) > BODY_BUDGET_BYTES:
+        ordered.pop()
+        dropped += 1
+        result["degraded"] = {"dropped": dropped}
+    return result, dropped
+
+
+def snapshot_from_sources(
+    herdr_text: str,
+    estate_text: str | None,
+    estate_ok: bool,
+    config: PublisherConfig,
+    git: GitRunner,
+    realpath: Callable[[str], str] = os.path.realpath,
+    *,
+    generated_at: str,
+) -> tuple[dict, SnapshotCounts, list[Classification]]:
+    """The whole pipeline over one tick's two payloads.
+
+    `parse_herdr` -> `classify` each pane -> `parse_estate` -> `build_snapshot` ->
+    `degrade`. The classifications come back so `--dry-run` can render its table
+    from the same pass that produced the snapshot.
+
+    `EstateError` propagates: herdr is the authoritative pane set, and a partial
+    estate presented as a whole one is the failure mode to refuse, so group 5's
+    entry point maps this onto a non-zero exit with nothing published and no state
+    write. A failing `claude-estate`, by contrast, is absorbed here — `estate_ok`
+    False simply means no age source (D2).
+    """
+    agents = parse_herdr(herdr_text)
+    classifications = [classify(agent, config, git, realpath) for agent in agents]
+    ages = parse_estate(estate_text) if estate_ok else None
+    snapshot, counts = build_snapshot(
+        classifications, ages, config, generated_at=generated_at
+    )
+    snapshot, dropped = degrade(snapshot)
+    return snapshot, replace(counts, dropped=dropped), classifications
+
+
+# --------------------------------------------------------------------------- #
+# Seams owned by later task groups
+# --------------------------------------------------------------------------- #
 
 
 def comparison_key(*args, **kwargs):
