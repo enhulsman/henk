@@ -601,3 +601,19 @@ allowlist YAML for rp5 is in that note.
 The `homelab_docs` bind mount is in `docker-compose.yml` in long form with
 `create_host_path: false`; inert while `homelab_docs.enabled` is false. The
 in-container write-fails check (8.6's second clause) is owner-run at deploy.
+
+### 8.1 / 8.2 / 8.4 — host provisioning on rp5 (owner-run, 2026-09-02)
+
+- Deploy key: ed25519, passphrase-free, root-held under `/root/.ssh`, reached through
+  an ssh host alias so the clone URL carries no key path. Registered on the docs
+  repository as a **read-only** deploy key. GitHub's host key fingerprint was checked
+  against the published value before accepting.
+- Clone: root-owned `/opt/homelab-docs`, default permissions, confirmed readable by an
+  unprivileged user (the container runs as uid 10001). The personal checkout was not
+  reused.
+- Script installed from the committed copy at `/usr/local/sbin/homelab-docs-stamp`.
+  Units: `homelab-docs-pull.service` (oneshot, root) + `homelab-docs-pull.timer`
+  (`OnCalendar=daily`, `RandomizedDelaySec=15m`, `Persistent=true`).
+- First run wrote the stamp naming the docs head. Failure branch proven live: with the
+  remote pointed at a nonexistent repository the unit exited 1 and the stamp was
+  byte-identical; after restoring the remote, the next run advanced `pulled_at`.

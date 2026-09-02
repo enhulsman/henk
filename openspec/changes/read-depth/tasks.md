@@ -96,24 +96,24 @@ mutation-test its removal — removing it would break every other tool.
 
 ## 8. Host provisioning on rp5 (owner-gated)
 
-- [ ] 8.1 Mint a repo-scoped read-only deploy key for the docs repo on its own GitHub account; confirm passphrase-free and host-held
-- [ ] 8.2 Clone to the root-owned service directory `/opt/homelab-docs/`, deliberately **not** the existing personal checkout
+- [x] 8.1 Mint a repo-scoped read-only deploy key for the docs repo on its own GitHub account; confirm passphrase-free and host-held
+- [x] 8.2 Clone to the root-owned service directory `/opt/homelab-docs/`, deliberately **not** the existing personal checkout
 - [x] 8.3 Commit `deploy/homelab-docs-stamp.sh` to **this repo** with unit tests covering the success and failure branches — a writer that stamps on every *attempt* rather than every *success* inverts the freshness signal. Deploy from the committed script
-- [ ] 8.4 Install the daily pull timer; confirm the stamp is written **after** content updates and that a **failed** pull leaves the last-pull value untouched so the age grows
+- [x] 8.4 Install the daily pull timer; confirm the stamp is written **after** content updates and that a **failed** pull leaves the last-pull value untouched so the age grows
 - [x] 8.5 Read all 17 corpus files against the Tier W wall; record the finding in `notes/`. Owner decision 2026-08-22: initial allowlist membership is **all 17 files** — record the reasoning, not just the outcome
-- [ ] 8.6 Add the read-only bind mount to the compose file **with automatic host-path creation disabled**; verify a write from inside the container fails
-- [ ] 8.7 Set the corpus path allowlist in rp5's hand-maintained `config.yaml`
-- [ ] 8.8 Flip the corpus enable key in rp5's `config.yaml` — the hard stop, as with reminders
+- [x] 8.6 Add the read-only bind mount to the compose file **with automatic host-path creation disabled**; verify a write from inside the container fails
+- [x] 8.7 Set the corpus path allowlist in rp5's hand-maintained `config.yaml`
+- [x] 8.8 Flip the corpus enable key in rp5's `config.yaml` — the hard stop, as with reminders
 - [x] 8.9 Append the 8.1/8.2/8.4 procedure to `~/.claude-config/tooling-backlog.md` as an automation candidate, with the verbatim commands as its spec. The stamp writer is excluded — it is version-controlled now
 
 ## 9. Verification and close-out
 
-- [ ] 9.1 Verify the surface claims empirically: `tag:henk` grants before and after, container mounts enumerated, listening sockets enumerated with both tools enabled. **Record findings, not raw output** — ACL records name tailnet nodes
-- [ ] 9.2 Audit the deployed container for any docs credential; confirm the enumerated secret set is unchanged
-- [ ] 9.3 Verify the deploy-time guard: with the host path absent, the container **fails to start** rather than the runtime creating an empty directory
-- [ ] 9.4 Exercise each of the six queries live; record **shapes and conclusions** in `notes/apply-enumerations.md`, flagging any empty result and why. No raw response bodies
-- [ ] 9.5 Exercise the corpus tool live: a search, a read, and a deliberately stale stamp, confirming the marker reaches a real Signal reply
-- [ ] 9.6 Confirm no corpus file or excerpt is tracked here and none is in the built image; let `.githooks/pre-commit` run on every commit. Run the hook over `notes/*.md` deliberately before committing them
+- [x] 9.1 Verify the surface claims empirically: `tag:henk` grants before and after, container mounts enumerated, listening sockets enumerated with both tools enabled. **Record findings, not raw output** — ACL records name tailnet nodes
+- [x] 9.2 Audit the deployed container for any docs credential; confirm the enumerated secret set is unchanged
+- [x] 9.3 Verify the deploy-time guard: with the host path absent, the container **fails to start** rather than the runtime creating an empty directory
+- [x] 9.4 Exercise each of the six queries live; record **shapes and conclusions** in `notes/apply-enumerations.md`, flagging any empty result and why. No raw response bodies
+- [x] 9.5 Exercise the corpus tool live: a search, a read, and a deliberately stale stamp, confirming the marker reaches a real Signal reply
+- [x] 9.6 Confirm no corpus file or excerpt is tracked here and none is in the built image; let `.githooks/pre-commit` run on every commit. Run the hook over `notes/*.md` deliberately before committing them
 - [x] 9.7 **Archive gate**: replace every `APPLY-RESOLVED:` placeholder in the spec deltas with its pinned value from `notes/backend-probe.md`, then assert `grep -r 'APPLY-RESOLVED' openspec/changes/read-depth/specs/` returns nothing. Two markers exist today — `gatus-window` and `memory-bar`. Also update `design.md`'s D5 table and Open Questions with the same pinned values, so the design record does not keep asserting an unknown that has since been measured (`design.md` is excluded from the grep assertion only because `tasks.md` names the token literally)
 - [ ] 9.8 Update the README tools table; write the `homelab-docs` capability Purpose; run `/docs-update` for the rp5 clone, timer, and mount, and **push the apply-time DNS measurements back into `services/monitoring.md`**, whose baselines are six months stale. Present the doc diff before committing
 - [x] 9.9 Re-grep `owner-acknowledgement/proposal.md`'s cited line numbers and correct drift from the new config keys
