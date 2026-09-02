@@ -135,3 +135,51 @@ Decisions taken in the group:
   asserted to be exactly that narrow; full paths and `tab_id` stay asserted absent.
 - Sessions are ordered by the degrade key whether or not anything is dropped, so the
   comparison key (group 5) cannot depend on herdr's enumeration order.
+
+### Group 6 — `sessions_read`
+
+`tests/test_tools_sessions_read.py`: **90 passed**; the three homelab-query test files that
+share the extracted failure helper stay green (161). The marker self-match and uniqueness
+test now runs against the real renderer: the `MARKERS` and `RENDERINGS` tables in
+`henk/tools/sessions_read.py` are keyed identically and `RENDERINGS` calls the tool's own
+render functions, so no sentence exists twice.
+
+| Mutation | Failures | Caught by (representative) |
+|---|---|---|
+| label filter deleted | 7 | populations partition, everything-filtered body, mixed population, caveat-yields, unusable-survives |
+| `project` shape check deleted | 10 | the seven out-of-shape cases, all-unusable body |
+| unusable clause suppressed beside filtered/unlisted | 4 | unusable-survives, fixed clause order, partition |
+| stage 2 runs despite a stage-1 candidate | 4 | one-request-for-a-fresh-candidate, stage-one-suppresses-stage-two |
+| a foreign frame's time wins the newest selection | 1 | foreign-and-unreadable-never-contribute-a-time |
+
+The third mutation was **replanted**: the first attempt referenced a name before its
+assignment and crashed the whole file with `UnboundLocalError` — fourteen "failures" that
+were a crash, not a bound test. Hoisting the assignment produced the four real failures.
+
+Decisions taken in the group:
+
+- **G2/G3 boundary.** G3's own sentence counts unreadable frames among those *found*, so
+  `found = unreadable + foreign + candidates` and G2 fires only when nothing was found at
+  all — an empty 200 body or one carrying only `open`/`keepalive` frames, which is exactly
+  the shape probe §1.4 measured. A poll of nothing but garbage lines is G3.
+- **The caveat needs an emission condition** the delta does not state (it gives only a
+  suppression rule, which would make "the notes line is absent when no clause applies"
+  unreachable). It fires when at least one session is listed and neither the filtered nor
+  the unlisted clause already states partiality. A clean zero-session snapshot renders a
+  headline and `No live sessions.` with no notes line.
+- Count-bearing sentences are pluralised (`1 session was` / `2 sessions were`) except the
+  unlisted and skipped clauses, whose markers contain the plural noun.
+- A candidate frame with no usable server `time` renders the unknown headline with
+  `an unrecorded time` rather than a fabricated epoch, and sorts below every timed frame.
+- The read budget truncates *inside* the chunk that crosses it, so a single-chunk response
+  cannot defeat it; the trailing partial line is discarded, not counted as corrupt.
+- `pane` is shape-checked but **not rendered** — the D10 body row and the spec's body table
+  list label, status, and age only. D4's rationale for publishing `pane` (telling two
+  same-label sessions apart) is therefore served on the topic, not in Henk's reply; showing
+  it would be a spec amendment and is left for a follow-up, not done here.
+- The tool does not re-derive the allowlist strip rule; the loader owns it
+  (`normalise_label_allowlist`). It only refuses non-string or empty entries, which can
+  arrive solely from a caller that bypassed the loader.
+- Extracting the three backend-failure sentences into `henk/tools/backend_failure.py` also
+  applies `scrub_addresses` to the `request failed: <reason>` text on the homelab-query
+  path, which the design asked for and the old inline code did not do.

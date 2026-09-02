@@ -28,6 +28,7 @@ from typing import Any, Mapping
 
 import httpx
 
+from henk.tools.backend_failure import backend_failure_reason
 from henk.tools.base import Tool, ToolClass, ToolResult
 from henk.tools.query_registry import (
     QUERY_NAMES,
@@ -316,9 +317,7 @@ class HomelabQueryTool(Tool):
             response = await self._client.get(url, params=params, timeout=timeout)
             response.raise_for_status()
             return response.json(), None
-        except httpx.TimeoutException:
-            return None, f"{backend} timed out after {timeout:.0f}s"
-        except httpx.HTTPStatusError as exc:
-            return None, f"{backend} returned HTTP {exc.response.status_code}"
         except (httpx.HTTPError, ValueError) as exc:
-            return None, f"{backend} request failed: {exc}"
+            # The three sentences live in `backend_failure_reason` so that
+            # `sessions_read` cannot drift a word away from them.
+            return None, backend_failure_reason(backend, exc, timeout=timeout)
