@@ -78,8 +78,8 @@ Recorded here so they are not rediscovered. Each was verified against source.
    in the design and task list while leaving the spec sentence intact is the specific trap to
    avoid: the spec is the binding record.
 2. **The flag's effective default is the inline literal in `from_dict`**, not the dataclass
-   attribute and not this repo's `config.yaml`. `config.py:1014` (in `_require_safe_length`) reads
-   `signal_sec.get("safe_length", SignalConfig.safe_length)` and `config.py:585` reads
+   attribute and not this repo's `config.yaml`. `config.py:1244` (in `_require_safe_length`) reads
+   `signal_sec.get("safe_length", SignalConfig.safe_length)` and `config.py:694` reads
    `events_sec.get("enabled", EventsConfig.enabled)` — the builder only honours the
    dataclass attribute because it is written to read it; a builder that never reads the key
    is the trap (read-depth's §2 tests assert against exactly that). rp5's `config.yaml` is locally modified and will not carry a new key. Pin

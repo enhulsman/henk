@@ -241,3 +241,29 @@ Decisions taken in the group:
 - Review-gate fix: the publisher README's `token-place` example was rewritten to the tool's
   real usage (`--target-host`, `--consumer`, `--token-name`, `--source-host`/`--source-path`,
   plan without `--yes`).
+
+## Close-out checks (§7.6, §9.3, §9.5, §9.6)
+
+- **7.6 baseline accounting.** Baseline **1896 passed / 12 deselected**. After all seven
+  groups: **2437 passed / 12 deselected**. Every delta is one named file:
+  `tests/test_config_sessions.py` +56 · `tests/test_session_publisher.py` +377 ·
+  `tests/test_tools_sessions_read.py` +90 · `tests/test_sessions_registration.py` +15 ·
+  `tests/test_image_contents.py` +3 = **+541**. No existing test was removed; one existing
+  test (`tests/test_config_read_depth.py`, the `PersonalDataConfig` field-set pin) was
+  amended deliberately (task 2.7). Deselected count unchanged.
+- **9.3 (repo half).** A grep over `tests/`, `deploy/` and `notes/` for the workstation's
+  home path and its real top-level directory names finds only `/home/owner/...` placeholder
+  paths and tool paths (`~/.claude-config/bin/token-place`, the units' `%h/Coding/henk`
+  ExecStart — the repo's own location, which the root README already names). The fixture
+  reuses the generic names `Coding/` and `Documents/`; the work-subtree placeholder
+  `Coding/work` was checked against the live workstation and **no such directory exists**,
+  and `homelab-docs-site` is the public documentation repository already named in this
+  repo's fixtures. The live-label half of 9.3 (grep for every label recorded at 8.5) is the
+  owner's, from the terminal.
+- **9.5.** Two-phase sweep re-run after all edits: phase 1 zero hits outside the retained
+  set, phase 2 every token present. `openspec validate --all`: 17 passed, 0 failed.
+- **9.6.** `openspec/changes/owner-acknowledgement/proposal.md` cited `config.py:1014` and
+  `config.py:585` for the `_require_safe_length` read and the `events.enabled` read; after
+  this change's additions those lines are **1244** and **694**, and the citations were
+  corrected. (They had already drifted before this change; the mechanisms cited are
+  unchanged.)

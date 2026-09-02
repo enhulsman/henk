@@ -191,8 +191,9 @@ existing `henk_audit` volume (already in the rp5 backup allowlist).
 | `henk/audit/` | Append-only JSONL audit writer, decision-time mutation receipts, + the versioned record **JSON Schema** (the transferable artifact) |
 | `henk/store/` | One SQLite file on the audit volume: capped memory repository, capture inbox behind the swappable `InboxStore` seam, reminders repository + the explicit transaction boundary |
 | `henk/reminders/` | Time resolution (DST-correct, zone-explicit), the polling delivery scheduler, and the delivered-reminder note |
-| `henk/tools/` | `homelab_health`, `homelab_query` (+ its reviewable `query_registry`, renderers, and the address projection), `homelab_docs` (corpus sectioniser, allowlisted index, stamp reader), `todo_read`, `notify`, `publish_handoff`, `store_memory`, `capture`, `inbox_read`, `remind`, `cancel_reminder`, `reminders_read` (+ deferred `taiga_read`) and the production registry |
+| `henk/tools/` | `homelab_health`, `homelab_query` (+ its reviewable `query_registry`, renderers, and the address projection), `homelab_docs` (corpus sectioniser, allowlisted index, stamp reader), `sessions_read` (two-stage topic poll, label gate, shape-constrained render; `backend_failure` holds the shared backend-failure sentences), `todo_read`, `notify`, `publish_handoff`, `store_memory`, `capture`, `inbox_read`, `remind`, `cancel_reminder`, `reminders_read` (+ deferred `taiga_read`) and the production registry |
 | `henk/app.py`, `henk/runtime.py`, `henk/__main__.py` | Composition, production wiring, entrypoint |
+| `deploy/session-publisher/` | The **workstation** session publisher (stdlib-only Python 3.11+, systemd user timer, example config, README) — committed here, tested by this suite, deliberately **not** in the image |
 | `config.yaml` | Non-secret settings | `.env` | Secrets (git-ignored) |
 | `~/.claude-config/bin/henk-pickup` | Pull-based CLI to fetch handoffs from any tailnet host (lives in the claude-config repo) |
 
@@ -240,6 +241,20 @@ existing `henk_audit` volume (already in the rp5 backup allowlist).
   to the docs root) `homelab_docs` may index. Filtering happens at index build, so a
   non-allowlisted file yields no candidate and no snippet. **Empty/unset → surfaces
   nothing**, with a diagnostic distinct from "corpus unavailable".
+- `sessions.*` (session-awareness) — `enabled` (**defaults to false**; the workstation
+  publisher, its write-only ntfy user, Henk's read grant on `henk-sessions`, and the label
+  allowlist below must exist first), `topic` (`henk-sessions`; one name — a `,` or `/` is
+  refused at load because a comma would silently widen the read to a second topic),
+  `stale_after_seconds` (1500 = the publisher's 900 s heartbeat plus two 300 s ticks; also
+  the first poll window), `lookback_seconds` (21600 = 6 h; the second poll window, must be
+  ≥ the staleness bound). Base URL and timeout are `endpoints.ntfy`'s; there is no new
+  secret and no new timeout key.
+- `personal_data.session_project_allowlist` — **default-deny** list of the publisher's
+  configured **project labels** (never paths) `sessions_read` may list; matched exactly
+  after a whitespace strip, blank entries discarded. The workstation estate mixes personal
+  and work sessions, so this gate applies even though the publisher already filters.
+  **Empty/unset → surfaces nothing** and says so. Enabling on rp5 is a deliberate
+  **two-key** edit: this list and `sessions.enabled`, together.
 - `reminders.*` — `enabled` (**defaults to false**, and that is the feature: a
   build that confidently accepts "remind me at six" and then says nothing at six
   has spent the owner's trust on a promise it cannot keep). When true it also
@@ -286,6 +301,7 @@ publish on `henk-handoffs`.
 | `homelab_health` | read-only | — | Gatus API (rp5:8080) + Prometheus HTTP API (vps:9090) over the tailnet — no SSH. Since read-depth its bars are the **same threshold objects** `homelab_query` uses (memory > 75 % used, disk < 15 % free on `/`, load reported with no bar), so the two tools cannot disagree |
 | `homelab_query` | read-only | — | six **named** queries over the same two backends — `node_resource_trend`, `scrape_targets`, `endpoint_history`, `freshness_check`, `container_state`, `dns_performance` — from a closed, reviewable registry: no free-form PromQL, every parameter a closed enum, every threshold traceable to a live alert rule, and `instance` / `scrapeUrl` / `server` values projected out so no tailnet address reaches a reply. Registered when `homelab_query.enabled` (default true) |
 | `homelab_docs` | read-only | — | `search` and `read` over the homelab documentation corpus, delivered as a **read-only bind mount** (no network, no credential in the container). Default-deny path allowlist applied at index build; every result carries the last-pull age and is marked stale past 26 h rather than hidden. Registered only when `homelab_docs.enabled` (default **false**) |
+| `sessions_read` | read-only | — | the owner's Claude Code sessions on the **workstation**, as last reported by the workstation-side publisher (`deploy/session-publisher/`) to the deny-all `henk-sessions` ntfy topic (vps:2586, the egress Henk already has). Polls the topic cache at call time — two `poll=1` GETs at most, no subscription, no cursor. Every session is four shape-constrained values (`pane`, configured `project` label, herdr `status`, `age_s`): no path, title, branch, or label ever crosses the machine boundary. Filtering is default-deny **twice** — publisher-side (canonical-path allow/deny roots plus `origin` owner, on both reported paths) and again in Henk by the `personal_data.session_project_allowlist` label gate. Every result opens with the snapshot's age and says when it is stale, absent, or unusable; listed sessions are never presented as all sessions. Registered only when `sessions.enabled` (default **false**) |
 | `todo_read` | read-only | — | obsidian-todo-api (vps:8089), GET only; **default-deny note-path allowlist** (`personal_data.todo_note_allowlist`) — surfaces only allowlisted personal notes, drops everything else in-process; empty allowlist → surfaces nothing |
 | `notify` | notify-only | — | ntfy (vps:2586), fixed topic, every message prefixed `[AI]`, no destination arg |
 | `publish_handoff` | notify-only | — | ntfy (vps:2586), fixed `henk-handoffs` topic, `[AI]`-prefixed, no destination arg; returns the message id |

@@ -100,6 +100,7 @@ comms leg stays cut — which is *why* his data circles can widen safely.
 | 2 | Reminders | Owner-scheduled delivery; natural-language time parsing; amends the no-timers clause to "owner-scheduled yes, system-scheduled no" |
 | 3 | Read depth | Named, allowlisted Gatus/Prometheus queries; homelab-docs corpus tool |
 | 4 | Session awareness | Workstation-side publisher → deny-all sessions topic; publisher-side filtering |
+| 4b | Session titles (follow-up to 4) | Opt-in, per-root publication of model-generated session titles and branch names — **deferred out of session-awareness v1 by owner decision 2026-09-02**, so v1 renders no transcript-derived free text at all. Its **first task** is the same-turn taint finding: `henk/agent/core.py:542-548` builds `TurnContext(tainted=self._session_tainted)` once per turn, before any tool runs, so a taint raised by a tool call mid-turn cannot refuse a standing-tier write in that same turn. Same-turn refusal must exist before any untrusted text is rendered. The preserved opt-in design lives in the archived session-awareness `design.md` under *Deferred: session titles* |
 | 5 | Runbook actions | The standing/per-instance verb registry made real (curated action API, never raw shell) |
 
 Hygiene carried by whichever change touches each spec: fill placeholder spec
