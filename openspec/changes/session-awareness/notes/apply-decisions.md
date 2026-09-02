@@ -69,3 +69,37 @@ Decisions taken in the group:
 - Review-gate fix: the rationale comments for `stale_after_seconds` and `lookback_seconds`
   were corrected to the design's derivation (heartbeat plus two ticks; 6 h lookback inside
   a 72 h cache — the draft comment wrongly said the lookback matched the cache duration).
+
+### Group 3 — publisher classification
+
+`tests/test_session_publisher.py`: **164 passed** after the group (the publisher module is
+loaded from `deploy/session-publisher/` by path; an AST test asserts it imports stdlib
+modules only).
+
+| Mutation | Failing tests | Caught by (representative) |
+|---|---|---|
+| owner gate deleted (always admits) | 19 | root-admits-owner-refuses, dry-run names the owner gate, no-origin refused, empty `allow_owners` admits only non-git, case-sensitive owner match |
+| deny loop removed from the root gate | 9 | symlink into a denied subtree, scratch worktree under the temp root embedding a denied checkout, deny-below-allow wins, denied foreground path blocks the session, real-symlink canonicalisation |
+| classification on the reported path instead of the canonical one | 5 | canonical-vs-reported test, symlink tests |
+| loader reads a misspelled `deny_root` so the configured key is silently unread | 12 | every deny classification test plus the `deny_roots` wrong-type refusal |
+
+Finding worth keeping from the fourth mutation: the **closed-schema test does not catch a
+renamed reader** — the allowed-key set is unchanged, so a misspelled `deny_root` in the
+*config* is still refused by name while the real key goes unread. It is the classification
+tests that bind the deny key to its reader; the closed schema alone is not that mechanism.
+
+Decisions taken in the group:
+
+- Root gate runs before the owner gate per path, and a root-denied path never spawns a git
+  subprocess; each path carries at most one denial, and a pane at most two (one per
+  reported path).
+- A `subprocess.TimeoutExpired` or `OSError` from git is a refusal of that path
+  (`owner:timeout` / `owner:git-unavailable`), never a crash of the tick.
+- Extra load-time refusals beyond the spec's letter, all named: relative root paths,
+  non-positive `heartbeat_seconds`/`tick_seconds`, a bool where an int is required,
+  non-table `allow_roots` entries, unreadable/invalid-TOML/invalid-UTF-8 files, and a
+  non-string `foreground_cwd` in a herdr record.
+- `/mnt` immediate children are refused by segment arithmetic, so `/mnt/c` is refused while
+  a deeper path under a drive mount loads.
+- Review-gate fix: the publisher identity string was aligned to the design's
+  `session-publisher/0.1`.
