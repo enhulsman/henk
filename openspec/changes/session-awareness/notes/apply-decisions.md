@@ -295,3 +295,28 @@ owner-gated steps and what was prepared for each:
   docs-site working tree for the owner to review and commit after 8.7. The capability
   Purpose is written into `openspec/specs/session-awareness/spec.md` at archive (9.7).
 - **9.1 / 9.2 / 9.3 (live half)** are the owner's live verifications; **9.7** archives.
+
+## §8 owner steps, as run (2026-09-02, real terminal)
+
+- **8.1** Publisher user name: **`henk-workstation`** (the design's proposed name, taken).
+  Created with `ntfy-provision create henk-workstation --grant henk-sessions:wo --token
+  --label session-publisher --token-out ~/.config/henk-session-publisher/ntfy-token`.
+  Token never expires; written locally at mode 600. Probe matrix at create time: anonymous
+  publish 403, anonymous read 403, publisher publish 200, **publisher read 403** (write-only
+  confirmed).
+- **8.2** `ntfy-provision grant henk henk-sessions ro`. `henk`'s resulting grant set is
+  exactly four: write-only `homie-henk`, read-only `henk-events`, write-only `henk-handoffs`,
+  read-only `henk-sessions` — the three pre-existing grants unchanged. Henk's own
+  `--expect ro` probe could not run from the workstation (its token lives only on rp5); the
+  read direction is confirmed live at 9.2 when the tool answers over Signal.
+- **8.3** `token-place` not needed (token minted onto the consuming host); `chmod 700` on the
+  directory, verified `drwx------` / `-rw-------`. Re-probe `--expect wo` passed all four.
+- Tooling note: `~/.claude-config/bin` is not on `PATH`; the convention is a symlink in
+  `~/.local/bin` (the `homelab-health` precedent). `ntfy-provision` and `token-place` were
+  linked the same way during this step.
+- **8.4** Real config written from the example: 11 one-per-project roots with labels, two
+  owner identities, one deny root (the work subtree), no container root. The projects
+  directory itself is deliberately not an allow root.
+- **8.5** Dry run recorded in `tier-w-publisher-review.md`: 4 live panes, 2 admitted
+  (`henk`, `config`), 2 denied by the root gate on `cwd` — every work pane among them.
+- **8.6** `publish_unlisted = true`, owner decision; re-run shows `unlisted: {2, 0}`.
