@@ -27,8 +27,14 @@ from __future__ import annotations
 
 import ast
 import builtins
+import fcntl
+import hashlib
 import importlib.util
+import io
+import json
 import os
+import random
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -2333,3 +2339,1456 @@ def test_the_estate_sources_record_is_the_seam_group_five_fills() -> None:
         generated_at=GENERATED_AT,
     )
     assert snapshot["age_source"] == "none"
+
+# --------------------------------------------------------------------------- #
+# Fixtures: the publish half (task group 5)
+# --------------------------------------------------------------------------- #
+
+#: A placeholder credential. Deliberately not shaped like a real ntfy token — the
+#: repository's pre-commit hook flags ``tk_`` followed by 32 alphanumerics — and
+#: asserted absent from stdout, stderr, the state file, and every subprocess argv
+#: by ``test_the_token_never_reaches_argv_logs_or_state``.
+TOKEN = "tk_SECRET_PLACEHOLDER"
+
+#: ``BASE_CONFIG``'s classification surface plus the transport keys. The token
+#: comes from an env override so no test needs a token file on disk except the two
+#: that are about the token file.
+PUBLISH_CONFIG = (
+    'ntfy_url = "http://vps:2586"\n'
+    'topic = "henk-sessions"\n'
+    'token_env = "HENK_TEST_TOKEN"\n'
+    + BASE_CONFIG
+)
+
+#: The same with the unlisted aggregate opted in, for the key tests that need a
+#: denied session to be visible in the comparison key.
+PUBLISH_CONFIG_UNLISTED = "publish_unlisted = true\n" + PUBLISH_CONFIG
+
+
+class FakePublisher:
+    """A ``Publisher`` double recording every request. ``requests`` is the whole
+    evidence for "exactly one request per run" and for "no request at all"."""
+
+    def __init__(self, status: int = 200, raises=None) -> None:
+        self.status = status
+        self.raises = raises
+        self.requests: list[SimpleNamespace] = []
+
+    def post(self, url, body, headers, timeout):
+        self.requests.append(
+            SimpleNamespace(url=url, body=body, headers=dict(headers), timeout=timeout)
+        )
+        if self.raises is not None:
+            raise self.raises
+        return self.status
+
+
+class FakeRunner:
+    """The two CLI invocations, as text plus a return code.
+
+    Nothing in this module spawns ``herdr`` or ``claude-estate``: the runner is
+    injected, and ``calls`` records the argv and timeout of every invocation so the
+    timeout and the transcript-tool rules can be asserted on it.
+    """
+
+    def __init__(
+        self,
+        *,
+        herdr_text=None,
+        estate_text=None,
+        herdr_rc: int = 0,
+        estate_rc: int = 0,
+        agents=None,
+        ages=None,
+    ) -> None:
+        self.herdr_text = herdr_envelope(agents) if herdr_text is None else herdr_text
+        self.estate_text = (
+            estate_envelope(ESTATE_AGES if ages is None else ages)
+            if estate_text is None
+            else estate_text
+        )
+        self.herdr_rc = herdr_rc
+        self.estate_rc = estate_rc
+        self.calls: list[tuple[list[str], float]] = []
+
+    def __call__(self, argv, timeout):
+        self.calls.append((list(argv), timeout))
+        if argv[0] == "herdr":
+            return self.herdr_rc, self.herdr_text
+        if argv[0] == "claude-estate":
+            return self.estate_rc, self.estate_text
+        raise AssertionError(f"the publisher invoked something unexpected: {argv!r}")
+
+
+def publisher_config(tmp_path, text=None, name="key-config.toml"):
+    """Load a publisher configuration through the same loader ``main`` uses, under a
+    distinct file name so it cannot collide with ``run_main``'s own config."""
+    return sp.load_config(
+        write_config(tmp_path, PUBLISH_CONFIG if text is None else text, name),
+        env=ENV,
+        realpath=fake_realpath,
+        tempdir=TEMPDIR,
+    )
+
+
+def key_for(tmp_path, *, text=None, agents=None, ages=None, name="key-config.toml"):
+    """The comparison key one tick over the given estate would compute."""
+    config = publisher_config(tmp_path, text, name)
+    snapshot, _, _ = snapshot_of(
+        config, ages=ESTATE_AGES if ages is None else ages, agents=agents
+    )
+    return sp.comparison_key(snapshot)
+
+
+def seed_state(directory: Path, key: str, published_at: float) -> Path:
+    path = directory / "last.json"
+    path.write_text(
+        json.dumps({"key": key, "published_at": published_at}), encoding="utf-8"
+    )
+    return path
+
+
+def run_main(
+    tmp_path,
+    *,
+    config_text=None,
+    args=(),
+    state_dir="state",
+    now: float = 1_000_000.0,
+    runner=None,
+    publisher=None,
+    env=None,
+    token=TOKEN,
+    config_name="config.toml",
+    make_state_dir: bool = True,
+):
+    """Drive ``main`` end to end with every seam injected.
+
+    No subprocess, no network, no real state directory outside ``tmp_path``, and a
+    frozen clock so the heartbeat arithmetic is exact.
+    """
+    config_path = write_config(
+        tmp_path, PUBLISH_CONFIG if config_text is None else config_text, config_name
+    )
+    directory = None if state_dir is None else tmp_path / state_dir
+    if directory is not None and make_state_dir:
+        directory.mkdir(parents=True, exist_ok=True)
+    environ = {"HOME": "/home/owner"}
+    if directory is not None:
+        environ["STATE_DIRECTORY"] = str(directory)
+    if token is not None:
+        environ["HENK_TEST_TOKEN"] = token
+    if env is not None:
+        environ.update(env)
+    runner = FakeRunner() if runner is None else runner
+    publisher = FakePublisher() if publisher is None else publisher
+    stdout, stderr = io.StringIO(), io.StringIO()
+    code = sp.main(
+        ["--config", str(config_path), *args],
+        env=environ,
+        runner=runner,
+        publisher=publisher,
+        clock=lambda: now,
+        git=FakeGit(),
+        realpath=fake_realpath,
+        stdout=stdout,
+        stderr=stderr,
+    )
+    return SimpleNamespace(
+        code=code,
+        out=stdout.getvalue(),
+        err=stderr.getvalue(),
+        publisher=publisher,
+        runner=runner,
+        state_dir=directory,
+        state_file=None if directory is None else directory / "last.json",
+        config_path=config_path,
+    )
+
+
+def journal_lines(text: str) -> list[str]:
+    """Every per-run journal line in a captured stderr, and nothing else."""
+    return [
+        line
+        for line in text.splitlines()
+        if line.startswith("session-publisher: admitted=")
+    ]
+
+
+def only_journal_line(text: str) -> str:
+    lines = journal_lines(text)
+    assert len(lines) == 1, f"expected exactly one journal line, got {lines!r}"
+    return lines[0]
+
+
+def published_body(result) -> dict:
+    assert len(result.publisher.requests) == 1
+    return json.loads(result.publisher.requests[0].body.decode("utf-8"))
+
+
+# --------------------------------------------------------------------------- #
+# Task 5.1 — the comparison key
+# --------------------------------------------------------------------------- #
+
+
+def test_the_comparison_key_is_a_sha256_of_the_serialised_reduced_snapshot(
+    tmp_path,
+) -> None:
+    config = publisher_config(tmp_path)
+    snapshot, _, _ = snapshot_of(config, ages=ESTATE_AGES)
+    key = sp.comparison_key(snapshot)
+    assert len(key) == 64 and set(key) <= set("0123456789abcdef")
+    # Recomputed independently: the volatile keys removed, everything else kept.
+    reduced = {
+        name: value
+        for name, value in snapshot.items()
+        if name not in ("generated_at", "heartbeat_s", "tick_s")
+    }
+    reduced["sessions"] = [
+        {name: value for name, value in session.items() if name != "age_s"}
+        for session in snapshot["sessions"]
+    ]
+    assert key == hashlib.sha256(sp.serialise(reduced)).hexdigest()
+
+
+def test_the_comparison_key_ignores_generated_at_heartbeat_tick_and_ages(
+    tmp_path,
+) -> None:
+    """The four volatile inputs, each varied on its own (spec: *Only ages changed*)."""
+    config = publisher_config(tmp_path)
+    snapshot, _, _ = snapshot_of(config, ages=ESTATE_AGES)
+    baseline = sp.comparison_key(snapshot)
+
+    later = dict(snapshot)
+    later["generated_at"] = "2027-01-01T00:00:00Z"
+    assert sp.comparison_key(later) == baseline
+
+    cadence = dict(snapshot)
+    cadence["heartbeat_s"] = 1800
+    cadence["tick_s"] = 600
+    assert sp.comparison_key(cadence) == baseline
+
+    aged = dict(snapshot)
+    aged["sessions"] = [
+        {**session, "age_s": (session["age_s"] or 0) + 61}
+        for session in snapshot["sessions"]
+    ]
+    assert sp.comparison_key(aged) == baseline
+
+    nulled = dict(snapshot)
+    nulled["sessions"] = [{**session, "age_s": None} for session in snapshot["sessions"]]
+    assert sp.comparison_key(nulled) == baseline
+
+
+def test_only_the_ages_changing_publishes_nothing_within_the_heartbeat(
+    tmp_path,
+) -> None:
+    stored = key_for(tmp_path, ages=ESTATE_AGES)
+    other = {pane: age + 61 for pane, age in ESTATE_AGES.items()}
+    result = run_main(
+        tmp_path,
+        runner=FakeRunner(ages=other),
+        state_dir="state",
+        now=1_000_000.0,
+    )
+    # Seeded after the directory exists, so seed and run in two steps.
+    assert result.code == 0
+    seed_state(result.state_dir, stored, 1_000_000.0 - 600)
+    again = run_main(
+        tmp_path, runner=FakeRunner(ages=other), state_dir="state", now=1_000_000.0
+    )
+    assert again.code == 0
+    assert again.publisher.requests == []
+    assert "reason=unchanged" in only_journal_line(again.err)
+
+
+def test_two_runs_differing_only_in_a_dropped_session_share_the_key(tmp_path) -> None:
+    """Computing the key post-degrade is what makes this hold (D7)."""
+    config = publisher_config(tmp_path)
+    first = [
+        agent(f"w1:p{index:03d}", "/home/owner/Coding/henk", "working")
+        for index in range(300)
+    ]
+    second = list(first[:-1]) + [
+        agent("w1:p999", "/home/owner/Coding/henk", "working")
+    ]
+    snap_a, counts_a, _ = snapshot_of(config, ages={}, agents=first)
+    snap_b, counts_b, _ = snapshot_of(config, ages={}, agents=second)
+    assert counts_a.dropped > 0 and counts_b.dropped == counts_a.dropped
+    panes_a = {session["pane"] for session in snap_a["sessions"]}
+    panes_b = {session["pane"] for session in snap_b["sessions"]}
+    assert "w1:p299" not in panes_a and "w1:p999" not in panes_b
+    assert panes_a == panes_b
+    assert sp.comparison_key(snap_a) == sp.comparison_key(snap_b)
+
+
+def test_a_status_change_alters_the_key(tmp_path) -> None:
+    config = publisher_config(tmp_path)
+    changed = [
+        agent("wA:p1", "/home/owner/Coding/henk", "blocked")
+        if record["pane_id"] == "wA:p1"
+        else record
+        for record in ESTATE
+    ]
+    before, _, _ = snapshot_of(config, ages=ESTATE_AGES)
+    after, _, _ = snapshot_of(config, ages=ESTATE_AGES, agents=changed)
+    assert sp.comparison_key(before) != sp.comparison_key(after)
+
+
+def test_reordering_the_estate_does_not_alter_the_key(tmp_path) -> None:
+    """The degrade pass orders sessions before the key is taken, so herdr's
+    enumeration order cannot republish a snapshot that did not change."""
+    config = publisher_config(tmp_path)
+    baseline, _, _ = snapshot_of(config, ages=ESTATE_AGES)
+    rng = random.Random(20260902)
+    for _ in range(8):
+        shuffled = list(ESTATE)
+        rng.shuffle(shuffled)
+        snapshot, _, _ = snapshot_of(config, ages=ESTATE_AGES, agents=shuffled)
+        assert sp.comparison_key(snapshot) == sp.comparison_key(baseline)
+
+
+def test_a_change_to_unlisted_blocked_alone_alters_the_key_and_publishes(
+    tmp_path,
+) -> None:
+    """`unlisted` stays in the key, so a denied session becoming blocked publishes."""
+    config = publisher_config(tmp_path, PUBLISH_CONFIG_UNLISTED, "unlisted.toml")
+    # wB:p2 is denied by the owner gate; its status is not otherwise published.
+    blocked = [
+        agent("wB:p2", "/home/owner/Coding/thirdparty-tool", "blocked")
+        if record["pane_id"] == "wB:p2"
+        else record
+        for record in ESTATE
+    ]
+    before, _, _ = snapshot_of(config, ages=ESTATE_AGES)
+    after, _, _ = snapshot_of(config, ages=ESTATE_AGES, agents=blocked)
+    assert before["sessions"] == after["sessions"]
+    assert before["unlisted"]["blocked"] != after["unlisted"]["blocked"]
+    assert sp.comparison_key(before) != sp.comparison_key(after)
+
+    result = run_main(
+        tmp_path,
+        config_text=PUBLISH_CONFIG_UNLISTED,
+        runner=FakeRunner(agents=blocked),
+    )
+    assert result.code == 0
+    seed_state(result.state_dir, sp.comparison_key(before), 1_000_000.0 - 60)
+    again = run_main(
+        tmp_path,
+        config_text=PUBLISH_CONFIG_UNLISTED,
+        runner=FakeRunner(agents=blocked),
+        now=1_000_000.0,
+    )
+    assert again.code == 0
+    assert len(again.publisher.requests) == 1
+    assert "reason=changed" in only_journal_line(again.err)
+
+
+def test_the_degraded_count_stays_in_the_comparison_key(tmp_path) -> None:
+    config = publisher_config(tmp_path)
+    snapshot, _, _ = snapshot_of(config, ages=ESTATE_AGES)
+    with_degraded = dict(snapshot)
+    with_degraded["degraded"] = {"dropped": 2}
+    assert sp.comparison_key(with_degraded) != sp.comparison_key(snapshot)
+
+
+# --------------------------------------------------------------------------- #
+# Task 5.2 — change or heartbeat
+# --------------------------------------------------------------------------- #
+
+
+DEFAULT_CADENCE = sp.PublisherConfig()
+
+
+@pytest.mark.parametrize(
+    "elapsed,expected,reason",
+    [
+        (0.0, False, "unchanged"),
+        (300.0, False, "unchanged"),
+        (599.0, False, "unchanged"),
+        (600.0, False, "unchanged"),
+        (600.5, True, "heartbeat"),
+        (601.0, True, "heartbeat"),
+        (900.0, True, "heartbeat"),
+        (5000.0, True, "heartbeat"),
+    ],
+)
+def test_the_heartbeat_fires_a_whole_tick_before_the_interval(
+    elapsed, expected, reason
+) -> None:
+    """`elapsed + tick_seconds > heartbeat_seconds`, not `elapsed > heartbeat`: the
+    naive rule makes a 900-second heartbeat on a 300-second tick fire a whole tick
+    late (D7). 600 does not publish; 900 does."""
+    state = sp.State(key="same", published_at=1_000_000.0 - elapsed)
+    publish, why = sp.should_publish("same", state, 1_000_000.0, DEFAULT_CADENCE)
+    assert (publish, why) == (expected, reason)
+
+
+def test_the_defaults_are_a_900_second_heartbeat_on_a_300_second_tick() -> None:
+    assert (DEFAULT_CADENCE.heartbeat_seconds, DEFAULT_CADENCE.tick_seconds) == (900, 300)
+
+
+def test_a_changed_key_publishes_regardless_of_the_heartbeat() -> None:
+    state = sp.State(key="stored", published_at=1_000_000.0 - 60)
+    assert sp.should_publish("fresh", state, 1_000_000.0, DEFAULT_CADENCE) == (
+        True,
+        "changed",
+    )
+
+
+def test_no_state_at_all_is_a_first_run() -> None:
+    assert sp.should_publish("any", None, 1_000_000.0, DEFAULT_CADENCE) == (
+        True,
+        "first-run",
+    )
+
+
+def test_the_cadence_comes_from_the_configuration_not_from_constants(tmp_path) -> None:
+    config = publisher_config(
+        tmp_path,
+        "heartbeat_seconds = 60\ntick_seconds = 10\n" + PUBLISH_CONFIG,
+        "cadence.toml",
+    )
+    state = sp.State(key="same", published_at=1_000_000.0 - 55)
+    assert sp.should_publish("same", state, 1_000_000.0, config)[0] is True
+    state = sp.State(key="same", published_at=1_000_000.0 - 40)
+    assert sp.should_publish("same", state, 1_000_000.0, config)[0] is False
+
+
+def test_unchanged_at_600_seconds_issues_no_request(tmp_path) -> None:
+    stored = key_for(tmp_path)
+    first = run_main(tmp_path)
+    seed_state(first.state_dir, stored, 1_000_000.0 - 600)
+    result = run_main(tmp_path, now=1_000_000.0)
+    assert result.code == 0
+    assert result.publisher.requests == []
+    assert "reason=unchanged published=no" in only_journal_line(result.err)
+    # The stored state is left exactly as it was.
+    assert json.loads(result.state_file.read_text(encoding="utf-8")) == {
+        "key": stored,
+        "published_at": 1_000_000.0 - 600,
+    }
+
+
+def test_unchanged_at_900_seconds_publishes_on_the_heartbeat(tmp_path) -> None:
+    stored = key_for(tmp_path)
+    first = run_main(tmp_path)
+    seed_state(first.state_dir, stored, 1_000_000.0 - 900)
+    result = run_main(tmp_path, now=1_000_000.0)
+    assert result.code == 0
+    assert len(result.publisher.requests) == 1
+    assert "reason=heartbeat published=yes" in only_journal_line(result.err)
+    assert json.loads(result.state_file.read_text(encoding="utf-8")) == {
+        "key": stored,
+        "published_at": 1_000_000.0,
+    }
+
+
+def test_a_changed_snapshot_publishes_one_minute_in(tmp_path) -> None:
+    first = run_main(tmp_path)
+    seed_state(first.state_dir, "a-key-from-another-estate", 1_000_000.0 - 60)
+    result = run_main(tmp_path, now=1_000_000.0)
+    assert result.code == 0
+    assert len(result.publisher.requests) == 1
+    assert "reason=changed published=yes" in only_journal_line(result.err)
+
+
+# --------------------------------------------------------------------------- #
+# Task 5.3 — a failed publish keeps the clock
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "publisher_factory,needle",
+    [
+        (lambda: FakePublisher(raises=sp.PublishError("ntfy timed out after 10s")), "timed out"),
+        (lambda: FakePublisher(status=503), "503"),
+    ],
+    ids=["timeout", "503"],
+)
+def test_a_failed_publish_exits_non_zero_and_leaves_the_state_untouched(
+    tmp_path, publisher_factory, needle
+) -> None:
+    first = run_main(tmp_path)
+    seeded = seed_state(first.state_dir, "a-key-from-another-estate", 1_000_000.0 - 60)
+    before = seeded.read_bytes()
+    result = run_main(tmp_path, publisher=publisher_factory(), now=1_000_000.0)
+    assert result.code == 1
+    assert len(result.publisher.requests) == 1, "no retry inside one invocation"
+    assert seeded.read_bytes() == before
+    assert needle in result.err
+    assert "published=no" in only_journal_line(result.err)
+
+
+def test_a_failed_publish_on_a_first_run_writes_no_state_at_all(tmp_path) -> None:
+    result = run_main(tmp_path, publisher=FakePublisher(status=500), now=1_000_000.0)
+    assert result.code == 1
+    assert not result.state_file.exists()
+    assert len(result.publisher.requests) == 1
+
+
+def test_a_non_2xx_status_is_a_publish_error_carrying_the_status(tmp_path) -> None:
+    config = publisher_config(tmp_path)
+    with pytest.raises(sp.PublishError) as excinfo:
+        sp.publish(b"{}", config, TOKEN, FakePublisher(status=403))
+    assert "403" in str(excinfo.value)
+    assert TOKEN not in str(excinfo.value)
+
+
+@pytest.mark.parametrize("status", [200, 201, 204, 299])
+def test_a_2xx_status_is_a_successful_publish(tmp_path, status) -> None:
+    config = publisher_config(tmp_path)
+    assert sp.publish(b"{}", config, TOKEN, FakePublisher(status=status)) == status
+
+
+# --------------------------------------------------------------------------- #
+# Task 5.4 — the request shape, and the token
+# --------------------------------------------------------------------------- #
+
+
+def test_the_request_is_one_post_to_the_topic_with_the_documented_headers(
+    tmp_path,
+) -> None:
+    result = run_main(tmp_path)
+    assert result.code == 0
+    assert len(result.publisher.requests) == 1
+    request = result.publisher.requests[0]
+    assert request.url == "http://vps:2586/henk-sessions"
+    assert request.headers == {
+        "Authorization": f"Bearer {TOKEN}",
+        "Title": "session snapshot",
+        "Priority": "min",
+        "Content-Type": "application/json",
+    }
+    assert request.timeout > 0
+
+
+def test_the_body_is_exactly_the_serialised_snapshot(tmp_path) -> None:
+    result = run_main(tmp_path)
+    snapshot = published_body(result)
+    assert sp.serialise(snapshot) == result.publisher.requests[0].body
+    assert snapshot["publisher"].startswith("session-publisher/")
+    assert snapshot["schema"] == 1
+
+
+def test_no_attachment_or_tag_header_is_sent(tmp_path) -> None:
+    """An attachment header would make Henk fetch a second URL; tags and a
+    non-default cache would change what the topic carries (D6)."""
+    result = run_main(tmp_path)
+    headers = {name.lower() for name in result.publisher.requests[0].headers}
+    for forbidden in ("attach", "filename", "tags", "cache", "x-attach", "x-tags"):
+        assert forbidden not in headers
+
+
+def test_the_priority_header_is_min(tmp_path) -> None:
+    result = run_main(tmp_path)
+    assert result.publisher.requests[0].headers["Priority"] == "min"
+
+
+def test_the_title_header_is_the_constant_henk_does_not_read(tmp_path) -> None:
+    result = run_main(tmp_path)
+    assert result.publisher.requests[0].headers["Title"] == "session snapshot"
+
+
+def test_the_token_never_reaches_argv_logs_or_state(tmp_path) -> None:
+    result = run_main(tmp_path)
+    assert result.code == 0
+    assert result.publisher.requests[0].headers["Authorization"].endswith(TOKEN)
+    assert TOKEN not in result.out
+    assert TOKEN not in result.err
+    assert TOKEN not in result.state_file.read_text(encoding="utf-8")
+    for argv, _timeout in result.runner.calls:
+        assert all(TOKEN not in part for part in argv)
+
+
+def test_the_token_is_absent_from_the_logs_of_a_failed_publish(tmp_path) -> None:
+    result = run_main(
+        tmp_path,
+        publisher=FakePublisher(raises=sp.PublishError("ntfy request failed: refused")),
+    )
+    assert result.code == 1
+    assert TOKEN not in result.err and TOKEN not in result.out
+
+
+def test_the_env_override_wins_over_the_token_file(tmp_path) -> None:
+    token_file = tmp_path / "ntfy-token"
+    token_file.write_text("tk_FROM_THE_FILE\n", encoding="utf-8")
+    config = publisher_config(
+        tmp_path,
+        f'token_file = "{token_file}"\n' + PUBLISH_CONFIG,
+        "tokenfile.toml",
+    )
+    assert sp.load_token(config, {"HENK_TEST_TOKEN": TOKEN}) == TOKEN
+
+
+def test_the_token_file_is_read_and_stripped_when_the_env_is_unset(tmp_path) -> None:
+    token_file = tmp_path / "ntfy-token"
+    token_file.write_text("  tk_FROM_THE_FILE  \n", encoding="utf-8")
+    config = publisher_config(
+        tmp_path,
+        f'token_file = "{token_file}"\n' + PUBLISH_CONFIG,
+        "tokenfile2.toml",
+    )
+    assert sp.load_token(config, {}) == "tk_FROM_THE_FILE"
+    assert sp.load_token(config, {"HENK_TEST_TOKEN": ""}) == "tk_FROM_THE_FILE"
+    assert sp.load_token(config, {"HENK_TEST_TOKEN": "   "}) == "tk_FROM_THE_FILE"
+
+
+@pytest.mark.parametrize("content", ["", "   \n"])
+def test_a_missing_or_empty_token_is_refused_naming_the_path_and_the_env_var(
+    tmp_path, content
+) -> None:
+    token_file = tmp_path / "absent" / "ntfy-token"
+    if content:
+        token_file.parent.mkdir()
+        token_file.write_text(content, encoding="utf-8")
+    config = publisher_config(
+        tmp_path,
+        f'token_file = "{token_file}"\n' + PUBLISH_CONFIG,
+        "tokenfile3.toml",
+    )
+    with pytest.raises(sp.ConfigError) as excinfo:
+        sp.load_token(config, {})
+    message = str(excinfo.value)
+    assert str(token_file) in message
+    assert "HENK_TEST_TOKEN" in message
+
+
+def test_an_absent_token_exits_two_with_no_request_and_no_state(tmp_path) -> None:
+    result = run_main(
+        tmp_path,
+        config_text='token_file = "/nonexistent/ntfy-token"\n' + PUBLISH_CONFIG,
+        token=None,
+    )
+    assert result.code == 2
+    assert result.publisher.requests == []
+    assert not result.state_file.exists()
+    assert "HENK_TEST_TOKEN" in result.err
+
+
+def test_the_token_file_default_is_the_documented_path() -> None:
+    assert (
+        sp.PublisherConfig().token_file
+        == "~/.config/henk-session-publisher/ntfy-token"
+    )
+
+
+def test_the_urllib_publisher_turns_every_transport_failure_into_a_publish_error() -> None:
+    """Stdlib `urllib` is the transport (D14: no dependency on the workstation), and
+    a network failure must reach the journal as a sentence, not a traceback."""
+    import urllib.error
+
+    class _Boom:
+        def __init__(self, exc) -> None:
+            self.exc = exc
+
+        def __call__(self, request, timeout=None):
+            raise self.exc
+
+    for exc, needle in (
+        (urllib.error.URLError("refused"), "refused"),
+        (TimeoutError("timed out"), "timed out"),
+        (OSError("broken pipe"), "broken pipe"),
+    ):
+        with pytest.raises(sp.PublishError) as excinfo:
+            sp.UrllibPublisher(opener=_Boom(exc)).post(
+                "http://vps:2586/henk-sessions", b"{}", {"Priority": "min"}, 1.0
+            )
+        assert needle in str(excinfo.value)
+
+
+def test_the_urllib_publisher_returns_an_http_errors_status_code() -> None:
+    import urllib.error
+
+    class _Status:
+        def __init__(self, code) -> None:
+            self.code = code
+
+        def __call__(self, request, timeout=None):
+            raise urllib.error.HTTPError(request.full_url, self.code, "boom", {}, None)
+
+    assert (
+        sp.UrllibPublisher(opener=_Status(503)).post(
+            "http://vps:2586/henk-sessions", b"{}", {}, 1.0
+        )
+        == 503
+    )
+
+
+def test_the_urllib_publisher_posts_the_body_and_headers() -> None:
+    seen = {}
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_open(request, timeout=None):
+        seen["method"] = request.get_method()
+        seen["url"] = request.full_url
+        seen["body"] = request.data
+        seen["headers"] = dict(request.header_items())
+        seen["timeout"] = timeout
+        return _Response()
+
+    status = sp.UrllibPublisher(opener=fake_open).post(
+        "http://vps:2586/henk-sessions",
+        b'{"schema":1}',
+        {"Authorization": f"Bearer {TOKEN}", "Priority": "min"},
+        7.5,
+    )
+    assert status == 200
+    assert seen["method"] == "POST"
+    assert seen["url"] == "http://vps:2586/henk-sessions"
+    assert seen["body"] == b'{"schema":1}'
+    assert seen["timeout"] == 7.5
+    assert {name.lower() for name in seen["headers"]} >= {"authorization", "priority"}
+
+
+def test_a_trailing_slash_on_the_ntfy_url_does_not_double_the_separator(
+    tmp_path,
+) -> None:
+    result = run_main(
+        tmp_path,
+        config_text='ntfy_url = "http://vps:2586/"\ntopic = "henk-sessions"\n'
+        'token_env = "HENK_TEST_TOKEN"\n' + BASE_CONFIG,
+    )
+    assert result.publisher.requests[0].url == "http://vps:2586/henk-sessions"
+
+
+# --------------------------------------------------------------------------- #
+# Task 5.5 — --dry-run is inert
+# --------------------------------------------------------------------------- #
+
+
+def test_dry_run_prints_the_table_and_the_snapshot_and_touches_nothing(
+    tmp_path,
+) -> None:
+    first = run_main(tmp_path, args=["--dry-run"], publisher=FakePublisher())
+    assert first.code == 0
+    assert first.publisher.requests == []
+    assert not first.state_file.exists()
+    # Every pane appears in the table, admitted and denied alike.
+    for pane in ADMITTED_PANES + DENIED_PANES:
+        assert pane in first.out
+    assert "admitted" in first.out and "denied" in first.out
+    # The snapshot follows the table, as JSON.
+    body = first.out[first.out.index("{") :]
+    snapshot = json.loads(body)
+    assert snapshot["schema"] == 1
+    assert len(snapshot["sessions"]) == len(ADMITTED_PANES)
+
+
+def test_dry_run_leaves_an_existing_state_file_byte_identical(tmp_path) -> None:
+    first = run_main(tmp_path)
+    seeded = seed_state(first.state_dir, "a-key-from-another-estate", 1.0)
+    before = seeded.read_bytes()
+    result = run_main(tmp_path, args=["--dry-run"], now=2_000_000.0)
+    assert result.code == 0
+    assert result.publisher.requests == []
+    assert seeded.read_bytes() == before
+
+
+def test_dry_run_exits_zero_with_denied_sessions_present(tmp_path) -> None:
+    result = run_main(tmp_path, args=["--dry-run"])
+    assert result.code == 0
+    assert "owner gate" in result.out or "root gate" in result.out
+
+
+def test_dry_run_needs_no_state_directory_at_all(tmp_path) -> None:
+    """The Tier W review instrument must run before anything is provisioned."""
+    result = run_main(tmp_path, args=["--dry-run"], state_dir=None, token=None)
+    assert result.code == 0
+    assert result.publisher.requests == []
+
+
+def test_dry_run_logs_its_journal_line_marked_dry_run(tmp_path) -> None:
+    result = run_main(tmp_path, args=["--dry-run"])
+    line = only_journal_line(result.err)
+    assert "published=dry-run" in line
+
+
+def test_dry_run_carries_no_filesystem_path_in_its_table(tmp_path) -> None:
+    result = run_main(tmp_path, args=["--dry-run"])
+    table = result.out[: result.out.index("{")]
+    for path in ("/home/owner", "/tmp/scratch-wt"):
+        assert path not in table
+
+
+# --------------------------------------------------------------------------- #
+# Task 5.6 — the first run, and the atomic state write
+# --------------------------------------------------------------------------- #
+
+
+def test_the_first_run_publishes_and_writes_the_state(tmp_path) -> None:
+    result = run_main(tmp_path)
+    assert result.code == 0
+    assert len(result.publisher.requests) == 1
+    assert "reason=first-run published=yes" in only_journal_line(result.err)
+    stored = json.loads(result.state_file.read_text(encoding="utf-8"))
+    assert stored == {"key": key_for(tmp_path), "published_at": 1_000_000.0}
+
+
+def test_the_state_write_goes_through_a_temp_file_and_os_replace(
+    tmp_path, monkeypatch
+) -> None:
+    calls: list[tuple[str, str]] = []
+    real_replace = os.replace
+
+    def spy(source, target, *args, **kwargs):
+        calls.append((str(source), str(target)))
+        return real_replace(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(sp.os, "replace", spy)
+    result = run_main(tmp_path)
+    assert result.code == 0
+    assert calls, "the state file must be renamed into place, never written in situ"
+    source, target = calls[-1]
+    assert source.endswith("last.json.tmp")
+    assert target.endswith("last.json")
+    assert list(result.state_dir.glob("*.tmp")) == []
+
+
+def test_read_state_round_trips_what_write_state_wrote(tmp_path) -> None:
+    directory = tmp_path / "state"
+    directory.mkdir()
+    assert sp.read_state(directory) is None
+    sp.write_state(directory, sp.State(key="abc", published_at=1234.5))
+    state = sp.read_state(directory)
+    assert (state.key, state.published_at) == ("abc", 1234.5)
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["not json at all", "[]", '{"key": 7, "published_at": 1}', '{"key": "a"}', "{}"],
+)
+def test_a_corrupt_state_file_reads_as_none_and_is_logged(tmp_path, content) -> None:
+    directory = tmp_path / "state"
+    directory.mkdir()
+    (directory / "last.json").write_text(content, encoding="utf-8")
+    stream = io.StringIO()
+    assert sp.read_state(directory, stderr=stream) is None
+    assert "last.json" in stream.getvalue()
+
+
+def test_a_corrupt_state_file_makes_the_run_a_first_run_not_a_crash(tmp_path) -> None:
+    first = run_main(tmp_path)
+    (first.state_dir / "last.json").write_text("{cor", encoding="utf-8")
+    result = run_main(tmp_path)
+    assert result.code == 0
+    assert len(result.publisher.requests) == 1
+    assert "reason=first-run" in only_journal_line(result.err)
+
+
+# --------------------------------------------------------------------------- #
+# Task 5.7 — the per-run journal line
+# --------------------------------------------------------------------------- #
+
+
+def test_the_journal_line_carries_the_counts_and_the_admitted_label_set() -> None:
+    counts = sp.SnapshotCounts(admitted=3, denied=2, dropped=0, labels=("alpha", "beta"))
+    line = sp.journal_line(counts, "changed", True)
+    assert line == (
+        "session-publisher: admitted=3 denied=2 dropped=0 labels=alpha,beta "
+        "reason=changed published=yes"
+    )
+    assert "\n" not in line
+
+
+def test_the_journal_line_states_when_nothing_was_published() -> None:
+    counts = sp.SnapshotCounts(admitted=0, denied=7, dropped=0, labels=())
+    assert sp.journal_line(counts, "unchanged", False) == (
+        "session-publisher: admitted=0 denied=7 dropped=0 labels= "
+        "reason=unchanged published=no"
+    )
+
+
+def test_the_journal_line_marks_a_dry_run() -> None:
+    counts = sp.SnapshotCounts(admitted=1, denied=0, dropped=0, labels=("alpha",))
+    assert "published=dry-run" in sp.journal_line(counts, "dry-run", "dry-run")
+
+
+def test_the_journal_line_carries_no_path_no_title_and_no_token() -> None:
+    counts = sp.SnapshotCounts(admitted=2, denied=1, dropped=3, labels=("alpha", "beta"))
+    line = sp.journal_line(counts, "heartbeat", True)
+    assert "/" not in line
+    assert "session snapshot" not in line
+    assert "Bearer" not in line
+
+
+@pytest.mark.parametrize(
+    "case,expected",
+    [
+        ("publish", "reason=first-run published=yes"),
+        ("no-publish", "reason=unchanged published=no"),
+        ("dry-run", "published=dry-run"),
+        ("failure", "published=no"),
+    ],
+)
+def test_every_run_logs_exactly_one_journal_line(tmp_path, case, expected) -> None:
+    if case == "publish":
+        result = run_main(tmp_path)
+    elif case == "no-publish":
+        first = run_main(tmp_path)
+        seed_state(first.state_dir, key_for(tmp_path), 1_000_000.0 - 60)
+        result = run_main(tmp_path)
+    elif case == "dry-run":
+        result = run_main(tmp_path, args=["--dry-run"])
+    else:
+        result = run_main(tmp_path, publisher=FakePublisher(status=502))
+    line = only_journal_line(result.err)
+    assert expected in line
+    assert "admitted=3 denied=7 dropped=0" in line
+    assert "labels=henk,homelab-docs" in line
+
+
+def test_the_snapshots_tick_s_is_the_configured_tick_seconds(tmp_path) -> None:
+    result = run_main(
+        tmp_path,
+        config_text="heartbeat_seconds = 1800\ntick_seconds = 600\n" + PUBLISH_CONFIG,
+    )
+    snapshot = published_body(result)
+    assert snapshot["tick_s"] == 600
+    assert snapshot["heartbeat_s"] == 1800
+
+
+def test_the_journal_line_reports_the_drop_count(tmp_path) -> None:
+    agents = [
+        agent(f"w1:p{index:03d}", "/home/owner/Coding/henk", "working")
+        for index in range(300)
+    ]
+    result = run_main(tmp_path, runner=FakeRunner(agents=agents, ages={}))
+    line = only_journal_line(result.err)
+    assert "admitted=300" in line
+    dropped = int(line.split("dropped=")[1].split()[0])
+    assert dropped > 0
+    assert len(published_body(result)["sessions"]) == 300 - dropped
+
+
+# --------------------------------------------------------------------------- #
+# Task 5.8 — runtime guards
+# --------------------------------------------------------------------------- #
+
+
+def test_the_state_directory_comes_from_the_environment(tmp_path) -> None:
+    directory = tmp_path / "from-env"
+    directory.mkdir()
+    resolved = sp.resolve_state_dir(
+        SimpleNamespace(state_dir=None), {"STATE_DIRECTORY": str(directory)}
+    )
+    assert resolved == directory
+
+
+def test_the_state_dir_flag_wins_over_the_environment(tmp_path) -> None:
+    flag = tmp_path / "from-flag"
+    env_dir = tmp_path / "from-env"
+    flag.mkdir()
+    env_dir.mkdir()
+    resolved = sp.resolve_state_dir(
+        SimpleNamespace(state_dir=str(flag)), {"STATE_DIRECTORY": str(env_dir)}
+    )
+    assert resolved == flag
+
+
+def test_the_state_dir_flag_wins_end_to_end(tmp_path) -> None:
+    flag = tmp_path / "flagged"
+    result = run_main(tmp_path, args=["--state-dir", str(flag)])
+    assert result.code == 0
+    assert (flag / "last.json").is_file()
+    assert not (result.state_dir / "last.json").exists()
+
+
+def test_neither_source_of_a_state_directory_is_refused_naming_both() -> None:
+    with pytest.raises(sp.StateError) as excinfo:
+        sp.resolve_state_dir(SimpleNamespace(state_dir=None), {})
+    message = str(excinfo.value)
+    assert "--state-dir" in message and "STATE_DIRECTORY" in message
+
+
+def test_no_state_directory_exits_two_with_no_request(tmp_path) -> None:
+    result = run_main(tmp_path, state_dir=None)
+    assert result.code == 2
+    assert result.publisher.requests == []
+    assert "STATE_DIRECTORY" in result.err
+
+
+def test_a_state_directory_is_created_when_it_does_not_yet_exist(tmp_path) -> None:
+    result = run_main(tmp_path, state_dir="not-yet/deeper", make_state_dir=False)
+    assert result.code == 0
+    assert result.state_file.is_file()
+
+
+def test_a_file_where_the_state_directory_should_be_exits_two_naming_the_path(
+    tmp_path,
+) -> None:
+    blocker = tmp_path / "state-is-a-file"
+    blocker.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(sp.StateError) as excinfo:
+        sp.resolve_state_dir(
+            SimpleNamespace(state_dir=str(blocker)), {}
+        )
+    assert str(blocker) in str(excinfo.value)
+
+    result = run_main(
+        tmp_path, args=["--state-dir", str(blocker)], state_dir=None
+    )
+    assert result.code == 2
+    assert str(blocker) in result.err
+    assert result.publisher.requests == []
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can write an unwritable directory")
+def test_an_unwritable_state_directory_exits_two_rather_than_republishing_forever(
+    tmp_path,
+) -> None:
+    directory = tmp_path / "read-only"
+    directory.mkdir(mode=0o500)
+    try:
+        with pytest.raises(sp.StateError) as excinfo:
+            sp.resolve_state_dir(SimpleNamespace(state_dir=str(directory)), {})
+        assert str(directory) in str(excinfo.value)
+        result = run_main(
+            tmp_path, args=["--state-dir", str(directory)], state_dir=None
+        )
+        assert result.code == 2
+        assert str(directory) in result.err
+        assert result.publisher.requests == []
+        assert not (directory / "last.json").exists()
+    finally:
+        directory.chmod(0o700)
+
+
+def test_the_write_probe_leaves_nothing_behind(tmp_path) -> None:
+    directory = tmp_path / "probed"
+    directory.mkdir()
+    sp.resolve_state_dir(SimpleNamespace(state_dir=str(directory)), {})
+    assert list(directory.iterdir()) == []
+
+
+def test_a_colon_separated_state_directory_list_takes_the_first(tmp_path) -> None:
+    """systemd hands `$STATE_DIRECTORY` as a colon-separated list when a unit
+    declares several; one is declared here, and the first is the publisher's."""
+    first = tmp_path / "one"
+    second = tmp_path / "two"
+    first.mkdir()
+    second.mkdir()
+    resolved = sp.resolve_state_dir(
+        SimpleNamespace(state_dir=None),
+        {"STATE_DIRECTORY": f"{first}:{second}"},
+    )
+    assert resolved == first
+
+
+def test_overlapping_runs_are_serialised_by_the_advisory_lock(tmp_path) -> None:
+    directory = tmp_path / "state"
+    directory.mkdir()
+    lock_path = directory / "lock"
+    ran: list[str] = []
+    with open(lock_path, "a+") as holder:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(sp.LockBusy):
+            sp.run_locked(lock_path, lambda: ran.append("inner"))
+    assert ran == []
+    # Released: the same call now runs.
+    assert sp.run_locked(lock_path, lambda: "ran") == "ran"
+
+
+def test_a_held_lock_makes_the_second_run_yield_with_no_request(tmp_path) -> None:
+    first = run_main(tmp_path)
+    lock_path = first.state_dir / "lock"
+    with open(lock_path, "a+") as holder:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = run_main(tmp_path)
+    assert result.code == 0
+    assert result.publisher.requests == []
+    assert "reason=locked" in only_journal_line(result.err)
+
+
+def test_the_lock_is_released_between_runs(tmp_path) -> None:
+    first = run_main(tmp_path)
+    second = run_main(tmp_path, now=1_000_000.0 + 1000)
+    assert (first.code, second.code) == (0, 0)
+    assert "reason=locked" not in second.err
+
+
+def test_every_subprocess_run_call_carries_a_timeout() -> None:
+    """Task 5.8: asserted over the module's AST, so a new call site cannot be added
+    without one."""
+    tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "run"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "subprocess"
+    ]
+    assert calls, "the AST walk must actually find the subprocess call sites"
+    for call in calls:
+        assert any(
+            keyword.arg == "timeout" for keyword in call.keywords
+        ), f"subprocess.run at line {call.lineno} has no timeout"
+
+
+def test_the_source_readers_pass_a_timeout_to_every_invocation(tmp_path) -> None:
+    runner = FakeRunner()
+    sources = sp.read_sources(runner)
+    assert sources.herdr_text and sources.estate_ok is True
+    assert [argv[0] for argv, _ in runner.calls] == ["herdr", "claude-estate"]
+    assert [argv for argv, _ in runner.calls] == [
+        ["herdr", "agent", "list"],
+        ["claude-estate", "status", "--json"],
+    ]
+    for _argv, timeout in runner.calls:
+        assert isinstance(timeout, (int, float)) and timeout > 0
+
+
+def test_a_failing_claude_estate_is_absorbed_as_no_age_source() -> None:
+    runner = FakeRunner(estate_rc=127)
+    sources = sp.read_sources(runner)
+    assert sources.estate_ok is False
+
+
+def test_a_failing_herdr_is_an_estate_error() -> None:
+    with pytest.raises(sp.EstateError) as excinfo:
+        sp.read_sources(FakeRunner(herdr_rc=127))
+    assert "herdr" in str(excinfo.value)
+
+
+def test_the_python_guard_names_the_requirement_and_exits_two() -> None:
+    stream = io.StringIO()
+    with pytest.raises(SystemExit) as excinfo:
+        sp.require_python((3, 10, 0), stream=stream)
+    assert excinfo.value.code == 2
+    assert "3.11" in stream.getvalue()
+
+
+def test_main_runs_the_python_guard(tmp_path, monkeypatch) -> None:
+    """The guard runs at import; `main` runs it again so a mis-set interpreter in a
+    unit file cannot slip past a cached module."""
+    seen: list[object] = []
+    monkeypatch.setattr(sp, "require_python", lambda *a, **k: seen.append(k))
+    run_main(tmp_path)
+    assert seen, "main must route through require_python"
+
+
+def test_the_production_runner_bounds_and_isolates_its_children(monkeypatch) -> None:
+    recorded: dict = {}
+
+    class _Completed:
+        returncode = 0
+        stdout = "{}"
+
+    def fake_run(argv, **kwargs):
+        recorded["argv"] = argv
+        recorded["kwargs"] = kwargs
+        return _Completed()
+
+    monkeypatch.setattr(sp.subprocess, "run", fake_run)
+    code, text = sp.subprocess_runner(["herdr", "agent", "list"], 11.0)
+    assert (code, text) == (0, "{}")
+    assert recorded["kwargs"]["timeout"] == 11.0
+    assert recorded["kwargs"]["capture_output"] is True
+
+    def missing(argv, **kwargs):
+        raise FileNotFoundError(argv[0])
+
+    monkeypatch.setattr(sp.subprocess, "run", missing)
+    code, _ = sp.subprocess_runner(["claude-estate", "status", "--json"], 11.0)
+    assert code != 0
+
+    def slow(argv, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=11.0)
+
+    monkeypatch.setattr(sp.subprocess, "run", slow)
+    code, _ = sp.subprocess_runner(["herdr", "agent", "list"], 11.0)
+    assert code != 0
+
+
+# --------------------------------------------------------------------------- #
+# Tasks 3.2, 3.3, 4.6 — the exit-code halves, deferred to this group's `main`
+# --------------------------------------------------------------------------- #
+
+
+TRANSPORT_KEYS = (
+    'ntfy_url = "http://vps:2586"\n'
+    'topic = "henk-sessions"\n'
+    'token_env = "HENK_TEST_TOKEN"\n'
+)
+
+CONFIG_REFUSALS = {
+    "unsafe-root": '[[allow_roots]]\npath = "/home/owner"\nlabel = "home"\n',
+    "unknown-top-level-key": 'deny_root = ["/home/owner/Coding/work"]\n' + BASE_CONFIG,
+    "fields-entry-key": (
+        '[[allow_roots]]\npath = "/home/owner/Coding/henk"\nlabel = "henk"\n'
+        'fields = ["title"]\n'
+    ),
+    "missing-label": '[[allow_roots]]\npath = "/home/owner/Coding/henk"\n',
+    "duplicate-label": (
+        '[[allow_roots]]\npath = "/home/owner/Coding/henk"\nlabel = "henk"\n\n'
+        '[[allow_roots]]\npath = "/home/owner/Documents/homelab-docs-site"\n'
+        'label = "henk"\n'
+    ),
+    "malformed-label": (
+        '[[allow_roots]]\npath = "/home/owner/Documents/homelab-docs-site"\n'
+        'label = "homelab docs"\n'
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(CONFIG_REFUSALS))
+def test_a_refused_configuration_exits_two_with_no_request_and_no_state(
+    tmp_path, case
+) -> None:
+    result = run_main(tmp_path, config_text=TRANSPORT_KEYS + CONFIG_REFUSALS[case])
+    assert result.code == 2
+    assert result.publisher.requests == []
+    assert not result.state_file.exists()
+    assert result.err.strip(), "a refusal must say what it refused"
+    assert result.runner.calls == [], "a refused config reads no estate"
+
+
+def test_a_refused_configuration_names_the_offending_entry(tmp_path) -> None:
+    result = run_main(
+        tmp_path, config_text=TRANSPORT_KEYS + CONFIG_REFUSALS["malformed-label"]
+    )
+    assert result.code == 2
+    assert "homelab docs" in result.err
+
+
+def test_a_missing_configuration_file_exits_two(tmp_path) -> None:
+    stdout, stderr = io.StringIO(), io.StringIO()
+    code = sp.main(
+        ["--config", str(tmp_path / "absent.toml")],
+        env={"HOME": "/home/owner", "STATE_DIRECTORY": str(tmp_path)},
+        runner=FakeRunner(),
+        publisher=FakePublisher(),
+        clock=lambda: 1.0,
+        git=FakeGit(),
+        realpath=fake_realpath,
+        stdout=stdout,
+        stderr=stderr,
+    )
+    assert code == 2
+    assert "absent.toml" in stderr.getvalue()
+
+
+@pytest.mark.parametrize(
+    "kwargs,needle",
+    [
+        ({"herdr_rc": 127}, "herdr"),
+        ({"herdr_text": "not json"}, "JSON"),
+        ({"herdr_text": '{"id":"x","result":{"type":"other","agents":[]}}'}, "agent_list"),
+    ],
+    ids=["non-zero", "non-json", "wrong-envelope"],
+)
+def test_a_broken_estate_source_exits_one_with_no_request_and_no_state(
+    tmp_path, kwargs, needle
+) -> None:
+    result = run_main(tmp_path, runner=FakeRunner(**kwargs))
+    assert result.code == 1
+    assert result.publisher.requests == []
+    assert not result.state_file.exists()
+    assert needle in result.err
+
+
+@pytest.mark.parametrize("field", ["pane_id", "agent_status", "cwd"])
+def test_a_record_missing_a_required_field_exits_one_naming_the_field(
+    tmp_path, field
+) -> None:
+    broken = dict(ESTATE[0])
+    broken.pop(field)
+    result = run_main(tmp_path, runner=FakeRunner(agents=[broken]))
+    assert result.code == 1
+    assert field in result.err
+    assert result.publisher.requests == []
+    assert not result.state_file.exists()
+
+
+def test_a_broken_estate_source_leaves_a_stored_state_untouched(tmp_path) -> None:
+    first = run_main(tmp_path)
+    seeded = seed_state(first.state_dir, "a-key-from-another-estate", 1.0)
+    before = seeded.read_bytes()
+    result = run_main(tmp_path, runner=FakeRunner(herdr_rc=127))
+    assert result.code == 1
+    assert seeded.read_bytes() == before
+
+
+def test_a_full_publishing_run_opens_no_transcript(tmp_path, transcripts) -> None:
+    result = run_main(tmp_path)
+    assert result.code == 0
+    assert transcripts.opened == []
+
+
+def test_the_exit_codes_are_the_documented_three(tmp_path) -> None:
+    """0 published or nothing to publish · 1 a source or the publish failed ·
+    2 configuration refused, no state directory, or an unsupported interpreter."""
+    assert run_main(tmp_path, state_dir="ok").code == 0
+    assert (
+        run_main(tmp_path, state_dir="pub-failed", publisher=FakePublisher(status=500)).code
+        == 1
+    )
+    assert (
+        run_main(tmp_path, state_dir="src-failed", runner=FakeRunner(herdr_rc=127)).code
+        == 1
+    )
+    assert (
+        run_main(
+            tmp_path,
+            state_dir="refused",
+            config_text=TRANSPORT_KEYS + CONFIG_REFUSALS["missing-label"],
+        ).code
+        == 2
+    )
+    assert run_main(tmp_path, state_dir=None).code == 2
+
+
+# --------------------------------------------------------------------------- #
+# Task 5.10 — the units, the example configuration, and the README
+# --------------------------------------------------------------------------- #
+
+
+DEPLOY_DIR = MODULE_PATH.parent
+SERVICE_UNIT = DEPLOY_DIR / "session-publisher.service"
+TIMER_UNIT = DEPLOY_DIR / "session-publisher.timer"
+EXAMPLE_CONFIG = DEPLOY_DIR / "config.example.toml"
+PUBLISHER_README = DEPLOY_DIR / "README.md"
+
+
+def test_the_example_configuration_loads(tmp_path) -> None:
+    config = sp.load_config(
+        EXAMPLE_CONFIG,
+        env={"HOME": "/home/owner"},
+        realpath=lambda path: path,
+        tempdir=TEMPDIR,
+    )
+    assert config.allow_roots, "the example must show at least one root"
+    assert config.allow_owners
+    assert config.publish_unlisted is False
+    assert (config.heartbeat_seconds, config.tick_seconds) == (900, 300)
+    assert config.topic == "henk-sessions"
+    assert config.ntfy_url
+
+
+def test_every_example_root_is_a_placeholder_that_does_not_exist_here() -> None:
+    config = sp.load_config(
+        EXAMPLE_CONFIG,
+        env={"HOME": "/home/owner"},
+        realpath=lambda path: path,
+        tempdir=TEMPDIR,
+    )
+    paths = [entry.canonical_path for entry in config.allow_roots] + list(
+        config.deny_roots
+    )
+    assert paths
+    for path in paths:
+        assert path.startswith("/home/owner/"), path
+        assert not os.path.exists(path), f"{path} exists on the test host"
+    assert list(config.allow_owners) == ["owner-a"]
+
+
+def test_the_example_configuration_is_one_entry_per_project() -> None:
+    config = sp.load_config(
+        EXAMPLE_CONFIG,
+        env={"HOME": "/home/owner"},
+        realpath=lambda path: path,
+        tempdir=TEMPDIR,
+    )
+    labels = [entry.label for entry in config.allow_roots]
+    assert len(labels) == len(set(labels)) >= 2
+    # No entry contains another: the example shows the per-project shape, and the
+    # README is where the weaker container-root option is described.
+    for entry in config.allow_roots:
+        for other in config.allow_roots:
+            if entry is not other:
+                assert not entry.canonical_path.startswith(other.canonical_path + "/")
+
+
+def test_the_example_configuration_documents_the_token_without_carrying_one() -> None:
+    text = EXAMPLE_CONFIG.read_text(encoding="utf-8")
+    assert "token_file" in text and "token_env" in text
+    # Both are commented out, so the defaults stay the defaults.
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("token_file") or stripped.startswith("token_env"):
+            raise AssertionError(f"the example must not set {stripped!r}")
+    assert "tk_" not in text
+
+
+def test_the_service_unit_carries_the_documented_directives() -> None:
+    text = SERVICE_UNIT.read_text(encoding="utf-8")
+    assert "Type=oneshot" in text
+    assert "TimeoutStartSec=60" in text
+    assert "StateDirectory=henk-session-publisher" in text
+    assert "Environment=PYTHONUNBUFFERED=1" in text
+    assert "session_publisher.py" in text and "--config" in text
+    sections = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip().startswith("[") and line.strip().endswith("]")
+    ]
+    assert sections == ["[Unit]", "[Service]"], "a oneshot service is driven by its timer"
+    # The token is named as a path and never as a value.
+    assert "~/.config/henk-session-publisher/ntfy-token" in text
+    assert "Bearer" not in text and "tk_" not in text
+
+
+def test_the_timer_unit_carries_the_documented_directives() -> None:
+    text = TIMER_UNIT.read_text(encoding="utf-8")
+    assert "OnCalendar=*:0/5" in text
+    assert "Persistent=false" in text
+    assert "AccuracySec=30s" in text
+    assert "WantedBy=timers.target" in text
+
+
+def test_the_timer_comment_couples_oncalendar_to_tick_seconds() -> None:
+    """Nothing inside the process can compare the two, so they are documented
+    against each other in the unit and in the README (D7)."""
+    comments = [
+        line
+        for line in TIMER_UNIT.read_text(encoding="utf-8").splitlines()
+        if line.strip().startswith("#")
+    ]
+    joined = "\n".join(comments)
+    assert "tick_seconds" in joined
+    assert "300" in joined
+    assert "tick_s" in joined, "the comment must say why: the value is published"
+
+
+def test_the_publisher_readme_covers_the_operational_surface() -> None:
+    text = PUBLISHER_README.read_text(encoding="utf-8")
+    for needle in (
+        "--dry-run",
+        "tick_seconds",
+        "OnCalendar",
+        "token-place",
+        "600",
+        "systemctl --user enable --now session-publisher.timer",
+        "systemctl --user disable --now session-publisher.timer",
+        "journalctl --user -u session-publisher.service",
+        "~/.config/systemd/user/",
+        "deny_roots",
+    ):
+        assert needle in text, needle
+    for key in ("pane", "project", "status", "age_s"):
+        assert key in text
+    assert "tk_" not in text
+
+
+def test_the_deploy_directory_carries_no_real_estate_data() -> None:
+    """Standing rule 1, asserted over every file this group added."""
+    shapes = {
+        "tailnet address": r"\b100\.\d{1,3}\.\d{1,3}\.\d{1,3}\b",
+        "phone number": r"\+31\s?6",
+        "account uuid": r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+        "token shape": r"\btk_[A-Za-z0-9]{32}\b",
+    }
+    for path in (SERVICE_UNIT, TIMER_UNIT, EXAMPLE_CONFIG, PUBLISHER_README):
+        text = path.read_text(encoding="utf-8")
+        for name, pattern in shapes.items():
+            assert re.search(pattern, text) is None, f"{path.name}: {name}"

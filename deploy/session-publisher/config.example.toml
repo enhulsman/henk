@@ -1,0 +1,67 @@
+# session-publisher — example configuration.
+#
+# Copy to ~/.config/henk-session-publisher/config.toml and replace every path,
+# label, and owner below. NOTHING HERE IS REAL: the roots are placeholders under
+# /home/owner and no such directory exists on the machine this file is committed
+# from. The schema is CLOSED — any key the publisher does not recognise, at the top
+# level or inside an entry, is refused at load with the key named, so a misspelled
+# `deny_root` cannot silently delete your only deny rule.
+
+# Git remote owners whose checkouts may be published. Matched on the owner path
+# segment, so `https://host/owner-a/repo`, `git@host:owner-a/repo`, and a
+# host-alias form all match identically. A checkout with no `origin` is refused;
+# a directory that is not a git work tree has no owner to check and passes this
+# gate on the root gate alone.
+allow_owners = ["owner-a"]
+
+# Denied at any depth, including below an allow root, and evaluated on the
+# canonical path — so a symlink or a scratch worktree that resolves in here is
+# refused too. This is where the work subtree goes.
+deny_roots = ["/home/owner/projects/work"]
+
+# Publish two integers about the sessions the gates refused — `{"count": N,
+# "blocked": K}` — and nothing else about them. Default off: it describes sessions
+# the gates DENIED, so it crosses the machine boundary only on a deliberate
+# decision. When off, the key is absent entirely.
+publish_unlisted = false
+
+# The publish cadence, in seconds. `heartbeat_seconds` is how long an unchanged
+# snapshot may go unpublished; `tick_seconds` is how often this publisher runs and
+# MUST match session-publisher.timer's OnCalendar (300 = `*:0/5`). Both are
+# published in the snapshot so Henk can tell whether its staleness bound is even
+# meaningful against them.
+heartbeat_seconds = 900
+tick_seconds = 300
+
+# The deny-all ntfy instance and the single write-only topic. Topic names are not
+# secrets on a deny-all instance; the credential is.
+ntfy_url = "http://vps:2586"
+topic = "henk-sessions"
+
+# Where the ntfy token comes from. Both are shown at their defaults and left
+# commented out; set them only to move the file or rename the variable. The token
+# itself never appears in this file, in the unit, or on the command line.
+# token_file = "~/.config/henk-session-publisher/ntfy-token"
+# token_env = "HENK_SESSION_PUBLISHER_TOKEN"
+
+# One entry per project. `label` is required, unique, and must match
+# `^[\w:.-]{1,32}$` — it is published verbatim as the session's `project`, and it
+# is also the value Henk's own allowlist is matched against, so every label here
+# has to be added to `personal_data.session_project_allowlist` on rp5 before Henk
+# will show anything from it.
+#
+# A container root (one entry covering a whole projects directory) is legal and
+# strictly weaker: it admits every future subdirectory too. If you use one, pair it
+# with `deny_roots` — see the README.
+
+[[allow_roots]]
+path = "/home/owner/projects/alpha"
+label = "alpha"
+
+[[allow_roots]]
+path = "/home/owner/projects/beta"
+label = "beta"
+
+[[allow_roots]]
+path = "/home/owner/config-repo"
+label = "config"

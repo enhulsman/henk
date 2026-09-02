@@ -27,8 +27,13 @@ is present and different):
 A session is published only when every reported path passes both gates. The project
 label is the configured label of the entry admitting `cwd` — never a path component.
 
-Exit codes: 0 published or nothing to publish · 1 a source or the publish failed ·
-2 configuration refused or an unsupported interpreter.
+Publishing is change-or-heartbeat against one stored hash, over one HTTP POST, at
+most once per run; a failed publish leaves that hash alone so the heartbeat clock
+keeps running against the last snapshot the topic actually carries.
+
+Exit codes: 0 published, nothing to publish, a dry run, or another run held the lock ·
+1 a source failed or the publish failed · 2 the configuration was refused, no state
+directory was usable, the token is missing, or the interpreter is older than 3.11.
 """
 
 from __future__ import annotations
@@ -56,13 +61,20 @@ def require_python(version=None, *, stream=None) -> None:
 
 require_python()
 
-import json  # noqa: E402  (deliberately after the interpreter guard)
+import argparse  # noqa: E402  (deliberately after the interpreter guard)
+import fcntl  # noqa: E402
+import hashlib  # noqa: E402
+import json  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
 import subprocess  # noqa: E402
 import tempfile  # noqa: E402
+import time  # noqa: E402
 import tomllib  # noqa: E402
+import urllib.error  # noqa: E402
+import urllib.request  # noqa: E402
 from dataclasses import dataclass, replace  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Callable, Iterable, Mapping, Protocol, Sequence  # noqa: E402
 
@@ -952,35 +964,622 @@ def snapshot_from_sources(
 
 
 # --------------------------------------------------------------------------- #
-# Seams owned by later task groups
+# The comparison key
+# --------------------------------------------------------------------------- #
+
+#: Removed from the snapshot before the key is taken: the timestamp changes every
+#: tick, the two cadence values are configuration rather than state, and `age_s`
+#: changes continuously while nothing about the session does (D7).
+_KEY_EXCLUDED_TOP_LEVEL = ("generated_at", "heartbeat_s", "tick_s")
+_KEY_EXCLUDED_PER_SESSION = ("age_s",)
+
+
+def comparison_key(snapshot: Mapping[str, object]) -> str:
+    """The change-detection key over the **final, post-degrade** snapshot.
+
+    Post-degrade is the load-bearing word: two runs that differ only in a session
+    the byte budget dropped from both are the same *published* state and must not
+    republish (D7). The sessions have already been ordered by `degrade`, so herdr's
+    enumeration order cannot change the key either.
+
+    `unlisted` and `degraded` stay in: `unlisted.blocked` changing on its own is a
+    real change ("is anything waiting on me"), and so is a snapshot that starts or
+    stops dropping sessions.
+    """
+    reduced: dict[str, object] = {}
+    for key, value in snapshot.items():
+        if key in _KEY_EXCLUDED_TOP_LEVEL:
+            continue
+        if key == "sessions":
+            value = [
+                {
+                    name: field
+                    for name, field in session.items()
+                    if name not in _KEY_EXCLUDED_PER_SESSION
+                }
+                for session in (value or ())  # type: ignore[union-attr]
+            ]
+        reduced[key] = value
+    return hashlib.sha256(serialise(reduced)).hexdigest()
+
+
+# --------------------------------------------------------------------------- #
+# The state file
+# --------------------------------------------------------------------------- #
+
+STATE_FILE_NAME = "last.json"
+LOCK_FILE_NAME = "lock"
+_PROBE_FILE_NAME = ".writable"
+
+
+class StateError(Exception):
+    """The state directory is missing from the environment, or unusable.
+
+    Never absorbed: an unwritable state directory turns every tick into a first
+    run and republishes forever, so the entry point maps this onto exit 2 with the
+    path named (D7).
+    """
+
+
+class LockBusy(Exception):
+    """Another invocation holds the advisory lock. The entry point exits zero: the
+    overlapping run is doing this tick's work, and the next tick is the retry."""
+
+
+@dataclass(frozen=True)
+class State:
+    """What one successful publish leaves behind: the key that was published and
+    when. Nothing else — no snapshot, no token, no path."""
+
+    key: str
+    published_at: float
+
+
+def read_state(state_dir: Path | str, *, stderr=None) -> State | None:
+    """The stored state, or `None` for "no successful publish on record".
+
+    A missing file is a first run. A *corrupt* file is also treated as a first run —
+    the alternative is refusing to publish until someone repairs a cache — but it is
+    logged, because a state file that keeps arriving corrupt is a real fault.
+    """
+    path = Path(state_dir) / STATE_FILE_NAME
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        _warn(stderr, f"state file unreadable ({path}): {exc}")
+        return None
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        _warn(stderr, f"state file is not valid JSON ({path}): {exc}")
+        return None
+    if not isinstance(payload, dict):
+        _warn(stderr, f"state file is not a JSON object ({path})")
+        return None
+    key = payload.get("key")
+    published_at = payload.get("published_at")
+    if not isinstance(key, str) or not key:
+        _warn(stderr, f"state file has no usable 'key' ({path})")
+        return None
+    if isinstance(published_at, bool) or not isinstance(published_at, (int, float)):
+        _warn(stderr, f"state file has no usable 'published_at' ({path})")
+        return None
+    return State(key=key, published_at=float(published_at))
+
+
+def write_state(state_dir: Path | str, state: State) -> None:
+    """Replace the state file atomically: temp file in the same directory, then
+    `os.replace`.
+
+    A half-written `last.json` reads back as corrupt and turns the next tick into a
+    first run, so the write is never done in place.
+    """
+    directory = Path(state_dir)
+    target = directory / STATE_FILE_NAME
+    temporary = directory / (STATE_FILE_NAME + ".tmp")
+    payload = json.dumps({"key": state.key, "published_at": state.published_at})
+    temporary.write_text(payload, encoding="utf-8")
+    os.replace(temporary, target)
+
+
+def resolve_state_dir(args, env: Mapping[str, str]) -> Path:
+    """Where `last.json` and the lock live: `--state-dir` first, then
+    `$STATE_DIRECTORY` (which the unit's `StateDirectory=` sets), then a refusal.
+
+    The directory is created if absent and **probed for writability**, and a failure
+    of either raises rather than being absorbed. Silence here is the expensive
+    failure: every tick would look like a first run and republish forever (D7).
+    """
+    flag = getattr(args, "state_dir", None)
+    if flag:
+        chosen = str(flag)
+    else:
+        # systemd joins several StateDirectory= entries with ':'; this unit declares
+        # one, and the first is the publisher's either way.
+        from_env = (env.get("STATE_DIRECTORY") or "").strip()
+        if not from_env:
+            raise StateError(
+                "no state directory: pass --state-dir or run under a unit setting "
+                "StateDirectory= (the publisher reads $STATE_DIRECTORY)"
+            )
+        chosen = from_env.split(":")[0]
+    directory = Path(chosen)
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise StateError(f"state directory {directory} is unusable: {exc}") from exc
+    probe = directory / _PROBE_FILE_NAME
+    try:
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        raise StateError(f"state directory {directory} is not writable: {exc}") from exc
+    return directory
+
+
+def run_locked(lock_path: Path | str, fn: Callable[[], object]):
+    """Run `fn` while holding an exclusive, non-blocking advisory lock.
+
+    `LOCK_NB` and not a wait: a tick that finds the previous tick still running has
+    nothing to add — the next tick reads a fresh estate — and a queue of blocked
+    publishers is worse than a skipped one. Closing the file releases the lock.
+    """
+    handle = open(lock_path, "a+")  # noqa: SIM115  (released in the finally)
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise LockBusy(str(lock_path)) from exc
+        return fn()
+    finally:
+        handle.close()
+
+
+# --------------------------------------------------------------------------- #
+# The publish decision
 # --------------------------------------------------------------------------- #
 
 
-def comparison_key(*args, **kwargs):
-    """The change-detection key: computed from the final, post-degrade snapshot with
-    `generated_at`, every `age_s`, `heartbeat_s`, and `tick_s` removed (task group 5:
-    task 5.1). Not implemented here."""
-    raise NotImplementedError("task group 5 owns the comparison key")
+def should_publish(
+    key: str, state: State | None, now: float, config: PublisherConfig
+) -> tuple[bool, str]:
+    """Publish on a first run, on a changed key, or when the heartbeat is due.
 
+    **The heartbeat fires when `elapsed + tick_seconds > heartbeat_seconds`**, not
+    when `elapsed > heartbeat_seconds`: the naive rule makes a 900-second heartbeat
+    on a 300-second tick fire one whole tick late, and that lateness is exactly what
+    Henk's staleness bound then has to absorb (D7). So 600 s elapsed does not
+    publish and 900 s does.
 
-def publish(*args, **kwargs):
-    """POST the serialised snapshot to `{ntfy_url}/{topic}` with the bearer token,
-    over stdlib `urllib`, exactly once per run (task group 5: tasks 5.3-5.4, 5.9).
-    Not implemented here."""
-    raise NotImplementedError("task group 5 owns the transport")
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    """The CLI entry point: argument parsing, the advisory lock, the state
-    directory, `--dry-run`, the change-or-heartbeat decision, and the exit codes
-    (task group 5: tasks 5.5-5.9). Not implemented here.
-
-    Classification is complete and callable without it: `load_config`,
-    `parse_herdr`, `classify`, and `render_dry_run` compose into the dry-run table
-    today.
+    The elapsed time is measured from the last *successful* publish, because a
+    failed publish never updates the state — the heartbeat clock keeps running
+    against the last snapshot the topic actually carries.
     """
-    raise NotImplementedError("task group 5 owns the entry point")
+    if state is None:
+        return True, "first-run"
+    if key != state.key:
+        return True, "changed"
+    elapsed = now - state.published_at
+    if elapsed + config.tick_seconds > config.heartbeat_seconds:
+        return True, "heartbeat"
+    return False, "unchanged"
 
 
-if __name__ == "__main__":  # pragma: no cover - task group 5 wires this up
-    raise SystemExit(main(sys.argv[1:]))
+# --------------------------------------------------------------------------- #
+# The token
+# --------------------------------------------------------------------------- #
+
+
+def load_token(config: PublisherConfig, env: Mapping[str, str]) -> str:
+    """The publisher's ntfy credential: the env override when it is set and
+    non-empty, otherwise the token file's stripped contents.
+
+    The token is never an argument, never logged, and never in an exception message
+    — a refusal names the *path* and the *environment variable*, which is what the
+    owner needs, and both are already in the configuration.
+    """
+    from_env = env.get(config.token_env)
+    if isinstance(from_env, str) and from_env.strip():
+        return from_env.strip()
+    path = Path(config.token_file).expanduser()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise ConfigError(
+            f"no ntfy token: {path} does not exist and ${config.token_env} is unset "
+            "(place it with token-place, mode 600 in a mode-700 directory)"
+        ) from exc
+    except OSError as exc:
+        raise ConfigError(
+            f"no ntfy token: {path} could not be read ({exc.strerror or exc.errno}) "
+            f"and ${config.token_env} is unset"
+        ) from exc
+    except UnicodeDecodeError as exc:
+        raise ConfigError(
+            f"no ntfy token: {path} is not valid UTF-8 ({exc.reason}) and "
+            f"${config.token_env} is unset"
+        ) from exc
+    token = text.strip()
+    if not token:
+        raise ConfigError(
+            f"no ntfy token: {path} is empty and ${config.token_env} is unset"
+        )
+    return token
+
+
+# --------------------------------------------------------------------------- #
+# Transport
+# --------------------------------------------------------------------------- #
+
+#: The three headers ntfy reads beside the body. `Priority: min` keeps the snapshot
+#: out of the owner's notification shade — Henk reads the cache, no phone should
+#: buzz for a heartbeat — and `Title` is a constant, never a snapshot value. No
+#: `Attach`, `Filename`, or `Tags` header: an attachment would make Henk fetch a
+#: second URL, which the byte budget exists to prevent (D6).
+MESSAGE_TITLE = "session snapshot"
+MESSAGE_PRIORITY = "min"
+
+PUBLISH_TIMEOUT_SECONDS = 10.0
+
+
+class PublishError(Exception):
+    """The publish did not happen: the transport failed or ntfy answered non-2xx.
+
+    Carries the status or the transport reason and **never** the token. The entry
+    point maps it onto exit 1 with the state file untouched, so `systemctl --user
+    status` shows a failed unit and the next tick is the retry (D7).
+    """
+
+
+class Publisher(Protocol):
+    """The one HTTP operation the publisher needs, injectable for tests."""
+
+    def post(
+        self, url: str, body: bytes, headers: Mapping[str, str], timeout: float
+    ) -> int:
+        """POST `body` and return the response status. Raise `PublishError` when the
+        request could not be made at all."""
+
+
+class UrllibPublisher:
+    """The production `Publisher`: stdlib `urllib.request`, so the workstation needs
+    no virtualenv (D14).
+
+    An HTTP error status comes back as a status — `publish` decides what a non-2xx
+    means — while a transport failure or a timeout is a `PublishError`, because
+    there is no status to reason about.
+    """
+
+    def __init__(self, opener: Callable[..., object] | None = None) -> None:
+        self._opener = urllib.request.urlopen if opener is None else opener
+
+    def post(
+        self, url: str, body: bytes, headers: Mapping[str, str], timeout: float
+    ) -> int:
+        request = urllib.request.Request(
+            url, data=body, headers=dict(headers), method="POST"
+        )
+        try:
+            response = self._opener(request, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            return int(exc.code)
+        except urllib.error.URLError as exc:
+            raise PublishError(f"ntfy request failed: {exc.reason}") from exc
+        except TimeoutError as exc:
+            raise PublishError(f"ntfy timed out after {timeout:g}s: {exc}") from exc
+        except OSError as exc:
+            raise PublishError(f"ntfy request failed: {exc}") from exc
+        with response:  # type: ignore[attr-defined]
+            status = getattr(response, "status", None)
+            if status is None:
+                status = response.getcode()  # type: ignore[attr-defined]
+            return int(status)
+
+
+def message_url(config: PublisherConfig) -> str:
+    """`{ntfy_url}/{topic}`, with exactly one separator however the URL was written."""
+    return f"{config.ntfy_url.rstrip('/')}/{config.topic}"
+
+
+def publish(
+    snapshot_bytes: bytes,
+    config: PublisherConfig,
+    token: str,
+    publisher: Publisher,
+    timeout: float = PUBLISH_TIMEOUT_SECONDS,
+) -> int:
+    """POST the serialised snapshot once, and return the status.
+
+    Exactly one request per run: there is no retry loop, because the next tick is
+    the retry and a retry inside the tick would double-publish a snapshot the topic
+    may already hold (D7).
+    """
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Title": MESSAGE_TITLE,
+        "Priority": MESSAGE_PRIORITY,
+        "Content-Type": "application/json",
+    }
+    status = publisher.post(message_url(config), snapshot_bytes, headers, timeout)
+    if not 200 <= int(status) < 300:
+        raise PublishError(f"ntfy returned HTTP {status}")
+    return int(status)
+
+
+# --------------------------------------------------------------------------- #
+# The journal line
+# --------------------------------------------------------------------------- #
+
+
+def journal_line(counts: SnapshotCounts, reason: str, published) -> str:
+    """The one line every run writes to stderr, and so to the journal.
+
+    It carries the admitted label set beside the counts because that is the artefact
+    that catches a re-pointed or *relabelled* allow root — the one widening Henk's
+    own label gate cannot see (D1). It deliberately carries no path, no title, and
+    no token: the journal is readable by anything that can read the user's journal.
+    """
+    if isinstance(published, str):
+        published_word = published
+    else:
+        published_word = "yes" if published else "no"
+    return (
+        f"session-publisher: admitted={counts.admitted} denied={counts.denied} "
+        f"dropped={counts.dropped} labels={','.join(counts.labels)} "
+        f"reason={reason} published={published_word}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# The two estate sources
+# --------------------------------------------------------------------------- #
+
+#: Return codes the runner substitutes for a child that never ran. Both are outside
+#: the codes probe 1.2/1.3 recorded, and both are simply "non-zero" to the callers.
+RUNNER_RC_MISSING = 127
+RUNNER_RC_TIMEOUT = 124
+
+SOURCE_TIMEOUT_SECONDS = 20.0
+
+
+def child_env() -> dict[str, str]:
+    """The environment every child process gets: enough to find its own binary and
+    nothing else. The publisher's own environment may carry the ntfy token, and no
+    child has any business seeing it."""
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", "/"),
+        "LANG": "C",
+    }
+
+
+def subprocess_runner(argv: Sequence[str], timeout: float) -> tuple[int, str]:
+    """The production runner: one bounded, quiet subprocess.
+
+    A missing binary and a timeout are *return codes*, not exceptions, so the two
+    callers can treat "herdr is broken" and "claude-estate is absent" differently
+    without either having to catch anything. `stdin` is closed because
+    `claude-estate` was probed without a tty and must not acquire one here (1.2).
+    """
+    try:
+        completed = subprocess.run(
+            list(argv),
+            env=child_env(),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError:
+        return RUNNER_RC_MISSING, ""
+    except OSError:
+        return RUNNER_RC_MISSING, ""
+    except subprocess.TimeoutExpired:
+        return RUNNER_RC_TIMEOUT, ""
+    return completed.returncode, completed.stdout
+
+
+def read_sources(
+    runner: Callable[[Sequence[str], float], tuple[int, str]],
+    timeout: float = SOURCE_TIMEOUT_SECONDS,
+) -> EstateSources:
+    """One tick's two payloads.
+
+    `herdr agent list` is authoritative: a non-zero exit is an `EstateError` and the
+    run publishes nothing, because a partial estate presented as a whole one is the
+    failure mode to refuse. `claude-estate status --json` is a *data source*: a
+    non-zero exit costs the age column and nothing else (D2).
+    """
+    code, herdr_text = runner(["herdr", "agent", "list"], timeout)
+    if code != 0:
+        raise EstateError(
+            f"herdr agent list exited {code}; the live pane set is authoritative, so "
+            "nothing is published"
+        )
+
+    estate_code, estate_text = runner(["claude-estate", "status", "--json"], timeout)
+    if estate_code != 0:
+        return EstateSources(herdr_text=herdr_text, estate_text=None, estate_ok=False)
+    return EstateSources(herdr_text=herdr_text, estate_text=estate_text, estate_ok=True)
+
+
+# --------------------------------------------------------------------------- #
+# The entry point
+# --------------------------------------------------------------------------- #
+
+DEFAULT_CONFIG_PATH = "~/.config/henk-session-publisher/config.toml"
+
+
+def _warn(stream, message: str) -> None:
+    (sys.stderr if stream is None else stream).write(
+        f"session-publisher: {message}\n"
+    )
+
+
+def format_generated_at(now: float) -> str:
+    """`generated_at`: UTC, ISO 8601, second resolution — the format Henk parses."""
+    return datetime.fromtimestamp(now, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _default_config_path(env: Mapping[str, str]) -> Path:
+    home = env.get("HOME")
+    if home:
+        return Path(home) / ".config" / "henk-session-publisher" / "config.toml"
+    return Path(DEFAULT_CONFIG_PATH).expanduser()
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="session-publisher",
+        description=(
+            "Publish a metadata-only snapshot of the workstation's live Claude Code "
+            "sessions to the ntfy topic Henk reads."
+        ),
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help=f"configuration file (default: {DEFAULT_CONFIG_PATH})",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "print the per-pane classification table and the snapshot, and touch "
+            "neither the network nor the state file"
+        ),
+    )
+    parser.add_argument(
+        "--state-dir",
+        default=None,
+        help="override $STATE_DIRECTORY (the unit sets StateDirectory=)",
+    )
+    return parser
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+    runner: Callable[[Sequence[str], float], tuple[int, str]] | None = None,
+    publisher: Publisher | None = None,
+    clock: Callable[[], float] | None = None,
+    git: GitRunner | None = None,
+    realpath: Callable[[str], str] | None = None,
+    stdout=None,
+    stderr=None,
+) -> int:
+    """The CLI: read the estate, decide, publish at most once, log one line.
+
+    Exit codes:
+
+      0  published · nothing to publish · a dry run · another run held the lock
+      1  a source failed, or the publish failed (the state file is left alone)
+      2  the configuration was refused, no state directory could be used, the token
+         is missing, or the interpreter is older than 3.11
+
+    Every seam is injectable so the suite drives the whole path without a
+    subprocess, a socket, or a real state directory: `runner` for the two CLIs,
+    `git` for the owner gate, `publisher` for the transport, `clock` for the
+    heartbeat arithmetic, `realpath` for canonicalisation.
+    """
+    env = os.environ if env is None else env
+    stdout = sys.stdout if stdout is None else stdout
+    stderr = sys.stderr if stderr is None else stderr
+    clock = time.time if clock is None else clock
+    realpath = os.path.realpath if realpath is None else realpath
+    runner = subprocess_runner if runner is None else runner
+    git = SubprocessGit() if git is None else git
+    publisher = UrllibPublisher() if publisher is None else publisher
+
+    # Run again here, not only at import: the guard is what turns an interpreter
+    # that cannot import `tomllib` into a sentence rather than a traceback.
+    require_python(stream=stderr)
+
+    args = build_parser().parse_args(None if argv is None else list(argv))
+
+    config_path = Path(args.config) if args.config else _default_config_path(env)
+    try:
+        config = load_config(config_path, env=env, realpath=realpath)
+    except ConfigError as exc:
+        _warn(stderr, str(exc))
+        return 2
+
+    state_dir: Path | None = None
+    if not args.dry_run:
+        try:
+            state_dir = resolve_state_dir(args, env)
+        except StateError as exc:
+            _warn(stderr, str(exc))
+            return 2
+
+    def tick() -> int:
+        now = clock()
+        try:
+            sources = read_sources(runner)
+        except EstateError as exc:
+            _warn(stderr, str(exc))
+            return 1
+        try:
+            snapshot, counts, classifications = snapshot_from_sources(
+                sources.herdr_text,
+                sources.estate_text,
+                sources.estate_ok,
+                config,
+                git,
+                realpath,
+                generated_at=format_generated_at(now),
+            )
+        except EstateError as exc:
+            _warn(stderr, str(exc))
+            return 1
+
+        if args.dry_run:
+            stdout.write(render_dry_run(classifications, config))
+            stdout.write(json.dumps(snapshot, indent=2, sort_keys=False) + "\n")
+            stderr.write(journal_line(counts, "dry-run", "dry-run") + "\n")
+            return 0
+
+        assert state_dir is not None  # resolved above for every non-dry run
+        key = comparison_key(snapshot)
+        state = read_state(state_dir, stderr=stderr)
+        wanted, reason = should_publish(key, state, now, config)
+        if not wanted:
+            stderr.write(journal_line(counts, reason, False) + "\n")
+            return 0
+
+        try:
+            token = load_token(config, env)
+        except ConfigError as exc:
+            _warn(stderr, str(exc))
+            stderr.write(journal_line(counts, reason, False) + "\n")
+            return 2
+
+        try:
+            publish(serialise(snapshot), config, token, publisher)
+        except PublishError as exc:
+            # No retry, and no state write: the heartbeat clock keeps running
+            # against the last snapshot the topic actually carries.
+            _warn(stderr, f"publish failed: {exc}")
+            stderr.write(journal_line(counts, reason, False) + "\n")
+            return 1
+
+        write_state(state_dir, State(key=key, published_at=now))
+        stderr.write(journal_line(counts, reason, True) + "\n")
+        return 0
+
+    if state_dir is None:
+        return tick()
+    try:
+        return run_locked(state_dir / LOCK_FILE_NAME, tick)
+    except LockBusy:
+        stderr.write(
+            journal_line(SnapshotCounts(0, 0, 0, ()), "locked", False) + "\n"
+        )
+        return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised as a unit, not in tests
+    raise SystemExit(main())

@@ -207,3 +207,37 @@ Decisions taken in the group:
   off — the same move its own registration test makes.
 - Task 7.6's baseline accounting is recorded at close-out (§9) once group 5's count is in;
   every delta is attributable to one named test file.
+
+### Group 5 — publisher publish policy, transport, units
+
+`tests/test_session_publisher.py`: **377 passed** (+119); `tests/test_image_contents.py`
+(new): **3 passed**. Red was confirmed first: 115 failures against the group-4 stubs.
+
+| Mutation | Failures | Caught by (representative) |
+|---|---|---|
+| heartbeat uses the naive `elapsed > heartbeat` | 5 | clock table at 600.5/601/900, config-driven cadence |
+| state written before the publish | 3 | failed-publish leaves state byte-identical (timeout and 503), first-run failure writes no state |
+| `generated_at` left in the comparison key | 7 | key-ignores-volatile-inputs, independent sha256 recomputation, ages-only-changed |
+| unwritable state directory treated as a first run | 2 | file-where-the-directory-should-be, read-only directory, both directly and through `main` |
+| `Priority: min` header dropped | 2 | exact header set, priority-is-min |
+| token appended to the journal line | 1 | token-never-in-argv-logs-or-state |
+
+Decisions taken in the group:
+
+- Exit codes: 0 published / unchanged / dry run / lock held; 1 estate source failed or
+  publish failed (state untouched, at most one request); 2 configuration refused, no usable
+  state directory, missing token, interpreter below 3.11, or a bad flag. A missing token is
+  a configuration refusal (2), not an operational failure (1), and the message names the
+  path and the environment variable, never the token.
+- `$STATE_DIRECTORY` may be a colon-joined list under systemd; the first component is used.
+- A missing binary maps to rc 127 and a subprocess timeout to rc 124 inside the runner, so
+  `read_sources` treats herdr as fatal and `claude-estate` as absorbable without either
+  caller catching.
+- `--dry-run` resolves no state directory and takes no lock: it writes nothing and issues no
+  request, so overlap is harmless. A locked run's journal line carries zero counts.
+- The service unit deliberately has no `[Install]` section (the timer is what is enabled);
+  the unit test pins the section list to exactly `[Unit]`, `[Service]` rather than asserting
+  the absence of a string the unit's own comment contains.
+- Review-gate fix: the publisher README's `token-place` example was rewritten to the tool's
+  real usage (`--target-host`, `--consumer`, `--token-name`, `--source-host`/`--source-path`,
+  plan without `--yes`).

@@ -1,0 +1,22 @@
+[Unit]
+Description=Run session-publisher every five minutes
+Documentation=file:%h/Coding/henk/deploy/session-publisher/README.md
+
+[Timer]
+# CHANGE THIS AND `tick_seconds` TOGETHER. The two live on opposite sides of a
+# boundary nothing can check from inside: this file decides how often the tick
+# actually fires, and the config's `tick_seconds` (300) is what the publisher
+# BELIEVES its own cadence to be. That belief is published as the snapshot's
+# `tick_s`, and Henk judges its staleness bound against it — so a timer firing on
+# a different period than the config claims makes Henk's freshness statement wrong
+# in a way neither machine can detect. 300 seconds is `*:0/5`.
+OnCalendar=*:0/5
+# A missed tick while WSL was halted must NOT fire on resume: it would publish a
+# snapshot of an estate that no longer exists. The next scheduled tick reads fresh.
+Persistent=false
+# The snapshot is a status feed, not an alarm; a loose window lets systemd batch
+# this with other timers instead of waking the machine for it.
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

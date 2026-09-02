@@ -1,0 +1,25 @@
+[Unit]
+Description=Publish a metadata-only snapshot of the workstation's Claude Code sessions
+Documentation=file:%h/Coding/henk/deploy/session-publisher/README.md
+
+[Service]
+Type=oneshot
+ExecStart=%h/Coding/henk/deploy/session-publisher/session_publisher.py --config %h/.config/henk-session-publisher/config.toml
+# One tick has 60 seconds: two bounded estate CLIs, a git call per candidate path,
+# and one HTTP POST. Anything slower is a fault worth seeing as a failed unit
+# rather than a publisher that overlaps the next tick.
+TimeoutStartSec=60
+# systemd creates %S/henk-session-publisher and exports it as $STATE_DIRECTORY.
+# The publisher keeps exactly two things there: last.json (the comparison key and
+# the time of the last SUCCESSFUL publish) and the advisory lock.
+StateDirectory=henk-session-publisher
+Environment=PYTHONUNBUFFERED=1
+
+# The ntfy token is read at runtime from ~/.config/henk-session-publisher/ntfy-token
+# (mode 600 in a mode-700 directory, placed with token-place), or from the
+# environment variable named by the config's token_env. It is deliberately NOT in
+# this unit and never on the command line: `systemctl --user cat` prints this file
+# verbatim and argv is readable by every process on the machine.
+
+# No [Install] section on purpose: this is a oneshot service driven by
+# session-publisher.timer. Enable the timer, never the service.
