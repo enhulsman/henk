@@ -28,12 +28,12 @@
 
 ## 1. Re-probe the estate facts the publisher depends on
 
-- [ ] 1.1 Run `herdr agent list` and record the exact top-level envelope and the per-agent key set, the observed `agent_status` values, whether `foreground_cwd` is ever absent, and whether `terminal_title_stripped` is ever absent. **Record the observed pane-id character set** — herdr documents no pane-id grammar and warns against deriving one, so Henk's `^[\w:.-]{1,32}$` shape regex is set from this record, not from the documentation. Names, shapes, and character classes only — no title values, no cwds
-- [ ] 1.2 Run `claude-estate status --json` and record its key set, the `age_s` type and `null` behaviour, and the join key it shares with herdr. Confirm it does not require a tty
-- [ ] 1.3 Confirm `git -C <dir> remote get-url origin` and `git -C <dir> branch --show-current` behaviour for: a checkout with `origin`, a checkout without, a non-git directory, a detached HEAD, and a worktree. Record exit codes and outputs by shape, and confirm the clean-environment invocation (`GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`, `-c core.pager=cat`) behaves identically
-- [ ] 1.4 Confirm the vps ntfy message body limit and cache duration from `/opt/ntfy/config/server.yml` (read-only over SSH), and that `poll=1&since=<N>s` returns cached `message` frames newest-last. Record the frame key set (`id`, `time`, `event`, `topic`, `title`, `message`)
-- [ ] 1.5 Confirm `systemctl --user` is running on the workstation, record the unit-symlink pattern the two existing custom timers use, and record `python3 -V` so the 3.11+ guard is known to pass before anything depends on it
-- [ ] 1.6 Write 1.1–1.5 into `notes/estate-probe.md` under standing rule 1
+- [x] 1.1 Run `herdr agent list` and record the exact top-level envelope and the per-agent key set, the observed `agent_status` values, whether `foreground_cwd` is ever absent, and whether `terminal_title_stripped` is ever absent. **Record the observed pane-id character set** — herdr documents no pane-id grammar and warns against deriving one, so Henk's `^[\w:.-]{1,32}$` shape regex is set from this record, not from the documentation. Names, shapes, and character classes only — no title values, no cwds
+- [x] 1.2 Run `claude-estate status --json` and record its key set, the `age_s` type and `null` behaviour, and the join key it shares with herdr. Confirm it does not require a tty
+- [x] 1.3 Confirm `git -C <dir> remote get-url origin` and `git -C <dir> branch --show-current` behaviour for: a checkout with `origin`, a checkout without, a non-git directory, a detached HEAD, and a worktree. Record exit codes and outputs by shape, and confirm the clean-environment invocation (`GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`, `-c core.pager=cat`) behaves identically
+- [x] 1.4 Confirm the vps ntfy message body limit and cache duration from `/opt/ntfy/config/server.yml` (read-only over SSH), and that `poll=1&since=<N>s` returns cached `message` frames newest-last. Record the frame key set (`id`, `time`, `event`, `topic`, `title`, `message`)
+- [x] 1.5 Confirm `systemctl --user` is running on the workstation, record the unit-symlink pattern the two existing custom timers use, and record `python3 -V` so the 3.11+ guard is known to pass before anything depends on it
+- [x] 1.6 Write 1.1–1.5 into `notes/estate-probe.md` under standing rule 1
 
 ## 2. Config surface (Henk side)
 
