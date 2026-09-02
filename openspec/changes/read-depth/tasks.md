@@ -115,7 +115,7 @@ mutation-test its removal — removing it would break every other tool.
 - [x] 9.5 Exercise the corpus tool live: a search, a read, and a deliberately stale stamp, confirming the marker reaches a real Signal reply
 - [x] 9.6 Confirm no corpus file or excerpt is tracked here and none is in the built image; let `.githooks/pre-commit` run on every commit. Run the hook over `notes/*.md` deliberately before committing them
 - [x] 9.7 **Archive gate**: replace every `APPLY-RESOLVED:` placeholder in the spec deltas with its pinned value from `notes/backend-probe.md`, then assert `grep -r 'APPLY-RESOLVED' openspec/changes/read-depth/specs/` returns nothing. Two markers exist today — `gatus-window` and `memory-bar`. Also update `design.md`'s D5 table and Open Questions with the same pinned values, so the design record does not keep asserting an unknown that has since been measured (`design.md` is excluded from the grep assertion only because `tasks.md` names the token literally)
-- [ ] 9.8 Update the README tools table; write the `homelab-docs` capability Purpose; run `/docs-update` for the rp5 clone, timer, and mount, and **push the apply-time DNS measurements back into `services/monitoring.md`**, whose baselines are six months stale. Present the doc diff before committing
+- [x] 9.8 Update the README tools table; write the `homelab-docs` capability Purpose; run `/docs-update` for the rp5 clone, timer, and mount, and **push the apply-time DNS measurements back into `services/monitoring.md`**, whose baselines are six months stale. Present the doc diff before committing
 - [x] 9.9 Re-grep `owner-acknowledgement/proposal.md`'s cited line numbers and correct drift from the new config keys
 - [ ] 9.10 `openspec validate --all`, then `/opsx:archive`
 

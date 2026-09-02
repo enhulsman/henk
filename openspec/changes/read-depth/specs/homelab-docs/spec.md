@@ -188,8 +188,11 @@ startup failure naming the missing setting, consistent with how other invalid co
 is handled.
 
 **Host state SHALL NOT be a startup failure.** When the corpus directory is missing, empty,
-unreadable, or unstamped, the tool SHALL still be **registered**, and every invocation SHALL
-return an explicit error naming the configured path and the specific condition. The tool
+or unreadable, the tool SHALL still be **registered**, and every invocation SHALL return an
+explicit error naming the configured path and the specific condition. A readable corpus whose
+stamp is absent or unparseable is **not** an availability failure: it is served with the
+"freshness unknown" marker required above, and that marker SHALL name the stamp path and the
+specific condition (missing, not valid JSON, not an object, no readable last-pull value). The tool
 SHALL NOT be silently absent from the toolset: an absent tool produces no honest failure at
 all, leaving the agent to answer documentation questions from its own priors with no
 indication that the documentation was unreachable. Runtime loss of the corpus SHALL behave
