@@ -52,6 +52,19 @@ services:
       # memory-capture and reminders add FILES here, not a new volume
       # (secure-deployment): no new mount, port, socket, ACL grant or secret.
       - henk_audit:/data/audit
+      # Homelab documentation corpus for `homelab_docs` (read-depth). The host keeps
+      # the clone at /opt/homelab-docs current with a daily timer that runs the
+      # committed deploy/homelab-docs-stamp.sh; Henk only ever reads it. Long-form
+      # syntax on purpose: `create_host_path: false` makes an absent host path a
+      # loud start failure instead of an empty root-owned directory that searches
+      # successfully and finds nothing. With `homelab_docs.enabled: false` (the
+      # default) the mount is inert.
+      - type: bind
+        source: /opt/homelab-docs
+        target: /data/docs
+        read_only: true
+        bind:
+          create_host_path: false
     restart: unless-stopped
     # Sized from the 1.5 probe: agent peaked at ~420 MiB per-turn (idle ~180); 768m
     # is ~1.8x that peak so a heavy conversation won't OOM-kill mid-turn.
