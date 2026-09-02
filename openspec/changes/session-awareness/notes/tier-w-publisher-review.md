@@ -39,5 +39,10 @@ satisfied by this being an explicit owner decision, recorded here.
 
 ## Labels to allowlist on rp5 (task 8.8)
 
-`henk`, `config`, `docs`, `weekly-review`, `cclog`, `launchpad`, `geldpilot`,
+`henk`, `claude-config`, `docs`, `weekly-review`, `cclog`, `launchpad`, `geldpilot`,
 `health-pipeline`, `tailscale-acl`, `vaste-grond`, `bible-tui`.
+
+**Post-8.8 label rename.** The `.claude-config` root's label was `config` at review time and was
+renamed `claude-config` by the owner after the first live reply; both the publisher config and
+rp5's allowlist were changed. The one tick in between produced a live *filtered* clause (the old
+label was no longer allowlisted), which is the intended behaviour of the two-key gate.

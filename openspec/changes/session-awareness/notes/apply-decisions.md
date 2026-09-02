@@ -333,3 +333,20 @@ owner-gated steps and what was prepared for each:
   `reason=unchanged published=no` on an immediate second run. Heartbeat re-publish and
   status-change publish are confirmed from the journal over the following ticks; arrival on
   the topic is confirmed by the owner through the admin account.
+- **8.7 confirmations (owner, journal + admin read):** `first-run published=yes`, then
+  `unchanged published=no`, then `changed published=yes` — a status change published within
+  one tick. Two `session snapshot` messages observed on `henk-sessions` through the admin
+  account, each with two sessions and `unlisted {2, 0}`. The heartbeat republish
+  (`reason=heartbeat`) needs 15 unchanged minutes and is confirmed from the journal later.
+- **8.8** Pushed; rp5 pulled around its live `config.yaml`, gained `sessions.enabled: true`
+  and the label allowlist together, rebuilt; no `always empty` WARNING in the logs.
+- **9.2 fresh case, live over Signal:** first reply carried the fresh headline (14 minutes),
+  one listed session, the *filtered* clause (1 — the root label had just been renamed on the
+  workstation and not yet on rp5) and the *unlisted* clause (2 further, 0 blocked); Henk
+  said explicitly this was not the full picture. Second reply one tick later: fresh at 1
+  minute, both labels listed, unlisted clause only. No path or label outside the allowlist
+  appeared in either reply. Stale and nothing-within-lookback cases still to run.
+- **9.1a** `tag:henk` grants: the ACL repository has no commit since 2026-07-20 and a clean
+  tree — byte-identical before and after. **9.1b/c** (container listening sockets, env
+  secret names, publisher token absent from the stack) need `sudo docker` on rp5 and are
+  the owner's.
