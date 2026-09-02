@@ -267,3 +267,31 @@ Decisions taken in the group:
   this change's additions those lines are **1244** and **694**, and the citations were
   corrected. (They had already drifted before this change; the mechanisms cited are
   unchanged.)
+
+## Hand-off to the owner (§8, 9.1–9.4 live halves, 9.7)
+
+Everything that does not need a real terminal, the vps, or rp5 is done and committed. The
+owner-gated steps and what was prepared for each:
+
+- **8.1–8.3, one shortcut recorded.** `ntfy-provision create ... --token-out <path>` writes the
+  minted token *locally* at mode 600 (its help: "mkdir -p, mode 600"), so minting with
+  `--token-out ~/.config/henk-session-publisher/ntfy-token` lands the token at the consumer
+  path in step 8.1 and **8.3 collapses to `chmod 700` on the directory** (the tool's
+  `mkdir -p` leaves it at the umask) plus the `ls -la` check. `token-place` is only needed
+  when the token is minted on a host other than the one that consumes it; it is not here.
+  Proposed publisher user name: `henk-workstation` (design Open Questions); the owner's
+  choice is recorded here at 8.1.
+- **8.4–8.7** follow the publisher README (`deploy/session-publisher/README.md`): real config
+  from the example, `--dry-run` review recorded as counts in `notes/tier-w-publisher-review.md`,
+  the `publish_unlisted` decision (8.6), then the unit symlinks and the timer.
+- **8.8** sets `personal_data.session_project_allowlist` and `sessions.enabled: true`
+  **together** in rp5's hand-maintained `config.yaml` and recreates the container.
+- **8.9 done:** tooling backlog entries 19 (feed provisioning procedure, verbatim commands),
+  20 (tighten the herdr notify plugin, design D13), 21 (the `session-titles` follow-up with
+  the `henk/agent/core.py:542-548` taint finding).
+- **9.4:** README and North Star are committed; the homelab docs edits
+  (`services/monitoring.md`: `henk-sessions` row and bullet; `devices/workstation.md`:
+  timer row and a "Henk session publisher" subsection) are **prepared uncommitted** in the
+  docs-site working tree for the owner to review and commit after 8.7. The capability
+  Purpose is written into `openspec/specs/session-awareness/spec.md` at archive (9.7).
+- **9.1 / 9.2 / 9.3 (live half)** are the owner's live verifications; **9.7** archives.
