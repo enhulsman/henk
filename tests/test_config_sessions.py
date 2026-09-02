@@ -36,6 +36,7 @@ from __future__ import annotations
 import dataclasses
 import inspect
 
+import httpx
 import pytest
 
 from henk.config import (
@@ -53,7 +54,10 @@ from henk.config import (
     build_system_prompt,
     normalise_label_allowlist,
 )
+from henk.tools import build_production_registry
+from tests.corpus_fixture import build_corpus
 from tests.test_config import SAMPLE, _minimal_raw
+from tests.test_read_depth_registration import _RefusingTransport
 
 
 def _raw(**sections):
@@ -488,8 +492,9 @@ def test_the_full_capability_set_composes_and_its_count_matches_the_enumeration(
     A thirteenth tool exceeds the old spelled-out count table and raises
     `KeyError` by design rather than shipping a wrong count, so this is the test
     that would have caught the omission. It asserts against the prompt's own
-    summary tuples; the equality against the **production registry** is task 7.3's
-    (the tool is not registered yet).
+    summary tuples; the equality against the **production registry** is the
+    sibling below, which is the half that actually catches an enumeration and a
+    registry drifting apart.
     """
     prompt = build_system_prompt(
         reminders_enabled=True,
@@ -510,6 +515,47 @@ def test_the_full_capability_set_composes_and_its_count_matches_the_enumeration(
     # Every enumerated tool is actually enumerated, in the prompt, once.
     for name, summary in summaries:
         assert prompt.count(f"- {name} — {summary}\n") == 1
+
+
+def test_the_full_capability_set_matches_the_production_registry(tmp_path):
+    """Task 2.10, registry half.
+
+    The prompt's framing — "your complete toolset is exactly these thirteen" — is
+    only honest if the enumeration and the registry agree, and the prompt's count
+    is derived from the summary tuples rather than from the registry, so nothing
+    but this test holds the two together. Every capability flag is on, which is
+    the largest toolset any host can run; `reminders.enabled` needs
+    `owner.timezone`, and `homelab_docs.enabled` needs a path, so both are set.
+    """
+    raw = _raw(
+        reminders={"enabled": True},
+        homelab_query={"enabled": True},
+        homelab_docs={"enabled": True, "path": str(build_corpus(tmp_path))},
+        sessions={"enabled": True},
+        personal_data={"session_project_allowlist": ["alpha"]},
+    )
+    raw["owner"]["timezone"] = "Europe/Amsterdam"
+    config = Config.from_dict(raw, env={})
+
+    client = httpx.AsyncClient(transport=_RefusingTransport())
+    registered = build_production_registry(config, client).names()
+    summaries = (
+        BASE_TOOL_SUMMARIES
+        + REMINDER_TOOL_SUMMARIES
+        + QUERY_TOOL_SUMMARIES
+        + DOCS_TOOL_SUMMARIES
+        + SESSIONS_TOOL_SUMMARIES
+    )
+    assert len(registered) == len(summaries)
+    # The spelled-out word the composed prompt actually carries, so a count table
+    # that grew the wrong entry fails here rather than at a host's startup.
+    assert COUNT_WORDS[len(registered)] == "thirteen"
+    assert (
+        f"exactly these {COUNT_WORDS[len(registered)]}" in config.agent.system_prompt
+    )
+    # Name by name as well as by count: two enumerations of the same length can
+    # still disagree about which tools they list.
+    assert set(registered) == {name for name, _ in summaries}
 
 
 def test_the_count_table_covers_every_reachable_capability_combination():

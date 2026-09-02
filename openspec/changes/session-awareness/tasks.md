@@ -113,12 +113,12 @@
 
 ## 7. Audit assertions and registration
 
-- [ ] 7.1 Write the test asserting `sessions_read` is absent from `RESULT_CAPTURING_TOOLS`
-- [ ] 7.2 Write the twice-written-session test (read-depth decision 17 harness): an owner session invoking `sessions_read` written with a fully populated snapshot and with an empty snapshot produces byte-identical audit records after timestamp normalisation
-- [ ] 7.3 Write registration tests: `sessions.enabled` false → not registered; true → registered as read-only with no parameters; `build_production_registry` issues no request either way
-- [ ] 7.4 Write the allowlist-wiring tests: the registry passes `personal_data.session_project_allowlist` into the tool, and an empty allowlist with `sessions.enabled` true registers the tool and emits the same startup WARNING shape as an empty `todo_read` scope (`henk/tools/__init__.py:144-146`)
-- [ ] 7.5 Implement registration in `build_production_registry` gated on `config.sessions.enabled`, passing the allowlist through
-- [ ] 7.6 Run the full suite; record the new baseline against 1896 passed / 12 deselected and account for the delta
+- [x] 7.1 Write the test asserting `sessions_read` is absent from `RESULT_CAPTURING_TOOLS`
+- [x] 7.2 Write the twice-written-session test (read-depth decision 17 harness): an owner session invoking `sessions_read` written with a fully populated snapshot and with an empty snapshot produces byte-identical audit records after timestamp normalisation
+- [x] 7.3 Write registration tests: `sessions.enabled` false → not registered; true → registered as read-only with no parameters; `build_production_registry` issues no request either way
+- [x] 7.4 Write the allowlist-wiring tests: the registry passes `personal_data.session_project_allowlist` into the tool, and an empty allowlist with `sessions.enabled` true registers the tool and emits the same startup WARNING shape as an empty `todo_read` scope (`henk/tools/__init__.py:144-146`)
+- [x] 7.5 Implement registration in `build_production_registry` gated on `config.sessions.enabled`, passing the allowlist through
+- [x] 7.6 Run the full suite; record the new baseline against 1896 passed / 12 deselected and account for the delta
 
 ## 8. Provisioning (owner-gated; vps steps need a real terminal)
 

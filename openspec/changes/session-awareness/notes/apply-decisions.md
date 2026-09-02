@@ -183,3 +183,27 @@ Decisions taken in the group:
 - Extracting the three backend-failure sentences into `henk/tools/backend_failure.py` also
   applies `scrub_addresses` to the `request failed: <reason>` text on the homelab-query
   path, which the design asked for and the old inline code did not do.
+
+### Group 7 — audit assertions and registration
+
+`tests/test_sessions_registration.py`: **15 passed**; `tests/test_config_sessions.py` gained
+the registry half of task 2.10 (**56**). The decision-17 audit harness is imported from the
+read-depth test module, not copied, and is driven with genuinely rendered snapshots.
+
+| Mutation | Failures | Caught by (representative) |
+|---|---|---|
+| `sessions_read` registered unconditionally | 12 | section-absent registers nothing, flag-off registry is the pre-change one, nine read-depth prompt/registry equality tests |
+| docs allowlist passed instead of the session allowlist | 3 | allowlist pass-through, no-warning-when-populated, ntfy-wiring |
+| startup WARNING deleted | 2 | empty-allowlist-warns, same-shape-as-todo_read |
+| `sessions_read` added to `RESULT_CAPTURING_TOOLS` | 7 | the absence pin, both harness runs (populated and empty snapshot), the byte-identical comparison, the three pre-existing whole-set pins |
+| gatus timeout passed instead of the ntfy timeout | 1 | ntfy-wiring (asserts the request's timeout extension) |
+
+Decisions taken in the group:
+
+- The whole-set capture pin (`frozenset({"publish_handoff"})`) is referenced from its three
+  existing homes rather than copied a fourth time; the new test asserts the named absence.
+- The flag-off "pre-change registry" test also switches `homelab_query` off, because that
+  tool ships enabled and the seven-name baseline is only reachable with the read-depth pair
+  off — the same move its own registration test makes.
+- Task 7.6's baseline accounting is recorded at close-out (§9) once group 5's count is in;
+  every delta is attributable to one named test file.

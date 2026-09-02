@@ -30,6 +30,7 @@ from henk.tools.reminders import (
     RemindersReadTool,
     RemindTool,
 )
+from henk.tools.sessions_read import SessionsReadTool
 from henk.tools.taiga_read import TaigaReadTool
 from henk.tools.todo_read import TodoReadTool
 
@@ -45,6 +46,7 @@ __all__ = [
     "HomelabHealthTool",
     "HomelabQueryTool",
     "InboxReadTool",
+    "SessionsReadTool",
     "StoreMemoryTool",
     "TaigaReadTool",
     "TodoReadTool",
@@ -116,6 +118,19 @@ def build_production_registry(
     own flag and each read-only. ``homelab_query`` ships **enabled**; ``homelab_docs``
     ships **disabled** and registers on host state alone being bad, so a broken
     corpus is a per-call error rather than a silently absent tool.
+
+    ``sessions_read`` is behind its own flag *and* behind a second key, and the
+    two-key shape is the point: the workstation estate mixes the owner's personal
+    and work sessions, so the capability needs both ``sessions.enabled`` and a
+    non-empty ``personal_data.session_project_allowlist`` before it can surface
+    anything (design D1/D12). It ships **disabled**, because nothing it reads
+    exists until the workstation publisher, the write-only ntfy user and the topic
+    grant have been provisioned by hand; on rp5 the flag and the allowlist are set
+    **together**, and setting only the flag is a tool that can report nothing but
+    "no sessions are in scope". That half-applied state registers anyway, with the
+    same startup WARNING ``todo_read`` uses, because a loud useless tool is easier
+    to diagnose than a silently absent one. No new URL, timeout or secret key: the
+    topic is read over ``endpoints.ntfy`` with the credential Henk already holds.
 
     ``taiga_read`` remains deliberately NOT registered (fast-follow): the Taiga
     instance holds mixed personal/work projects, so it needs the same default-deny
@@ -230,4 +245,22 @@ def build_production_registry(
                 "nothing"
             )
         registry.register(docs)
+    if config.sessions.enabled:
+        sessions_read = SessionsReadTool(
+            client,
+            base_url=config.ntfy.base_url,
+            topic=config.sessions.topic,
+            token=config.secrets.ntfy_token,
+            timeout=config.ntfy.timeout_seconds,
+            allowlist=config.personal_data.session_project_allowlist,
+            stale_after_seconds=config.sessions.stale_after_seconds,
+            lookback_seconds=config.sessions.lookback_seconds,
+        )
+        if not sessions_read.effective_allowlist:
+            logger.warning(
+                "sessions_read registered but always empty — no allowlist "
+                "configured (personal_data.session_project_allowlist); it will "
+                "surface nothing"
+            )
+        registry.register(sessions_read)
     return registry
