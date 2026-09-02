@@ -13,7 +13,15 @@ TimeoutStartSec=60
 # The publisher keeps exactly two things there: last.json (the comparison key and
 # the time of the last SUCCESSFUL publish) and the advisory lock.
 StateDirectory=henk-session-publisher
+# GOTCHA: if ~/.local/state/henk-session-publisher does not exist at first start,
+# systemd (>= 254) sees the same-named ~/.config/henk-session-publisher and creates a
+# "compatibility symlink" to it, so last.json and the lock land beside the token and
+# config. Create the real directory before the first start (README, install step 3).
 Environment=PYTHONUNBUFFERED=1
+# A user service starts with a minimal PATH that does not include ~/.local/bin, where
+# herdr and claude-estate live; without this line the first tick exits 127 ("herdr
+# agent list exited 127") and publishes nothing — fail-closed, but useless.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 # The ntfy token is read at runtime from ~/.config/henk-session-publisher/ntfy-token
 # (mode 600 in a mode-700 directory, placed with token-place), or from the

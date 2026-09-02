@@ -320,3 +320,16 @@ owner-gated steps and what was prepared for each:
 - **8.5** Dry run recorded in `tier-w-publisher-review.md`: 4 live panes, 2 admitted
   (`henk`, `config`), 2 denied by the root gate on `cwd` — every work pane among them.
 - **8.6** `publish_unlisted = true`, owner decision; re-run shows `unlisted: {2, 0}`.
+- **8.7** Units symlinked from `~/.config/systemd/user/` into the checkout (the existing
+  user-timer pattern), timer enabled. **The first start failed closed** and taught two
+  deployment facts, both fixed in the unit and README: (1) a systemd user service's minimal
+  `PATH` lacks `~/.local/bin`, where `herdr` and `claude-estate` live, so `herdr agent list`
+  exited 127 and the publisher published nothing (`Environment=PATH=%h/.local/bin:...` added
+  to the unit); (2) with `~/.config/henk-session-publisher` sharing the `StateDirectory` name
+  and no real state directory present, systemd ≥ 254 created a "compatibility symlink" and
+  the lock landed beside the token and config — the real directory is now created before
+  the first start (README install step 3) and the stray lock was removed. After the fix:
+  `admitted=2 denied=2 dropped=0 labels=config,henk reason=first-run published=yes`, then
+  `reason=unchanged published=no` on an immediate second run. Heartbeat re-publish and
+  status-change publish are confirmed from the journal over the following ticks; arrival on
+  the topic is confirmed by the owner through the admin account.

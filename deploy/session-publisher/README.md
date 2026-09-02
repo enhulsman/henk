@@ -48,7 +48,12 @@ $EDITOR ~/.config/henk-session-publisher/config.toml     # real roots, labels, o
   --source-host vps --source-path <path written by --token-out>   # then --yes
 ls -la ~/.config/henk-session-publisher/                 # expect drwx------ / -rw-------
 
-# 3. Units, symlinked from the config repo the way the other user timers are
+# 3. State directory — create it BEFORE the first start. systemd (>= 254) otherwise sees
+#    the same-named ~/.config/henk-session-publisher and links the state directory to
+#    it, putting last.json and the lock beside the token and config.
+mkdir -m 700 -p ~/.local/state/henk-session-publisher
+
+# 4. Units, symlinked from the config repo the way the other user timers are
 ln -s "$PWD/deploy/session-publisher/session-publisher.service" \
   ~/.config/systemd/user/session-publisher.service
 ln -s "$PWD/deploy/session-publisher/session-publisher.timer" \
