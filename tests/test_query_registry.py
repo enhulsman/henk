@@ -50,7 +50,7 @@ from henk.tools.query_registry import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CHANGE = REPO_ROOT / "openspec" / "changes" / "read-depth"
+CHANGE = REPO_ROOT / "openspec" / "changes" / "archive" / "2026-09-02-read-depth"
 NOTES = (CHANGE / "notes" / "backend-probe.md").read_text()
 SPEC = (CHANGE / "specs" / "homelab-tools" / "spec.md").read_text()
 
