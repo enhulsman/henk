@@ -345,8 +345,58 @@ owner-gated steps and what was prepared for each:
   workstation and not yet on rp5) and the *unlisted* clause (2 further, 0 blocked); Henk
   said explicitly this was not the full picture. Second reply one tick later: fresh at 1
   minute, both labels listed, unlisted clause only. No path or label outside the allowlist
-  appeared in either reply. Stale and nothing-within-lookback cases still to run.
+  appeared in either reply.
+- **9.2 nothing-within-lookback case, live over Signal:** after the publisher had remained
+  stopped beyond the six-hour lookback, the reply said that no recent data had been
+  published in the last 6 hours, declined to state what was currently running, and named a
+  stopped publisher as one possible cause. It rendered no session data, path, or label.
+  This exercises the selection gate, not the stale-snapshot headline.
+- **Publisher restored (2026-09-05):** `session-publisher.timer` is enabled and active. Its
+  first scheduled run after restoration exited successfully and published a changed
+  snapshot (`admitted=1 denied=3 dropped=0 labels=henk`).
+- **9.2 stale case, live over Signal (2026-09-06):** with the publisher stopped after a
+  fresh heartbeat, four replies at snapshot ages 29, 34, 35, and 36 minutes each carried
+  the stale headline, said the result was not live, rendered the last reported allowlisted
+  session, retained the unlisted-population caveat, and named the timer-status command.
+  The 36-minute check followed `/new` and behaved identically, confirming the result does
+  not depend on the preceding conversation. No reply exposed an absolute path or a label
+  outside the allowlist.
+- **Publisher restored after the stale check (2026-09-06):** the timer is enabled and
+  active, and its first scheduled run published successfully with `reason=heartbeat`.
+- **9.3 current-estate re-check (2026-09-05):** a value-preserving scan compared the real
+  configured allow/deny roots plus every current herdr `cwd`, `foreground_cwd`,
+  `terminal_title`, and `terminal_title_stripped` against the Git-tracked files under
+  `tests/`, `deploy/`, and `notes/`. It checked 22 distinct sensitive values from 4 live
+  panes across 95 tracked files and found zero matches. An initial all-files pass found
+  only untracked `__pycache__` bytecode embedding the compilation cwd; the tracked-files
+  pass deliberately excludes those non-publication artifacts.
+- **9.4 docs-site follow-up:** the previously prepared monitoring and workstation edits
+  are committed in the docs-site as `48268c3` (`docs(workstation): document Henk session
+  publisher timer`), covering both required files. The docs-site tree is clean; its local
+  `main` is ahead of `origin/main`.
+- **9.4 capability Purpose, owner-approved 2026-09-06:** “The read-only bridge between
+  Henk and the owner's live workstation sessions. A workstation-side publisher filters
+  the estate before publishing a metadata-only snapshot; Henk independently allowlists
+  project labels and always reports freshness, so stale or absent data is never mistaken
+  for no sessions. Transcript-derived free text is deliberately out of v1 scope and is
+  owned by the `session-titles` follow-up.” A dry-run archive confirmed that OpenSpec
+  creates a new capability with a temporary `TBD` Purpose; task 9.7 replaces that
+  placeholder with this text before its final validation.
+- **9.7 archive:** `/opsx:archive` completed through OpenSpec's archive operation after the
+  owner chose the recommended sync. The `session-awareness` capability was created with 13
+  requirements; `secure-deployment` gained 2 requirements and 1 modified requirement. The
+  generated Purpose placeholder was replaced with the owner-approved text above before
+  final validation.
 - **9.1a** `tag:henk` grants: the ACL repository has no commit since 2026-07-20 and a clean
   tree — byte-identical before and after. **9.1b/c** (container listening sockets, env
   secret names, publisher token absent from the stack) need `sudo docker` on rp5 and are
   the owner's.
+- **9.1b/c (owner, rp5, `sudo docker`):** listening sockets inside the container's network
+  namespace are exactly three, none Henk's — Docker's embedded DNS resolver on
+  `127.0.0.11`, and the Tailscale sidecar's two listeners on HENK-TS-IP (IPv4 and the
+  tailnet ULA IPv6); `HostConfig.PortBindings` is `{}`. The container env's secret-shaped
+  names are the pre-existing set — the Anthropic credential, `NTFY_TOKEN`, `TODO_TOKEN`,
+  `TS_AUTHKEY` — beside non-secret runtime variables (`GPG_KEY` is the Python base image's
+  public release-signing fingerprint). `HENK_SESSION_PUBLISHER` appears 0 times in the
+  stack's `.env` and `session-publisher` 0 times in its compose file: the publisher's
+  credential is not in the stack in any form.
