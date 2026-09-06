@@ -3792,3 +3792,86 @@ def test_the_deploy_directory_carries_no_real_estate_data() -> None:
         text = path.read_text(encoding="utf-8")
         for name, pattern in shapes.items():
             assert re.search(pattern, text) is None, f"{path.name}: {name}"
+
+
+def test_symlinked_allow_root_entry_and_symlinked_cwd_both_match(tmp_path) -> None:
+    """Both sides of the root gate are canonicalised, so a directory reached
+    under either of its two names lands in the same root.
+
+    The concrete case (agentrc, 2026-09-06): ``~/agentrc`` is a symlink to
+    ``~/.claude-config``. A config entry may name either one, and a session's
+    reported cwd may be either one. Canonicalising only the session (or only the
+    config) would make the decision depend on which name happened to be written
+    down.
+    """
+    real_root = tmp_path / "roots" / "coding"
+    project = real_root / "config-repo"
+    project.mkdir(parents=True)
+    root_link = tmp_path / "roots" / "coding-link"
+    root_link.symlink_to(real_root, target_is_directory=True)
+    project_link = tmp_path / "roots" / "agentrc"
+    project_link.symlink_to(project, target_is_directory=True)
+
+    # The config names the SYMLINK as the allowed root.
+    config = sp.load_config(
+        write_config(
+            tmp_path,
+            f"""
+allow_owners = ["owner-a"]
+
+[[allow_roots]]
+path = "{root_link}"
+label = "coding"
+""",
+        ),
+        env={"HOME": str(tmp_path / "home")},
+        tempdir=str(tmp_path / "systmp"),
+    )
+
+    # A session reporting the real path is admitted under the symlinked entry.
+    by_real = sp.classify(
+        agent("wZ:p0", str(project)), config, FakeGit(table={}), os.path.realpath
+    )
+    assert (by_real.admitted, by_real.label) == (True, "coding")
+
+    # And a session reporting a symlinked cwd is admitted identically: neither
+    # name is privileged over the other.
+    by_link = sp.classify(
+        agent("wZ:p1", str(project_link)), config, FakeGit(table={}), os.path.realpath
+    )
+    assert (by_link.admitted, by_link.label) == (True, "coding")
+
+
+def test_symlinked_cwd_cannot_escape_a_deny_root_named_by_symlink(tmp_path) -> None:
+    """The deny list is canonicalised too, so naming a denied subtree by its
+    symlink still denies the real path — and vice versa."""
+    real_root = tmp_path / "roots" / "coding"
+    secret = real_root / "client"
+    secret.mkdir(parents=True)
+    deny_link = tmp_path / "roots" / "client-link"
+    deny_link.symlink_to(secret, target_is_directory=True)
+    cwd_link = tmp_path / "roots" / "shortcut"
+    cwd_link.symlink_to(secret, target_is_directory=True)
+
+    config = sp.load_config(
+        write_config(
+            tmp_path,
+            f"""
+allow_owners = ["owner-a"]
+deny_roots = ["{deny_link}"]
+
+[[allow_roots]]
+path = "{real_root}"
+label = "coding"
+""",
+        ),
+        env={"HOME": str(tmp_path / "home")},
+        tempdir=str(tmp_path / "systmp"),
+    )
+
+    for pane, reported in (("wZ:p0", secret), ("wZ:p1", cwd_link)):
+        result = sp.classify(
+            agent(pane, str(reported)), config, FakeGit(table={}), os.path.realpath
+        )
+        assert result.admitted is False
+        assert result.denials[0].reason == "deny_roots"
