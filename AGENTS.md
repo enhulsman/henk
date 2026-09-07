@@ -59,6 +59,10 @@ instead of embedding it. Governance and the public-flip milestone live in
 OpenSpec project: `/opsx:propose` → `/scrutinize` to APPROVED → TDD from spec
 scenarios → implement in a fresh session → `/opsx:sync` + `/opsx:archive`.
 
+When a work product is ready for review, spawn one `project-scrutinizer`
+sub-agent with `fork_turns: "none"` and give it the files to review. A review
+sub-agent does not spawn further agents.
+
 ## Channel (user preference, 2026-07-20)
 
 **Signal-first** (FOSS/security stance; user plans to switch to Molly, a Signal client
