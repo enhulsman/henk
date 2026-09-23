@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from henk.store.db import Store
+from henk.store.handoffs import HandoffStore
 from henk.store.inbox import SqliteInboxStore
 from henk.store.memory import MemoryStore
 from henk.store.reminders import ReminderStore
@@ -20,12 +21,17 @@ from henk.store.reminders import ReminderStore
 
 @dataclass(frozen=True)
 class HenkStores:
-    """The store and its three repositories, built once and shared."""
+    """The store and its repositories, built once and shared.
+
+    ``handoffs`` is the handoff archive (triage-quality D8): written only by
+    ``publish_handoff`` and read only by the event-turn digest, never by a tool.
+    """
 
     store: Store
     memories: MemoryStore
     inbox: SqliteInboxStore
     reminders: ReminderStore
+    handoffs: HandoffStore
 
 
 def build_stores(store_config, reminders_config=None) -> HenkStores:
@@ -58,4 +64,6 @@ def build_stores(store_config, reminders_config=None) -> HenkStores:
             text_length_limit=reminders_config.text_length_limit,
             page_size=reminders_config.page_size,
         ),
+        # Bounds are module constants (D8), so the archive takes no config.
+        handoffs=HandoffStore(store),
     )

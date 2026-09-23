@@ -31,6 +31,7 @@ from henk.channel.signal import SignalAdapter, SignalCliRestBridge
 from henk.config import Config
 from henk.events.checkpoint import OffsetCheckpoint
 from henk.events.coordinator import EventCoordinator
+from henk.events.incident_context import IncidentContextProvider
 from henk.events.intake import (
     SINCE_REJECTED_NOTICE,
     EventIntake,
@@ -95,12 +96,18 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
     # same instance: a due time rendered by two resolvers could differ, and the owner
     # would be the one left adjudicating which is right.
     resolver = build_time_resolver(config)
+    # ONE incident context for the whole runtime (triage-quality D8):
+    # `publish_handoff` reads it to archive a handoff with its session's incidents,
+    # and the agent core is its only writer. Until the core is handed this same
+    # instance, it stays empty and nothing is archived.
+    incident_context = IncidentContextProvider()
     registry = build_production_registry(
         config,
         client,
         stores=stores,
         resolver=resolver,
         reminder_receipts=reminder_receipts,
+        incident_context=incident_context,
     )
 
     # Every timeout comes from config, none from a constructor default: an

@@ -92,6 +92,7 @@ def build_production_registry(
     stores: HenkStores | None = None,
     resolver: TimeResolver | None = None,
     reminder_receipts=None,
+    incident_context=None,
 ) -> ToolRegistry:
     """The production toolset: reads, notify-class sends, and the durable writes.
 
@@ -174,6 +175,16 @@ def build_production_registry(
     # publish_handoff rides the same single ntfy credential (write on handoffs).
     # Registered unconditionally so the enumerated toolset matches the registry;
     # it is only ever exercised by triage, which only runs when events.enabled.
+    #
+    # It also archives what it published (triage-quality D8), into the shared
+    # store, with the incidents read from `incident_context`. That provider must
+    # be the SAME instance the agent core writes; with none passed, a fresh one is
+    # used, which stays empty, so nothing is ever archived. Imported here rather
+    # than at module level because henk.events.incident_context imports henk.tools.
+    if incident_context is None:
+        from henk.events.incident_context import IncidentContextProvider
+
+        incident_context = IncidentContextProvider()
     registry.register(
         PublishHandoffTool(
             client,
@@ -181,6 +192,8 @@ def build_production_registry(
             topic=config.events.handoffs_topic,
             token=config.secrets.ntfy_token,
             timeout=config.ntfy.timeout_seconds,
+            archive=stores.handoffs,
+            incident_context=incident_context,
         )
     )
     registry.register(StoreMemoryTool(stores.memories))

@@ -320,23 +320,23 @@ The capture is persisted only on rp5's audit volume.
 
 ## 6. Handoff archive (triage-handoff)
 
-- [ ] 6.1 Tests first, store:
+- [x] 6.1 Tests first, store:
   - a round-trip;
   - *Retention holds its bounds* (the 500/90-day constants, oldest first, in the insert's
     transaction);
   - the 32 KB marker and flag;
   - `_check_handoffs_columns`.
-- [ ] 6.2 Tests first, tool:
+- [x] 6.2 Tests first, tool:
   - *A published handoff is retained with its incidents*;
   - *An owner-session handoff is not retained*;
   - *A failed publish is not retained*;
   - *A retention failure does not fail the publish*;
   - *Incident context cannot come from the model*.
-- [ ] 6.3 Tests first:
+- [x] 6.3 Tests first:
   - message-id parsing, both forms;
   - an empty id stored as `NULL`;
   - rule-key and node derivation: whole-word matching, and no address ever produced.
-- [ ] 6.4 Implement the `handoffs` table and repository, `IncidentContext` and its
+- [x] 6.4 Implement the `handoffs` table and repository, `IncidentContext` and its
   provider, and retention in `PublishHandoffTool` after a 2xx when the context is
   non-empty.
 

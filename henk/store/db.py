@@ -1,4 +1,4 @@
-"""The single SQLite file behind memory, the capture inbox and reminders.
+"""The single SQLite file behind memory, the capture inbox, reminders and handoffs.
 
 One database on the volume that already carries the audit JSONL, so this change
 adds no deploy surface (secure-deployment spec). WAL mode keeps readers unblocked
@@ -22,6 +22,7 @@ Two things here are not obvious and are load-bearing:
   host is never created there. :func:`_check_reminders_columns` converts that from
   "code reads a column production does not have, silently" into a refusal to start
   that names the column. It is the enforcement of the rule, not a migration path.
+  :func:`_check_handoffs_columns` does the same for the handoff archive.
 """
 
 from __future__ import annotations
@@ -83,6 +84,35 @@ _SCHEMA = (
     # Serves the pending listing here AND reminder-delivery's due selector.
     "CREATE INDEX IF NOT EXISTS idx_reminders_status_due "
     "ON reminders(status, due_at, id)",
+    # The handoff archive (triage-quality design D8), with its COMPLETE column set
+    # from day one, for the same no-migration reason as reminders.
+    #
+    # AUTOINCREMENT, not a bare rowid, and load-bearing: audit v5's
+    # `prior_handoff_ids` stores these ids, and retention deletes rows. A bare
+    # rowid table hands out max(rowid) + 1, so deleting the newest row would
+    # reissue its id and an audit record would silently name a different
+    # handoff. AUTOINCREMENT never reuses an id for the life of the file.
+    #
+    # `identity_keys`, `rule_keys` and `nodes` are JSON arrays of strings from the
+    # application's incident context, never from the model. `nodes` holds
+    # closed-set node names only, never an address.
+    """
+    CREATE TABLE IF NOT EXISTS handoffs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id TEXT,
+        published_at REAL NOT NULL,
+        document TEXT NOT NULL,
+        truncated INTEGER NOT NULL DEFAULT 0,
+        identity_keys TEXT NOT NULL DEFAULT '[]',
+        rule_keys TEXT NOT NULL DEFAULT '[]',
+        nodes TEXT NOT NULL DEFAULT '[]'
+    )
+    """,
+    # Retention prunes, and the digest reads, by publish time.
+    "CREATE INDEX IF NOT EXISTS idx_handoffs_published "
+    "ON handoffs(published_at, id)",
+    # The recurrence lookup by ntfy message id.
+    "CREATE INDEX IF NOT EXISTS idx_handoffs_message_id ON handoffs(message_id)",
 )
 
 #: Exactly the columns the statement above creates. The drift check compares the
@@ -104,20 +134,63 @@ REMINDER_COLUMNS: tuple[str, ...] = (
 )
 
 
+#: Exactly the columns the ``handoffs`` statement creates, checked the same way.
+HANDOFF_COLUMNS: tuple[str, ...] = (
+    "id",
+    "message_id",
+    "published_at",
+    "document",
+    "truncated",
+    "identity_keys",
+    "rule_keys",
+    "nodes",
+)
+
+
 def _check_reminders_columns(conn: sqlite3.Connection) -> None:
-    """Refuse to run against a ``reminders`` table this code does not recognize.
+    """Refuse to run against a ``reminders`` table this code does not recognize."""
+    _check_table_columns(conn, "reminders", REMINDER_COLUMNS)
+
+
+def _check_handoffs_columns(conn: sqlite3.Connection) -> None:
+    """Refuse to run against a ``handoffs`` table this code does not recognize.
+
+    Mirrors :func:`_check_reminders_columns`, plus one check a column list cannot
+    express: the id must be ``AUTOINCREMENT``. A same-columns table on a bare rowid
+    would reissue a deleted row's id, and audit v5's ``prior_handoff_ids`` would
+    then name the wrong handoff without any error.
+    """
+    _check_table_columns(conn, "handoffs", HANDOFF_COLUMNS)
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'handoffs'"
+    ).fetchone()
+    sql = " ".join(str(row[0] if row else "").upper().split())
+    if "AUTOINCREMENT" not in sql:
+        raise StoreError(
+            "the handoffs table does not match this build's schema — its id is not "
+            "INTEGER PRIMARY KEY AUTOINCREMENT, so a deleted handoff's id could be "
+            "reissued under the audit log's prior_handoff_ids. There is no "
+            "migration mechanism: the table must be recreated or the code reverted."
+        )
+
+
+def _check_table_columns(
+    conn: sqlite3.Connection, table: str, expected_columns: tuple[str, ...]
+) -> None:
+    """Refuse to run against a table whose columns this build does not recognize.
 
     ``CREATE TABLE IF NOT EXISTS`` is a no-op against a pre-existing table, so a
     table created by an older build keeps its old column set forever. Reading a
     missing column then fails at the first query, on the deployed host only, where
     no test runs. Names both directions: a missing column means this build expects
     more than the file has, an unexpected one means the file was written by a build
-    this one does not know about.
+    this one does not know about. ``table`` is always one of this module's own
+    literals, never input.
     """
-    live = {str(row[1]) for row in conn.execute("PRAGMA table_info(reminders)")}
+    live = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
     if not live:  # pragma: no cover - the DDL above always creates it
-        raise StoreError("the reminders table is missing after schema creation")
-    expected = set(REMINDER_COLUMNS)
+        raise StoreError(f"the {table} table is missing after schema creation")
+    expected = set(expected_columns)
     missing = sorted(expected - live)
     unexpected = sorted(live - expected)
     if not missing and not unexpected:
@@ -128,7 +201,7 @@ def _check_reminders_columns(conn: sqlite3.Connection) -> None:
     if unexpected:
         parts.append(f"unexpected column(s): {', '.join(unexpected)}")
     raise StoreError(
-        "the reminders table does not match this build's schema — "
+        f"the {table} table does not match this build's schema — "
         + "; ".join(parts)
         + ". There is no migration mechanism: the table must be recreated or the "
         "code reverted. Refusing to start rather than reading a column that is "
@@ -189,6 +262,7 @@ class Store:
             # After the DDL and before any repository touches the table: a drift
             # check is only useful if nothing has queried the table yet.
             _check_reminders_columns(conn)
+            _check_handoffs_columns(conn)
         except (sqlite3.Error, OSError) as exc:
             raise StoreError(f"cannot open the store at {self._path}: {exc}") from exc
         self._conn = conn

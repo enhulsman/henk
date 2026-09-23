@@ -329,3 +329,86 @@ sweep (review finding 3).
   request's `end` whenever the step does not divide the window, which at 60 points is
   every window. The result states `end` as the window's end, and uses the last range
   point only to decide whether a series has gone silent.
+
+## Group 6: handoff archive
+
+The store is `henk/store/handoffs.py`, and `IncidentContext` and its provider are in
+`henk/events/incident_context.py`. Retention lives in `PublishHandoffTool._retain`. The
+suite moved from 2703 to 2821 passed (1 skipped). **Nothing is archived in production
+until group 7 wires the provider into the core** (7.7).
+
+**Decisions.**
+- **The rule key follows the spec, not D9's literal formula.** For Grafana it is
+  `grafana:{name}`, which is the identity key without its scope suffix
+  (`henk/events/identity.py:101-110`). Every other source uses `identity.key`. D9's
+  `f"{source}:{name}"` would give the `other` fallback two keys for one identity: its key
+  is built from the normalised title (`identity.py:151`), while its `name` is the raw
+  title (`:153`). The spec's wording, "the identity with any per-subject scope suffix
+  removed" (`specs/triage-handoff/spec.md:51`), is exactly what is implemented. For gatus
+  and pipe sources the two forms are identical.
+- **Nodes.**
+  - Whole-word matching uses ASCII lookarounds, case-insensitive, longest token first.
+    The tokens are `rp5`/`vps`/`rp2` plus the `NODE_FOR_JOB` job names
+    (`henk/tools/query_projection.py:46-49`).
+  - Hyphen, dot and slash count as word boundaries, so `node-exporter-vps` gives `vps`.
+  - **URLs are stripped before matching.** This closes 1.5's open question about the
+    Grafana `Source:`/`Silence:` host (`evidence-probe.md:263-268`).
+- **"Non-empty context" means non-empty identity keys.** A context with no nodes, such as
+  a Gatus incident, is still retained. The store also refuses empty identity keys, as
+  defence in depth.
+- **What is stored.**
+  - The document is the model's `document` argument, without the tool's `[AI] ` prefix.
+  - `published_at` is the store's clock at retention time, not ntfy's `time`, so ages
+    agree with the pruning.
+- **32 KB means 32,768 UTF-8 bytes, marker included.** The cut falls on a character
+  boundary.
+- **Pruning.**
+  - It deletes oldest first by `(published_at, id)`, inside the insert's
+    `Store.transaction()`.
+  - The row being inserted is protected, so a stepped-back clock cannot prune it.
+  - The age cutoff is strict `<`, so a row exactly 90 days old is kept.
+  - `eligible()` and `find_by_message_ref()` also filter by age, because pruning only
+    runs on insert.
+- **`_check_handoffs_columns` also refuses a table without `AUTOINCREMENT`.** The column
+  exists for audit v5's `prior_handoff_ids` (see Group 5).
+- **Import cycle.** `henk/tools/__init__.py` imports the provider lazily, and
+  `publish_handoff.py` imports its types under `TYPE_CHECKING` only.
+
+**API left for groups 7 and 8.**
+- **Group 7:** `runtime.py` builds the single `IncidentContextProvider` and passes it to
+  the registry. Group 7 must pass the **same instance** to `AgentCore`. It then calls
+  `provider.publish(IncidentContext.from_turn(turn))` at `_start_event_session` and
+  `provider.clear()` at `_close_session`.
+- **Group 8:**
+  - `stores.handoffs.eligible(now=None)` returns handoffs within retention, newest first,
+    at most 500, as `RetainedHandoff` with an int `id`.
+  - `find_by_message_ref(ref)` accepts the bare id or the full result string, and an
+    empty id never matches.
+  - `derive_rule_key`, `derive_nodes` and `IncidentContext.from_items` compute an
+    incoming turn's relations.
+
+**Mutation table.** 49 mutants were run with `python -B`: 48 killed, and 1 equivalent.
+- The equivalent one is M9: an extra prune before the insert, with the post-insert prune
+  kept, gives the same end state. M9b, a prune only before the insert, is killed.
+- D9, "empty" meaning no nodes, first survived. That was a real gap, closed by
+  `test_an_incident_with_no_node_is_still_retained`.
+- The families covered:
+  - bounds and constants (M1-M5);
+  - prune order, transaction scope and self-protection (M6-M10);
+  - AUTOINCREMENT and the column guard (M11-M12);
+  - NULL ids and parsing (M13-M14b);
+  - truncation (M15-M19);
+  - read-time filters (M20-M21);
+  - the empty-identity refusal (M22);
+  - the 2xx gate, the owner gate, failure isolation, model-supplied context, context
+    timing, registry wiring and log redaction (T1-T9);
+  - word boundaries, URL stripping, job tokens, case, and rule-key scope (D1-D13).
+
+**Review gate (orchestrator).**
+- The suite was re-run in the worktree: 2821 passed, 1 skipped.
+- `derive_nodes` was probed on `rp50`, `vps_x`, `my-rp2-box`, a URL carrying
+  `vps`/`rp5`, and an RFC 5737 address with a job label. All were correct.
+- `parse_handoff_message_id` was probed on both forms, an empty id and a blank string.
+- It was confirmed that retention sits after `raise_for_status()`.
+
+**Inverted tests:** none. `tests/test_tool_publish_handoff.py` is unmodified and green.

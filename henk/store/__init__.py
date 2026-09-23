@@ -6,7 +6,8 @@ file: :class:`MemoryStore` (capped, type-namespaced owner facts),
 :class:`SqliteInboxStore` (append-only capture inbox behind the
 :class:`InboxStore` seam, so a future personal-inbox service can take over
 without touching agent logic — design D1) and :class:`ReminderStore` (one-shot
-reminders, nothing ever deleted).
+reminders, nothing ever deleted). :class:`HandoffStore` is the triage handoff
+archive, bounded by count and age, which no tool reads.
 
 :meth:`Store.transaction` is the boundary all three share: an explicit
 ``BEGIN IMMEDIATE`` context manager on an autocommit connection, so "these writes
@@ -21,6 +22,13 @@ from henk.store.errors import (
     EmptyContentError,
     InvalidContentError,
     StoreError,
+)
+from henk.store.handoffs import (
+    HANDOFF_DOCUMENT_MAX_BYTES,
+    HANDOFF_MAX_AGE_SECONDS,
+    HANDOFF_MAX_COUNT,
+    HandoffStore,
+    RetainedHandoff,
 )
 from henk.store.inbox import (
     DEFAULT_PAGE_SIZE,
@@ -70,6 +78,11 @@ __all__ = [
     "DEFAULT_PAGE_SIZE",
     "DONE",
     "EmptyContentError",
+    "HANDOFF_DOCUMENT_MAX_BYTES",
+    "HANDOFF_MAX_AGE_SECONDS",
+    "HANDOFF_MAX_COUNT",
+    "HandoffStore",
+    "RetainedHandoff",
     "InboxItem",
     "InboxPage",
     "InboxStore",
