@@ -342,38 +342,38 @@ The capture is persisted only on rp5's audit volume.
 
 ## 7. Event-turn framing, times, recall and markers (agent-core, incident-triage, memory-store)
 
-- [ ] 7.1 Tests first:
+- [x] 7.1 Tests first:
   - *Event turn framed for triage* (the order: recall, block, framing);
   - *Event turn with an empty store carries no recall block*;
   - *Framing follows the untrusted block*.
-- [ ] 7.2 Tests first. Invert `test_recall.py:208` and `:217`.
+- [x] 7.2 Tests first. Invert `test_recall.py:208` and `:217`.
   - *Event turns get memory*;
   - *Recall given at the event turn is not repeated*;
   - *Owner follow-up gets recall when the event turn could not read it*;
   - *Recall in an event turn cannot be written back*;
   - *Event turns stay tainted with recall*;
   - the continuation record inherits `memory_hash`.
-- [ ] 7.3 Tests first:
+- [x] 7.3 Tests first:
   - *Framing directs branches, window, and missing evidence*;
   - *The handoff instruction asks for times*;
   - *Memory is framed as context only when present*;
   - *Docs are named only when registered* (no numbering gap);
   - *The arc and its check are unchanged*: the existing `test_triage_framing.py` arc
     tests stay green unmodified.
-- [ ] 7.4 Tests first:
+- [x] 7.4 Tests first:
   - *Both times are present*;
   - *The notification time is not presented as onset*;
   - *A missing notification time is not invented*.
-- [ ] 7.5 Tests first:
+- [x] 7.5 Tests first:
   - *A payload cannot close the block early*: exactly one begin and one end marker, and a
     recall-block marker placed in a payload is neutralised;
   - *A memory cannot open or close a block*: a stored memory containing the recall end
     marker, and one containing the untrusted begin marker;
   - *A memory cannot close the recall block*: the recall hash is computed over the
     neutralised render, and the stored memory is unchanged.
-- [ ] 7.6 Tests first, *Owner turn unaffected* and *Handoff history does not enter
+- [x] 7.6 Tests first, *Owner turn unaffected* and *Handoff history does not enter
   recall*.
-- [ ] 7.7 Implement:
+- [x] 7.7 Implement:
   - `compose_event_turn_content` taking the recall block, the registered tool names and
     the incident times;
   - the D6 framing;

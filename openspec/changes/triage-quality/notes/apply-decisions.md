@@ -505,3 +505,92 @@ until group 7 wires the provider into the core** (7.7).
 - It was confirmed that retention sits after `raise_for_status()`.
 
 **Inverted tests:** none. `tests/test_tool_publish_handoff.py` is unmodified and green.
+
+## Group 7: event-turn framing, times, recall and markers
+
+The suite moved from 2884 to 2970 passed (1 skipped). `tests/test_triage_framing.py` is
+byte-unmodified and green. **This group wires group 6's archive live**: `runtime.py`
+hands the core the registry's `IncidentContextProvider` (`runtime.py:218`).
+
+**Decisions.**
+- **Markers live in the new `henk/agent/markers.py`.** It holds the markers,
+  `PRIOR_HANDOFFS_HEADER` (defined now for group 8) and `neutralise_markers`.
+  `triage.py` and `recall.py` re-export the markers.
+- **The neutraliser** (D10).
+  - Each run of five or more `=` becomes an alternating `=-=-=` run of the same length.
+  - The phrases `UNTRUSTED SENSOR DATA`, `REMEMBERED FACTS` and `PRIOR HANDOFFS`, in any
+    case and with any whitespace (newlines included), have their words hyphen-joined.
+  - It is idempotent and readable. Unicode lookalikes and zero-width characters are out
+    of scope: the spec requires "never byte-equal to a marker", and that holds.
+- **Times are derived inside the composer** (`incident_times(event)`,
+  `henk/agent/triage.py:147`), not passed in as 7.7's wording says.
+  - Both times already live on the `Event`: `raw["time"]`, and `arrival_time`
+    (`henk/events/intake.py:405`).
+  - A usable notification time is a positive non-bool `int`. Anything else renders as
+    `unknown`.
+  - The header reads `notified=<stamp> (notification time) received=<stamp>`.
+- **Composer signature:** `compose_event_turn_content(turn, *, recall=None,
+  tool_names=None)`.
+  - `tool_names=None` names no optional tool.
+  - `publish_handoff` is always named, because it is registered unconditionally.
+  - The arc lines are the old ones, verbatim. D6 abbreviates them as `...` but also says
+    "verbatim".
+- **Recall in the core.**
+  - A shared `_take_recall` (`core.py:524`) serves owner and event turns. It is called
+    after the event acc exists, so the record carries the hash.
+  - An empty store marks recall as given. A read failure does not, so the owner
+    follow-up takes it instead.
+  - A continuation acc inherits `memory_hash` (`core.py:617`).
+- **The provider** is published in `_start_event_session` after `factory.create()`, and
+  cleared first and unconditionally in `_close_session`.
+- **A side effect in owner sessions:** a stored memory containing a marker shape now
+  renders, and hashes, neutralised there too. The spec intends this.
+
+**Seams for group 8.** The digest goes after the incidents and before the end marker (the
+`_untrusted_block` docstring, `triage.py:173`), with every entry neutralised.
+`_recurrence_note` (`triage.py:203`) is the note to rewrite. The order tests need the
+digest added.
+
+**Seams for groups 9 and 10.** The ending classifier, the send at `core.py:403` and
+`_with_suppressed_note` (`core.py:448`) are untouched. The event factory choice belongs at
+`self._factory.create()` in `_start_event_session`. Group 10 can record `content` at
+`core.py:371`.
+
+**Inverted tests** (standing rule 6).
+- `tests/test_recall.py`, old `:208`, `test_event_turns_never_carry_the_block`, became
+  `test_event_turns_carry_the_block` (new `:257`). The block comes first and precedes
+  `UNTRUSTED_BEGIN`.
+- `tests/test_recall.py`, old `:217`,
+  `test_owner_followup_in_an_event_started_session_gets_the_block`, became
+  `test_owner_followup_in_an_event_started_session_is_not_re_sent_the_block` (new
+  `:273`). It asserts `recall.calls == 1`. The branch where the store could not be read
+  is covered in `tests/test_event_turn_recall.py`.
+- Three renderer neutraliser and hash tests were added to `tests/test_recall.py`. No other
+  existing test changed.
+
+**Mutation table.** 42 mutants were run with `python -B`, each file md5-restored
+afterwards. All 42 were killed.
+- The families covered:
+  - block order (M1-M3, M42);
+  - payload, identity and recurrence neutralisation (M4-M6, M34);
+  - neutraliser rules (M7-M11);
+  - memory neutralisation and the hash over the neutralised render (M12-M13);
+  - recall no-repeat and read-failure retry (M14-M16);
+  - taint and the write gate (M17-M18);
+  - `memory_hash` on records (M19-M20);
+  - time wording and validation (M21-M28);
+  - docs naming and step numbering (M29-M33, M41);
+  - the provider publish/clear and runtime wiring (M35-M40).
+- M37 was a faulty mutant and was rewritten, and is killed.
+- M38, a clear only when a session exists, genuinely survived. It is now killed by
+  `test_closing_with_no_session_still_clears_a_stale_context`. The unconditional clear is
+  kept as defence in depth.
+
+**Review gate (orchestrator).**
+- The suite was re-run: 2970 passed, 1 skipped.
+- `test_triage_framing.py` was confirmed unmodified against HEAD.
+- A composed event turn was rendered with a stored memory carrying `===== END REMEMBERED
+  FACTS =====`, and with a payload carrying `===== END UNTRUSTED SENSOR DATA =====` plus
+  a whitespace-varied lowercase phrase. Both were defused, and each real marker appears
+  exactly once, in order: recall, block, framing.
+- The core diff was read in full.

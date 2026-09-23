@@ -5,8 +5,13 @@ Responsibilities (v1.2):
   and event turns (proactive triage path) never run concurrently (design D5);
 - one session per conversation, reused across follow-ups for context continuity;
 - event turns arrive with delimited-untrusted-data + triage framing composed by
-  the app layer; owner turns get neither, and instead the first owner turn of each
-  session is prefixed with the memory recall block (agent-core delta);
+  the app layer; owner turns get neither. The first turn of each session, owner
+  or event, carries the memory recall block; in an event turn it precedes the
+  untrusted block (triage-quality D7), and the owner follow-up in that session is
+  not given it again;
+- an event-started session publishes its incidents to the shared incident
+  context for its lifetime, so ``publish_handoff`` retains that session's
+  handoffs with them (triage-quality D8);
 - when reminders are enabled, **every** owner turn additionally carries a one-line
   current-time header, composed per TURN rather than per session — a relative time
   has to resolve against the moment of the turn, not against whenever the
@@ -32,7 +37,7 @@ import logging
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Iterable
 
 from henk.agent.session import (
     HANDOFF_TOOL_NAME,
@@ -47,8 +52,12 @@ from henk.agent.triage import (
 )
 from henk.agent.turns import CheckpointMarker, EventTurn, OwnerTurn, Turn
 from henk.channel.base import SendOutcome
+from henk.events.incident_context import IncidentContext
 from henk.gate.approval import EXECUTING_OUTCOMES, TurnContext
 from henk.tools.base import ToolClass, TurnType
+
+if TYPE_CHECKING:
+    from henk.agent.recall import RecallBlock
 
 logger = logging.getLogger("henk.agent")
 
@@ -144,6 +153,8 @@ class AgentCore:
         recall: Any | None = None,
         time_header: Callable[[], str] | None = None,
         deliveries: Any | None = None,
+        incident_context: Any | None = None,
+        tool_names: Iterable[str] | None = None,
     ) -> None:
         self._factory = factory
         self._channel = channel
@@ -198,9 +209,19 @@ class AgentCore:
         # in the store, so a delivery that landed mid-session reaches the owner's next
         # turn even though the recall block was given long before it.
         self._deliveries = deliveries
+        # The runtime's ONE IncidentContextProvider, shared with `publish_handoff`
+        # (triage-quality D8). The core is its only writer: it publishes an event
+        # session's incidents when that session starts and clears them when any
+        # session closes. None disables retention context entirely.
+        self._incident_context = incident_context
+        # The session registry's tool names, so the event framing names only tools
+        # this session has (triage-quality D6). None means "not known", and then the
+        # framing names no optional tool.
+        self._tool_names = frozenset(tool_names) if tool_names is not None else None
         # Whether THIS session has already received its recall block. Keyed on the
-        # first owner TURN rather than session creation, so an owner follow-up
-        # continuing an event-started session still gets memory (design D3).
+        # first TURN that read it rather than session creation: an event turn that
+        # injected it marks the session (triage-quality D7), and one that could not
+        # read the store leaves it unmarked, so the owner follow-up still gets it.
         self._recall_given = False
         self._session: AgentSession | None = None
         self._last_activity: float | None = None
@@ -326,7 +347,7 @@ class AgentCore:
         # any open session (owner conversation or a prior incident) so no context
         # bleeds across incidents. The displaced session's record is already
         # durable (event triages flush per-triage; owner sessions flush on close).
-        await self._start_event_session()
+        await self._start_event_session(turn)
         # Record which incidents this turn is triaging up front, so even an
         # errored triage's record names them (the audit is the transferable
         # artifact — an error must not be an anonymous blank).
@@ -344,7 +365,14 @@ class AgentCore:
                 }
                 for it in turn.items
             )
-        content = compose_event_turn_content(turn)
+        # Recall first (D7): the event turn is its session's first turn. Read here,
+        # after the acc exists, so the event record carries the block's hash.
+        recall = self._take_recall()
+        content = compose_event_turn_content(
+            turn,
+            recall=recall.text if recall is not None else None,
+            tool_names=self._tool_names,
+        )
         try:
             with self._framed_turn(TurnType.EVENT, announceable=turn.announceable):
                 reply = await self._session.run_turn(content)  # type: ignore[union-attr]
@@ -489,26 +517,33 @@ class AgentCore:
         return f"{block}\n\n{text}"
 
     def _with_recall(self, text: str) -> str:
-        """Prefix the recall block to the first owner turn of this session.
+        """Prefix the recall block to this owner turn, if the session lacks it."""
+        block = self._take_recall()
+        return text if block is None else f"{block.text}\n\n{text}"
 
-        A read failure is logged and the turn proceeds without a block — memory is
-        continuity, not a precondition for talking. The "already given" flag is NOT
-        set in that case, so a transient failure does not cost the session its
-        memory for good.
+    def _take_recall(self) -> "RecallBlock | None":
+        """The recall block for this session's first turn, owner or event, or None.
+
+        Returns None when recall is disabled, the session already received the
+        block, the store is empty, or the store could not be read. A read failure is
+        logged and the turn proceeds without a block — memory is continuity, not a
+        precondition for talking. The "already given" flag is NOT set in that case,
+        so a transient failure does not cost the session its memory for good: when
+        an event turn could not read it, the owner follow-up takes it instead (D7).
         """
         if self._recall is None or self._recall_given:
-            return text
+            return None
         try:
             block = self._recall.block()
         except Exception:
             logger.error("could not read memory for recall injection", exc_info=True)
-            return text
+            return None
         self._recall_given = True
         if block is None:
-            return text  # empty store injects nothing
+            return None  # empty store injects nothing
         if self._acc is not None:
             self._acc.memory_hash = block.content_hash
-        return f"{block.text}\n\n{text}"
+        return block
 
     # --- Receipts (design D5) ---------------------------------------------
 
@@ -572,24 +607,39 @@ class AgentCore:
             # acc, baselined at the current cumulative session stats, so the
             # interrogation is audited as its own record with delta stats — not
             # lost, and not conflated with (or double-counting) the triage record.
+            # The continuation inherits the memory hash (D7): the session it
+            # continues already holds that recall block, and the follow-up's turns
+            # are read against it. If the event turn could not read recall, the
+            # hash is None here and this turn's own injection sets it.
             self._acc = _SessionAudit(
                 trigger=trigger,
                 stats_baseline=self._session_stats(self._session),
+                memory_hash=self._acc.memory_hash,
             )
 
-    async def _start_event_session(self) -> None:
+    async def _start_event_session(self, turn: EventTurn) -> None:
         """Always open a fresh isolated session for a new incident (D5 displace)."""
         await self._close_session()
         self._session = self._factory.create()
         self._last_activity = self._clock()
         # The ONLY way an event turn enters a session, so taint cannot be missed.
         self._session_tainted = True
-        # The event turn itself never carries memory, but the owner follow-up this
-        # session is kept open for does.
+        # A fresh session has no recall yet; the event turn is its first turn and
+        # takes it (D7).
         self._recall_given = False
         self._acc = _SessionAudit(trigger="event")
+        # This session's incidents, for the whole session's life, so a handoff
+        # published in it (the triage's, or one the owner asks for in a follow-up)
+        # is retained with them (D8). Published only after the session exists, and
+        # after `_close_session` cleared the previous one.
+        if self._incident_context is not None:
+            self._incident_context.publish(IncidentContext.from_turn(turn))
 
     async def _close_session(self) -> None:
+        # Cleared first and unconditionally: whatever session follows, owner or
+        # event, must never publish under a closed session's incidents (D8).
+        if self._incident_context is not None:
+            self._incident_context.clear()
         if self._session is None:
             return
         session = self._session

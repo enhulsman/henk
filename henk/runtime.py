@@ -98,8 +98,9 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
     resolver = build_time_resolver(config)
     # ONE incident context for the whole runtime (triage-quality D8):
     # `publish_handoff` reads it to archive a handoff with its session's incidents,
-    # and the agent core is its only writer. Until the core is handed this same
-    # instance, it stays empty and nothing is archived.
+    # and the agent core is its only writer. The core below is handed this SAME
+    # instance; a second provider would leave the tool's copy empty forever, and
+    # nothing would ever be archived.
     incident_context = IncidentContextProvider()
     registry = build_production_registry(
         config,
@@ -201,7 +202,8 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
             reminder_receipts=reminder_receipts,
             inbox_page_size=config.store.inbox_page_size,
         ),
-        # Memory recall for the first owner turn of each session (D3).
+        # Memory recall for the first turn of each session, owner or event (D3;
+        # triage-quality D7).
         recall=MemoryRecall(stores.memories, limit=config.store.recall_render_limit),
         # The per-turn current-time header, composed from the same resolver — so the
         # time the model reasons from and the time the owner is told read identically.
@@ -211,6 +213,13 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         # The delivered-reminder block: what the scheduler sent, told back to Henk on
         # the owner's next turn. Same repository and resolver as everything else.
         deliveries=_delivery_note(config, stores, resolver),
+        # The core publishes an event session's incidents here, and clears them on
+        # session close; `publish_handoff` reads them (triage-quality D8).
+        incident_context=incident_context,
+        # The event framing names only tools this registry holds (triage-quality
+        # D6): the same registry, built from the same config, that the system
+        # prompt enumerates.
+        tool_names=registry.names(),
     )
     dispatcher = Dispatcher(AllowlistFilter(config.owner.id), gate, core)
 
