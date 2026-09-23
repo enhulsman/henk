@@ -203,7 +203,9 @@ existing `henk_audit` volume (already in the rp5 backup allowlist).
 
 - `owner.id` — the owner identity as Signal reports it (see the deploy-verify note below).
 - `signal.bridge_url` / `signal.account` / `signal.safe_length`.
-- `agent.model` (default `claude-sonnet-5`), `agent.idle_timeout_seconds` (3600),
+- `agent.model` (default `claude-sonnet-5`), `agent.effort` (`high`; `low`–`max`, or
+  null for the CLI default), `agent.thinking` (`adaptive` or `disabled`),
+  `agent.idle_timeout_seconds` (3600),
   `agent.approval_timeout_seconds` (300), `agent.system_prompt`.
 - `endpoints.{gatus,prometheus,todo,ntfy}` base URLs + timeouts; `ntfy.topic`.
   (`endpoints.taiga` is retained but unused in v1.)

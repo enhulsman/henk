@@ -36,6 +36,11 @@ signal:
 
 agent:
   model: "claude-sonnet-5"
+  # Reasoning settings passed to the SDK explicitly, not left to the bundled
+  # CLI's per-model default. effort: low|medium|high|xhigh|max; thinking:
+  # adaptive|disabled. null on either defers to the CLI.
+  effort: "high"
+  thinking: "adaptive"
   idle_timeout_seconds: 3600
   approval_timeout_seconds: 300
 

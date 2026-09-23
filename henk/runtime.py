@@ -137,6 +137,8 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         gate,
         model=config.agent.model,
         system_prompt=config.agent.system_prompt,
+        effort=config.agent.effort,
+        thinking=config.agent.thinking,
     )
 
     # Durability wiring (design D1/D2): only when events are enabled. The

@@ -245,9 +245,22 @@ def build_system_prompt(
     )
 
 
+#: The SDK's effort levels (``claude_agent_sdk.types.EffortLevel``, pinned 0.2.123).
+EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+#: Thinking modes offered in config. ``enabled`` is not among them: it needs a
+#: token budget, which current models reject.
+THINKING_MODES: tuple[str, ...] = ("adaptive", "disabled")
+
+
 @dataclass(frozen=True)
 class AgentConfig:
     model: str = "claude-sonnet-5"
+    #: Passed to the SDK explicitly rather than left to the bundled CLI's default,
+    #: which is unstated and differs per model (Opus 5.5 defaults to medium).
+    #: ``None`` defers to the CLI. rp5's config carries neither key, so these
+    #: defaults are the effective values there.
+    effort: str | None = "high"
+    thinking: str | None = "adaptive"
     idle_timeout_seconds: int = 3600
     approval_timeout_seconds: int = 300
     #: The v1 prompt. Overridden at load time when reminders are enabled, so with
@@ -833,6 +846,12 @@ class Config:
             ),
             agent=AgentConfig(
                 model=agent_sec.get("model", AgentConfig.model),
+                effort=_require_choice(
+                    agent_sec, "effort", AgentConfig.effort, EFFORT_LEVELS, "agent"
+                ),
+                thinking=_require_choice(
+                    agent_sec, "thinking", AgentConfig.thinking, THINKING_MODES, "agent"
+                ),
                 idle_timeout_seconds=int(
                     agent_sec.get("idle_timeout_seconds", AgentConfig.idle_timeout_seconds)
                 ),
@@ -1230,6 +1249,27 @@ def _require_owner_timezone(
             "rather than firing every reminder in the wrong one."
         ) from exc
     return key
+
+
+def _require_choice(
+    section: Mapping[str, Any],
+    key: str,
+    default: str | None,
+    choices: tuple[str, ...],
+    section_name: str,
+) -> str | None:
+    """Read an optional enumerated setting; an explicit null means "unset".
+
+    Refused at load rather than passed through, so a typo fails on startup instead
+    of as a CLI error on the first turn.
+    """
+    value = section.get(key, default)
+    if value is None or value in choices:
+        return value
+    raise ConfigError(
+        f"{section_name}.{key} ({value!r}) must be one of {', '.join(choices)}, "
+        "or null to use the CLI default"
+    )
 
 
 def _require_safe_length(signal_sec: Mapping[str, Any]) -> int:

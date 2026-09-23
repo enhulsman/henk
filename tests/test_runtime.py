@@ -182,3 +182,19 @@ async def test_signal_bridge_takes_every_timeout_from_config():
         assert app._adapter._safe_length == config.signal.safe_length
     finally:
         await client.aclose()
+
+
+async def test_reasoning_settings_reach_the_session_factory():
+    # Non-default values, so a wiring that dropped them and fell back to the
+    # factory's own None defaults cannot pass by coincidence.
+    base = Config.load(SAMPLE, env={})
+    config = dataclasses.replace(
+        base, agent=dataclasses.replace(base.agent, effort="max", thinking="disabled")
+    )
+    app, client = build_runtime(config)
+    try:
+        factory_config = app._core._factory.config
+        assert factory_config.effort == "max"
+        assert factory_config.thinking == "disabled"
+    finally:
+        await client.aclose()

@@ -104,13 +104,22 @@ class ClosedToolsetConfig:
     #: Deliberately empty: auto-approving a tool skips ``can_use_tool`` and would
     #: bypass the gate. Every call must go through the callback.
     allowed_tools: tuple[str, ...] = ()
+    #: Reasoning settings passed to the SDK. ``None`` leaves the bundled CLI's own
+    #: default in force (see ``reasoning_options``).
+    effort: str | None = None
+    thinking: str | None = None
 
     def auto_approves_any(self) -> bool:
         return len(self.allowed_tools) > 0
 
 
 def build_closed_toolset_config(
-    registry: ToolRegistry, *, model: str, system_prompt: str
+    registry: ToolRegistry,
+    *,
+    model: str,
+    system_prompt: str,
+    effort: str | None = None,
+    thinking: str | None = None,
 ) -> ClosedToolsetConfig:
     # registry is accepted for symmetry/future use; the closed-toolset guarantee
     # comes from the empty allow-list + default-deny callback, not from naming
@@ -121,7 +130,24 @@ def build_closed_toolset_config(
         disallowed_tools=tuple(BUILTIN_HOST_TOOLS),
         permission_mode="default",
         allowed_tools=(),
+        effort=effort,
+        thinking=thinking,
     )
+
+
+def reasoning_options(config: ClosedToolsetConfig) -> dict[str, Any]:
+    """The ``ClaudeAgentOptions`` reasoning kwargs for ``config``.
+
+    An unset setting is omitted rather than passed as ``None``, so the CLI's own
+    default applies to it. ``thinking`` is a mode name in config and the SDK's
+    ``{"type": mode}`` shape here.
+    """
+    options: dict[str, Any] = {}
+    if config.effort is not None:
+        options["effort"] = config.effort
+    if config.thinking is not None:
+        options["thinking"] = {"type": config.thinking}
+    return options
 
 
 class SdkSessionFactory:
@@ -140,11 +166,17 @@ class SdkSessionFactory:
         *,
         model: str,
         system_prompt: str,
+        effort: str | None = None,
+        thinking: str | None = None,
     ) -> None:
         self._registry = registry
         self._gate = gate
         self._config = build_closed_toolset_config(
-            registry, model=model, system_prompt=system_prompt
+            registry,
+            model=model,
+            system_prompt=system_prompt,
+            effort=effort,
+            thinking=thinking,
         )
 
     @property
@@ -236,6 +268,7 @@ class SdkSessionFactory:
             setting_sources=[],
             # Only the explicitly-configured in-process MCP server.
             strict_mcp_config=True,
+            **reasoning_options(self._config),
         )
         # name → tool_class so the audit record's tool_calls carry the class the
         # SDK stream does not report (the model only sees the mcp__henk__ name).
