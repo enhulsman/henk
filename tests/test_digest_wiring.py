@@ -392,7 +392,8 @@ async def test_an_event_turn_through_the_runtime_carries_the_digest(tmp_path: Pa
         _retain(core._handoff_archive, "RUNTIME-PRIOR", at=core._handoff_archive.store.clock()
                 - DAY)
         factory = EventSessionFactory()
-        core._factory = factory
+        # The event factory (D11) creates event sessions; route both to the fake.
+        core._factory = core._event_factory = factory
         await core.process(_turn())
         await core.aclose()
     finally:

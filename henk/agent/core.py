@@ -23,6 +23,13 @@ Responsibilities (v1.2):
   deterministic action never costs a model turn (design D8);
 - event-turn output routes to the proactive owner-directed send, suppressed for
   non-announceable (cap-overflow) incidents;
+- event sessions come from the triage profile's factory when one is wired, and
+  every record names the profile and effort of the factory that created its
+  session, owner follow-ups in a triage session included (triage-quality D11);
+- each triage turn's ending is classified from the SDK's structured signals
+  before its text; an ending other than ``completed`` discards the reply, and an
+  announceable incident gets the application-authored incomplete-triage notice
+  instead (triage-quality D12);
 - every agent turn is framed for the gate with its turn type, announceability and
   the session's taint (design D10), cleared on every exit path including errors:
   the gate can only enforce turn scope if the core tells it what turn is running;
@@ -43,11 +50,18 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Iterable
 
 from henk.agent.digest import read_digest
+from henk.agent.ending import (
+    COMPLETED,
+    classify_ending,
+    incomplete_triage_notice,
+)
 from henk.agent.session import (
+    CHAT_PROFILE,
     HANDOFF_TOOL_NAME,
     AgentSession,
     SessionFactory,
     SessionStats,
+    TurnEnding,
 )
 from henk.agent.triage import (
     check_triage_arc,
@@ -136,6 +150,13 @@ class _SessionAudit:
     #: possibly empty, on an event-triage acc; None on every other acc, owner
     #: continuations included (audit-log v5).
     prior_handoff_ids: list[int] | None = None
+    #: The profile, effort and model of the factory that CREATED this acc's session
+    #: (triage-quality D11), never inferred from the trigger. A continuation acc
+    #: copies them, so an owner follow-up in a triage session records ``event``.
+    #: ``model`` is only the record's fallback when the stream reported none.
+    profile: str = CHAT_PROFILE
+    effort: str | None = None
+    model: str | None = None
     #: Cumulative session stats at this acc's start; when set, the acc's record
     #: reports only stats accrued SINCE it (delta), so an owner interrogation
     #: continuing an event session is audited without double-counting the triage.
@@ -164,8 +185,13 @@ class AgentCore:
         incident_context: Any | None = None,
         tool_names: Iterable[str] | None = None,
         handoff_archive: Any | None = None,
+        event_factory: SessionFactory | None = None,
     ) -> None:
         self._factory = factory
+        # The triage profile's factory (D11): used ONLY by `_start_event_session`.
+        # It shares the chat factory's registry and gate. None (unit tests, and any
+        # single-factory wiring) makes event sessions come from `factory` as before.
+        self._event_factory = event_factory
         self._channel = channel
         self._idle_timeout = idle_timeout_seconds
         self._clock = clock
@@ -392,42 +418,67 @@ class AgentCore:
             tool_names=self._tool_names,
             digest=digest,
         )
+        reply: str | None = None
+        raised = False
         try:
             with self._framed_turn(TurnType.EVENT, announceable=turn.announceable):
                 reply = await self._session.run_turn(content)  # type: ignore[union-attr]
         except Exception:
             logger.exception("triage turn failed")
-            if self._acc is not None:
-                self._acc.outcome = "error"
-            self._last_activity = self._clock()
-            # D1/D3: record the errored triage and advance the cursor anyway, so
-            # a poison event is not reprocessed forever.
-            await self._flush_event_triage(turn)
-            return
-
-        arc = check_triage_arc(reply)
+            raised = True
+        # D12: how the turn ended, from the SDK's structured signals first and the
+        # reply text last. Read after a raise too: a result that reported the
+        # error was observed before the stream raised.
+        ending = classify_ending(
+            self._session_ending(self._session), raised=raised, reply=reply
+        )
+        completed = ending.outcome == COMPLETED
         if self._acc is not None:
-            self._acc.turn_count += 1
-            self._acc.triage_arc_complete = arc.complete
-            self._acc.confidence = arc.confidence
-            self._acc.diagnosis = extract_diagnosis(reply)
+            self._acc.outcome = ending.outcome
+            if not raised:
+                self._acc.turn_count += 1
+            if completed:
+                arc = check_triage_arc(reply or "")
+                self._acc.triage_arc_complete = arc.complete
+                self._acc.confidence = arc.confidence
+                self._acc.diagnosis = extract_diagnosis(reply or "")
+            else:
+                # The reply text is discarded, not parsed: an SDK-rendered error
+                # or refusal is not a triage, and has no diagnosis to record.
+                self._acc.triage_arc_complete = False
         self._last_activity = self._clock()
 
         # D3: make this triage durable now (session stays open for owner
-        # interrogation), then advance the checkpoint gated on that write.
-        await self._flush_event_triage(turn)
+        # interrogation), then advance the checkpoint gated on that write. An
+        # errored triage is recorded and advances too (D1), so a poison event is
+        # not reprocessed forever.
+        handoff_id = await self._flush_event_triage(turn)
 
         # Proactive send only for announceable incidents; cap-overflow triage
-        # still ran (and its handoff + audit record are already durable).
-        if turn.announceable and reply:
-            await self._send_proactively(
-                self._with_suppressed_note(reply, turn),
-                what="triage message",
-                failure_notice=TRIAGE_FAILURE_NOTICE,
+        # still ran (and its handoff + audit record are already durable), and a
+        # cap-suppressed incomplete triage stays silent too.
+        if not turn.announceable:
+            return
+        if completed:
+            text, what = reply or "", "triage message"
+        else:
+            # The honest form of the message this incident was going to produce
+            # (D12): application-authored, no model text, and the suppressed count
+            # rides on it exactly as on a model-written triage.
+            text = incomplete_triage_notice(
+                turn, ending, handoff_published=bool(handoff_id)
             )
+            what = "incomplete-triage notice"
+        await self._send_proactively(
+            self._with_suppressed_note(text, turn),
+            what=what,
+            failure_notice=TRIAGE_FAILURE_NOTICE,
+        )
 
-    async def _flush_event_triage(self, turn: EventTurn) -> None:
+    async def _flush_event_triage(self, turn: EventTurn) -> str | None:
         """Write the event triage's record, wire recurrence, advance the cursor.
+
+        Returns the handoff message id this triage published, or None.
 
         The checkpoint advance is gated on the audit write succeeding; a GENUINE
         write failure (audit configured but the write returned False) latches the
@@ -435,7 +486,7 @@ class AgentCore:
         no-audit flush returns False too (M4) but is a designed no-op — it must
         not latch or notify, hence the ``self._audit is not None`` gate."""
         if self._acc is None or self._acc.flushed:
-            return
+            return None
         ok, handoff_id = self._write_audit_record(self._session, self._acc)
         self._acc.flushed = True
         if self._handoff_sink is not None and handoff_id:
@@ -455,6 +506,7 @@ class AgentCore:
                 logger.warning("failed to send degraded-durability notice", exc_info=True)
         if ok and turn.offset:
             self._advance_checkpoint(turn.offset)
+        return handoff_id
 
     def _advance_checkpoint(self, offset: str | None) -> None:
         # Frozen once any genuine flush failed: the cursor must never advance past
@@ -619,7 +671,7 @@ class AgentCore:
             self._last_activity = now
             self._session_tainted = False  # a brand-new session; no incident in it
             self._recall_given = False
-            self._acc = _SessionAudit(trigger=trigger)
+            self._acc = _SessionAudit(trigger=trigger, **self._profile_of(self._factory))
         elif self._acc is not None and self._acc.flushed:
             # Reusing a session whose event-triage record already flushed (D3): the
             # owner is now interrogating that incident. Start a fresh continuation
@@ -630,23 +682,30 @@ class AgentCore:
             # continues already holds that recall block, and the follow-up's turns
             # are read against it. If the event turn could not read recall, the
             # hash is None here and this turn's own injection sets it.
+            # It keeps the profile too (D11): the session it continues was made by
+            # the event factory, so an owner follow-up there records `event`.
             self._acc = _SessionAudit(
                 trigger=trigger,
                 stats_baseline=self._session_stats(self._session),
                 memory_hash=self._acc.memory_hash,
+                profile=self._acc.profile,
+                effort=self._acc.effort,
+                model=self._acc.model,
             )
 
     async def _start_event_session(self, turn: EventTurn) -> None:
         """Always open a fresh isolated session for a new incident (D5 displace)."""
         await self._close_session()
-        self._session = self._factory.create()
+        # The triage profile (D11): the only place the event factory is used.
+        factory = self._event_factory if self._event_factory is not None else self._factory
+        self._session = factory.create()
         self._last_activity = self._clock()
         # The ONLY way an event turn enters a session, so taint cannot be missed.
         self._session_tainted = True
         # A fresh session has no recall yet; the event turn is its first turn and
         # takes it (D7).
         self._recall_given = False
-        self._acc = _SessionAudit(trigger="event")
+        self._acc = _SessionAudit(trigger="event", **self._profile_of(factory))
         # This session's incidents, for the whole session's life, so a handoff
         # published in it (the triage's, or one the owner asks for in a follow-up)
         # is retained with them (D8). Published only after the session exists, and
@@ -675,6 +734,18 @@ class AgentCore:
             await session.close()
         except Exception:  # pragma: no cover - best effort
             logger.warning("error closing session", exc_info=True)
+
+    @staticmethod
+    def _profile_of(factory: SessionFactory) -> dict[str, Any]:
+        """The profile, effort and model a factory stamps on its sessions' records.
+
+        A factory without ``profile`` (a test fake) is ``chat`` with no effort or
+        model, and the record's model then falls back to the core's."""
+        return {
+            "profile": getattr(factory, "profile", CHAT_PROFILE),
+            "effort": getattr(factory, "effort", None),
+            "model": getattr(factory, "model", None),
+        }
 
     async def aclose(self) -> None:
         """Flush and close the current session (shutdown / test boundary)."""
@@ -725,10 +796,12 @@ class AgentCore:
             approvals=acc.approvals,
             memory_hash=acc.memory_hash,
             prior_handoff_ids=acc.prior_handoff_ids,
+            profile=acc.profile,
+            effort=acc.effort,
             outcome=acc.outcome,
             announceable=acc.announceable,
             turn_count=acc.turn_count,
-            model=(stats.model if stats and stats.model else self._model),
+            model=(stats.model if stats and stats.model else (acc.model or self._model)),
             usage=(
                 {"input_tokens": stats.input_tokens,
                  "output_tokens": stats.output_tokens,
@@ -794,6 +867,23 @@ class AgentCore:
                 current.cache_read_input_tokens, baseline.cache_read_input_tokens
             ),
         )
+
+    @staticmethod
+    def _session_ending(session: AgentSession | None) -> TurnEnding | None:
+        """The session's last-turn ending signals, or None for "no signal".
+
+        ``ending()`` is optional on the protocol, like ``stats()``: a session
+        without it, or one whose ``ending()`` raises, reports nothing, and the
+        classifier then decides from the raise and the reply text alone."""
+        getter = getattr(session, "ending", None)
+        if getter is None:
+            return None
+        try:
+            ending = getter()
+        except Exception:
+            logger.warning("could not read the turn's ending signals", exc_info=True)
+            return None
+        return ending if isinstance(ending, TurnEnding) else None
 
     @staticmethod
     def _session_stats(session: AgentSession) -> SessionStats | None:

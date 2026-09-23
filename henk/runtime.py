@@ -18,6 +18,7 @@ from henk.agent.commands import OwnerCommands
 from henk.agent.core import AgentCore
 from henk.agent.recall import MemoryRecall
 from henk.agent.sdk_session import SdkSessionFactory
+from henk.agent.session import CHAT_PROFILE, EVENT_PROFILE
 from henk.app import App, Dispatcher
 from henk.audit import (
     AuditLog,
@@ -147,6 +148,20 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         system_prompt=config.agent.system_prompt,
         effort=config.agent.effort,
         thinking=config.agent.thinking,
+        profile=CHAT_PROFILE,
+    )
+    # The triage profile (triage-quality D11): a second factory over the SAME
+    # registry and gate, differing only in model, effort and thinking. Each event
+    # key absent from config already equals the resolved chat value
+    # (`Config.from_dict`), so with none configured the two build identically.
+    event_factory = SdkSessionFactory(
+        registry,
+        gate,
+        model=config.agent.event_model,
+        system_prompt=config.agent.system_prompt,
+        effort=config.agent.event_effort,
+        thinking=config.agent.event_thinking,
+        profile=EVENT_PROFILE,
     )
 
     # Durability wiring (design D1/D2): only when events are enabled. The
@@ -223,6 +238,9 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         # The SAME archive `publish_handoff` writes, read by the event path only
         # for the related-handoff digest (triage-quality D9).
         handoff_archive=stores.handoffs,
+        # Event sessions only; owner sessions, and every session after `/new` or
+        # idle expiry, come from `factory` above.
+        event_factory=event_factory,
     )
     dispatcher = Dispatcher(AllowlistFilter(config.owner.id), gate, core)
 

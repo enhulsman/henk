@@ -624,7 +624,9 @@ async def test_a_handoff_published_in_an_event_session_is_retained_through_the_w
     try:
         core = app._core
         tool = core._factory._registry.get("publish_handoff")
-        core._factory = _PublishingFactory(tool, "event handoff")
+        # Both profiles' factories (D11): the event turn and the owner turns
+        # after it must all run on this fake.
+        core._factory = core._event_factory = _PublishingFactory(tool, "event handoff")
         turn = _turn()
         await core.process(turn)
         await core.process("please publish a revised handoff")  # follow-up, same session
@@ -680,7 +682,8 @@ async def _framing_via_runtime(config: Config) -> str:
         core = app._core
         assert core._tool_names == frozenset(core._factory._registry.names())
         factory = EventSessionFactory()
-        core._factory = factory
+        # The event factory (D11) creates event sessions; route both to the fake.
+        core._factory = core._event_factory = factory
         await core.process(_turn())
         await core.aclose()
         return factory.created[0].contents[0]

@@ -406,7 +406,7 @@ The capture is persisted only on rp5's audit volume.
 
 ## 9. Triage profile and ending classifier (agent-core, incident-triage)
 
-- [ ] 9.1 Tests first:
+- [x] 9.1 Tests first:
   - *A configured triage profile applies to event sessions only*;
   - *Follow-ups stay on the triage profile*;
   - *Reset returns to the chat profile*;
@@ -414,7 +414,7 @@ The capture is persisted only on rp5's audit volume.
   - *The record names the profile*;
   - *A follow-up record names the factory's profile, not its trigger*;
   - *A plain owner session records the chat profile*.
-- [ ] 9.2 Tests first, with a fake SDK message stream built from 1.2's field paths:
+- [x] 9.2 Tests first, with a fake SDK message stream built from 1.2's field paths:
   - *An API error rendered as text is not delivered as the triage*: an
     `AssistantMessage.error` together with "API Error: …" text;
   - *A refusal produces an honest notice*: `stop_reason="refusal"` on the assistant
@@ -430,12 +430,12 @@ The capture is persisted only on rp5's audit volume.
 
   Assert that the classifier's order is structured signals first, that the notice
   carries no category and no model text, and that it is length-bounded.
-- [ ] 9.3 Tests first: a fake session with no `ending()` method is treated as reporting
+- [x] 9.3 Tests first: a fake session with no `ending()` method is treated as reporting
   no signal, so existing fakes keep working. `_SdkAgentSession.ending()` reflects the
   last turn only.
-- [ ] 9.4 Tests first: owner-acknowledgement's *Event turns are not bracketed* still holds
+- [x] 9.4 Tests first: owner-acknowledgement's *Event turns are not bracketed* still holds
   for event-factory sessions, if that change has landed.
-- [ ] 9.5 Implement:
+- [x] 9.5 Implement:
   - `ending()` on the `AgentSession` protocol, as an optional method (`session.py:50-62`),
     and in `_SdkAgentSession`;
   - the classifier;

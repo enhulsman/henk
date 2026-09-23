@@ -683,3 +683,121 @@ with the digest was added (`tests/test_handoff_digest.py:489`).
 - Group 9: `_process_event` gained one block before the `try` (`core.py:384-394`). The
   ending classifier, the send and `self._factory.create()` are untouched.
 - Group 10: record `content` right after composition. `digest.shown_ids` is on the acc.
+
+## Group 9: triage profile and ending classifier
+
+The classifier and notice are in `henk/agent/ending.py`. `TurnEnding` and the optional
+`ending()` are on the session protocol (`henk/agent/session.py`).
+`SdkSessionFactory(profile=...)` and `_EndingObserver` are in `henk/agent/sdk_session.py`.
+`event_factory` is used only in `_start_event_session`. The runtime builds a second
+factory over the SAME registry and gate. The suite moved from 3029 to 3115 passed, with
+2 skipped: both skips are SDK-gated `importorskip` tests, see below.
+
+**Decisions.**
+- **2.1 is re-asserted through the real runtime event factory**
+  (`test_defaults_change_nothing_through_the_runtime_event_factory`). It builds from
+  `Config.from_dict` dicts in 5 agent-section variants and never uses
+  `dataclasses.replace`.
+- **Classifier order** (`ending.py:103`):
+  1. `AssistantMessage.error`;
+  2. refusal, on the assistant or the result;
+  3. `result_is_error`, `api_error_status`, or a `terminal_reason` other than None or
+     `completed`;
+  4. a raise;
+  5. reply text starting with "API Error";
+  6. an empty reply;
+  7. completed.
+  - `subtype=success` with `is_error=True` is an error.
+  - The error class is only ever the SDK's closed enum, or `unknown`. The HTTP status is
+    shown only for an int in 100-599.
+  - An exception's class and message are never rendered.
+- **Deviations.**
+  - The "API Error" text heuristic is added as check 5, after every structured signal.
+  - The strict `terminal_reason` allowlist of {None, `completed`}.
+- **The allowlist was verified by the orchestrator against the bundled CLI 2.1.277.**
+  - Its full enum splits into two groups. The ones its `is_error` treats as errors are
+    `blocking_limit`, `rapid_refill_breaker`, `prompt_too_long`, `image_error`,
+    `model_error`, `api_error`, `malformed_tool_use_exhausted`, `budget_exhausted`,
+    `structured_output_retry_exhausted`, `tool_deferred_unavailable` and
+    `turn_setup_failed`.
+  - The ones it treats as non-errors are `aborted_streaming`, `aborted_tools`,
+    `stop_hook_prevented`, `hook_stopped`, `tool_deferred`, `max_turns`,
+    `background_requested` and `completed`.
+  - For a triage, `max_turns` and `aborted_*` really are incomplete.
+  - `hook_stopped` cannot occur: Henk's only hook is the PreToolUse gate, which returns
+    `permissionDecision: deny` and never `continue: false` (`henk/agent/permission.py:67-71`).
+  - Henk sets no Stop hooks and uses no deferred or background tools.
+  - If a future CLI adds a benign value, the failure is honest (a notice), never silent.
+    13.4 must confirm that a real triage records `completed`.
+- **The notice has three lines and is bounded at 320 characters** before the suppressed
+  note:
+  - `[AI] Triage incomplete for <name>: <how>.`
+  - `No diagnosis was produced.`
+  - `Pickup:`, which points at henk-pickup when a handoff was published and at the audit
+    record otherwise.
+  - The name is flattened to one line and bounded at 80 characters with a storm
+    `(+N more)`.
+  - It goes through `_with_suppressed_note` on the `TRIAGE_FAILURE_NOTICE` path.
+- **In the core,** any ending other than completed:
+  - sets `triage_arc_complete=False`, keeps diagnosis and confidence null, and never
+    parses the reply;
+  - leaves the session open for owner follow-up.
+- **Profiles.**
+  - Profile, effort and model are read from the factory with `getattr`. A fake without
+    them records `chat`, null effort and the core's model.
+  - The record's model fallback is now the creating factory's model (`core.py:804`).
+  - A continuation acc copies profile, effort and model.
+- **`ending()` resets at the top of each `run_turn`.**
+  - With the real client, a trailing `ResultError` can surface on the next receive
+    (`client.py:574-577`).
+  - SDK 0.2.157 raises a typed `ResultError`, not a bare `Exception`, and the order is
+    unchanged.
+- **9.4 is not applicable.** `openspec/changes/owner-acknowledgement/` holds only a
+  proposal, with no tasks and no code.
+
+**Carry-forwards.**
+- **Group 13: run the two SDK-gated tests inside the container before deploying.** They
+  are `tests/test_config_reasoning.py:88` and `tests/test_triage_ending.py:143`, which
+  checks the fake shapes against the installed SDK. The local `.venv` has no
+  `claude_agent_sdk`, so both skip here.
+- **Owner path, out of scope.** Owner turns are not classified. An owner reply can still
+  deliver "API Error" text, and a trailing `ResultError` from a failed triage may surface
+  on the owner's follow-up. This is a candidate for a later change.
+- **Group 10 seams:**
+  - the composed content is at `core.py:415`;
+  - `reply` and `raised` are at `:421-428`, and the `TriageEnding` at `:432`;
+  - set `recording_id` on the acc before `_flush_event_triage` (`:455`), which now returns
+    `handoff_id`;
+  - the transcript accumulator belongs beside `self._ending.observe` in
+    `_SdkAgentSession.run_turn` (`sdk_session.py:505-520`).
+
+**Tests modified.** In three tests, event sessions now come from `core._event_factory`,
+so each routes both factories to the same fake. No assertion changed.
+- `tests/test_digest_wiring.py:395`
+- `tests/test_event_turn_recall.py:627`
+- `tests/test_event_turn_recall.py:685`
+
+**Mutation table.** 77 mutants were run with `python -B`, each file md5-restored. All 77
+were killed.
+- Two first survived. Both were redundant code, which was removed and then re-mutated:
+  - a `type() is int` check that the 100-599 range already covers;
+  - a `hasattr(subtype)` clause in the assistant discriminator.
+- The families covered:
+  - classifier order and each signal (M1-M13, M34-M39);
+  - status and class rendering (M14-M18, M77);
+  - notice bounds, flattening, storm count, pickup, category and model text, and line
+    order (M19-M29);
+  - last-turn reset (M30-M31);
+  - observer wiring (M32-M41);
+  - core handling of the ending, including withholding, the suppressed path and the
+    notice path (M42-M55);
+  - profile routing, the record fields and the continuation copy (M56-M65);
+  - runtime factory construction, the shared registry and gate, and profile validation
+    (M66-M76).
+
+**Review gate (orchestrator).**
+- The suite was re-run with skip reasons: 3115 passed, 2 skipped, both from a missing SDK.
+- The notice was rendered for a 529 plus a raise plus "API Error" text in a two-item
+  storm.
+- The `terminal_reason` enum was extracted from the bundled CLI, and the gate hook's
+  return shape was read, as described above.

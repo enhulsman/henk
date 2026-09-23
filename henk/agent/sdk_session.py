@@ -29,7 +29,14 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from henk.agent.permission import decide_tool_permission, pretooluse_block_decision
-from henk.agent.session import HANDOFF_TOOL_NAME, SessionStats, ToolCallRecord
+from henk.agent.session import (
+    CHAT_PROFILE,
+    HANDOFF_TOOL_NAME,
+    PROFILES,
+    SessionStats,
+    ToolCallRecord,
+    TurnEnding,
+)
 from henk.gate.approval import ApprovalGate
 from henk.tools.base import ToolRegistry
 
@@ -168,9 +175,15 @@ class SdkSessionFactory:
         system_prompt: str,
         effort: str | None = None,
         thinking: str | None = None,
+        profile: str = CHAT_PROFILE,
     ) -> None:
+        if profile not in PROFILES:
+            raise ValueError(f"unknown session profile: {profile!r}")
         self._registry = registry
         self._gate = gate
+        # Which profile this factory's sessions run on (D11). The core stamps it,
+        # with the effort below, on every record of a session this factory made.
+        self._profile = profile
         self._config = build_closed_toolset_config(
             registry,
             model=model,
@@ -182,6 +195,29 @@ class SdkSessionFactory:
     @property
     def config(self) -> ClosedToolsetConfig:
         return self._config
+
+    @property
+    def profile(self) -> str:
+        return self._profile
+
+    @property
+    def effort(self) -> str | None:
+        return self._config.effort
+
+    @property
+    def model(self) -> str:
+        return self._config.model
+
+    @property
+    def registry(self) -> ToolRegistry:
+        """The registry this factory's sessions expose. The chat and event
+        factories hold the SAME object (D11: profiles share the boundary)."""
+        return self._registry
+
+    @property
+    def gate(self) -> ApprovalGate:
+        """The approval gate every mutating call goes through; shared likewise."""
+        return self._gate
 
     def _build_can_use_tool(self):  # pragma: no cover - exercised at deploy
         """Return the SDK ``can_use_tool`` callback bound to registry + gate."""
@@ -384,6 +420,72 @@ class _StatsAccumulator:
         )
 
 
+def _is_result_message(message: Any) -> bool:
+    """``ResultMessage`` duck-typed: it alone carries ``is_error`` AND ``subtype``.
+    (``SystemMessage`` has ``subtype`` without ``is_error``; ``ToolResultBlock``
+    has ``is_error`` but is a block, never a message.)"""
+    return hasattr(message, "is_error") and hasattr(message, "subtype")
+
+
+def _is_assistant_message(message: Any) -> bool:
+    """``AssistantMessage`` duck-typed: it alone carries ``content`` AND ``model``.
+    ``MirrorErrorMessage``, a ``SystemMessage`` whose ``error`` is store-failure
+    text (0.2.157 ``types.py:1284-1297``), has neither, so it never reads as an
+    assistant error."""
+    return hasattr(message, "content") and hasattr(message, "model")
+
+
+class _EndingObserver:
+    """Folds one turn's SDK stream into a :class:`TurnEnding` as it arrives (D12).
+
+    Reset at the start of every turn, so it reports the LAST turn only. Each
+    message is observed before the next is awaited, so a result reporting an
+    error is recorded even when the stream raises right after it (evidence-probe
+    1.2). Field paths: ``AssistantMessage.error``/``.stop_reason`` and
+    ``ResultMessage.is_error``/``.stop_reason``/``.api_error_status``/
+    ``.terminal_reason`` (claude_agent_sdk 0.2.157 ``types.py:1146,1149,1346,
+    1349,1361,1363``). No text is kept.
+    """
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self._assistant_error: str | None = None
+        self._refusal = False
+        self._result_is_error = False
+        self._api_error_status: int | None = None
+        self._terminal_reason: str | None = None
+
+    def observe(self, message: Any) -> None:
+        if _is_result_message(message):
+            if getattr(message, "is_error", False):
+                self._result_is_error = True
+            status = getattr(message, "api_error_status", None)
+            if status is not None:
+                self._api_error_status = status
+            terminal = getattr(message, "terminal_reason", None)
+            if terminal is not None:
+                self._terminal_reason = terminal
+            if getattr(message, "stop_reason", None) == "refusal":
+                self._refusal = True
+        elif _is_assistant_message(message):
+            error = getattr(message, "error", None)
+            if error and self._assistant_error is None:
+                self._assistant_error = error
+            if getattr(message, "stop_reason", None) == "refusal":
+                self._refusal = True
+
+    def snapshot(self) -> TurnEnding:
+        return TurnEnding(
+            assistant_error=self._assistant_error,
+            refusal=self._refusal,
+            result_is_error=self._result_is_error,
+            api_error_status=self._api_error_status,
+            terminal_reason=self._terminal_reason,
+        )
+
+
 class _SdkAgentSession:
     """Adapts a stateful claude_agent_sdk client to the AgentSession protocol.
 
@@ -396,8 +498,11 @@ class _SdkAgentSession:
         self._client = client
         self._connected = False
         self._stats = _StatsAccumulator(tool_classes)
+        self._ending = _EndingObserver()
 
     async def run_turn(self, text: str) -> str:
+        # First, before anything that can raise: ending() is the LAST turn's.
+        self._ending.reset()
         if not self._connected:
             await self._client.connect()
             self._connected = True
@@ -405,6 +510,7 @@ class _SdkAgentSession:
         parts: list[str] = []
         async for message in self._client.receive_response():
             self._stats.observe(message)
+            self._ending.observe(message)
             for block in getattr(message, "content", None) or []:
                 chunk = getattr(block, "text", None)
                 if chunk:
@@ -413,6 +519,10 @@ class _SdkAgentSession:
 
     def stats(self) -> SessionStats:
         return self._stats.snapshot()
+
+    def ending(self) -> TurnEnding:
+        """How the last turn ended, from the SDK's structured signals (D12)."""
+        return self._ending.snapshot()
 
     async def close(self) -> None:  # pragma: no cover - requires the live client
         if self._connected:
