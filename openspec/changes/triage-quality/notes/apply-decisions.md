@@ -122,3 +122,70 @@ schema `items` loosened to `number`.
 
 Out of scope, and already stale before this change: `README.md:169` still says
 `schema_version: 2`. It belongs to the group 13 close-out.
+
+## Group 2: config surface
+
+**Decisions.**
+- **Absent versus null.** `None` already means "defer to the CLI" for the reasoning keys
+  (`_require_choice`), so an `INHERIT_CHAT` sentinel plus `AgentConfig.__post_init__`
+  carries "absent". A directly built `AgentConfig(model=...)` also inherits the chat
+  values, so the default holds in both places (D17). The loader passes the resolved chat
+  values explicitly.
+- **`event_model` is validated only when present** (fixed after the review gate).
+  Absent inherits `agent.model` exactly as loaded. That value is not validated and loaded
+  before this change, so a null, blank or non-string chat model must not start refusing
+  under a key the owner never wrote. Pinned by
+  `test_an_absent_event_model_never_refuses_what_the_chat_model_accepted`.
+- **Narrower readings than the tasks.** A present blank or non-string `event_model` is
+  refused, and so are a null or blank `replay.judge_model` and a null
+  `replay.judge_effort`. The last because a grade records the judge's effort, and a
+  CLI-chosen one would make two grades of one case incomparable. Unknown keys inside
+  `triage_recording` and `replay` are refused, so no key can seem to move a directory or a
+  bound. Other sections still ignore theirs. The D14 `^claude-` pattern on `judge_model`
+  is left to group 12a.
+- **`replay.*` is validated on every `Config.from_dict`**, so a typo in that section
+  stops live Henk from starting, although only the owner-run replay reads it. This is a
+  conscious choice, consistent with the fail-fast house style, and harmless with the
+  section absent, as on rp5.
+- **Derived directories.** `AuditConfig.triage_recordings_dir`, `triage_cases_dir` and
+  `triage_replays_dir` are properties, `Path(audit.path).parent / "triage-…"`, with the
+  names D13 and D14 give. They follow the `events.audit_path` fallback that rp5 uses.
+- **The sample `config.yaml`** carries the profile keys commented out under `agent`,
+  plus `triage_recording` and `replay` sections. This changes the tracked file, which
+  rp5 holds locally modified, so the next deploy's pull must merge it (group 13).
+
+**For group 9.**
+- **2.1 is deferred in part.** No event factory exists yet (`henk/runtime.py:135-142`
+  builds one). So 2.1 asserts the resolved values on `Config`, plus a factory built by a
+  test-local helper (`tests/test_config_triage.py`, `_factory`) the way `runtime.py`
+  builds the chat one. That cannot catch a wiring bug, so group 9 must re-assert 2.1
+  through the real event factory.
+- **`dataclasses.replace` does not re-inherit.** `replace(cfg, model=..., effort=...)`
+  passes the already-resolved event values back in (see the comment on
+  `AgentConfig.__post_init__`). `tests/test_runtime.py:192` overrides the chat effort this
+  way, and an "event follows chat" assertion written the same way would be wrong without
+  anyone noticing.
+
+**Mutation table:** 22 mutants from the implementer, all killed:
+- M1–M3: an event key falling back to the class default instead of the resolved chat
+  value;
+- M4: null `event_model` accepted;
+- M5: `judge_effort` not validated;
+- M6: null `judge_effort` accepted;
+- M7, M8: a dataclass default changed;
+- M9, M10: a loader default changed with the dataclass unchanged;
+- M11: the dataclass no longer inheriting;
+- M12: the dataclass inheriting over an explicit None;
+- M13: unknown keys ignored;
+- M14: the recordings directory under the file path;
+- M15: the replays directory misnamed;
+- M16: event effort not validated;
+- M17: event thinking checked against the effort levels;
+- M18: the non-mapping section check dropped;
+- M19: a `max_recordings` key added;
+- M20: a live event key in the sample;
+- M21: `judge_model` changed in both places together;
+- M22: the recordings directory hardcoded.
+
+The review-gate fix is pinned by three new parametrized cases, which fail against the
+pre-fix code.

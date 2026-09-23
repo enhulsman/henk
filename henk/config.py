@@ -7,6 +7,7 @@ deployment, per design D7).
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -252,6 +253,29 @@ EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 THINKING_MODES: tuple[str, ...] = ("adaptive", "disabled")
 
 
+class _InheritChat:
+    """Default of an event-profile field: "the chat profile's value" (design D11).
+
+    A sentinel rather than ``None`` because ``None`` already means "defer to the
+    CLI", which is a different thing from "absent".
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "INHERIT_CHAT"
+
+
+INHERIT_CHAT: Any = _InheritChat()
+
+#: Each triage-profile field and the chat field it falls back to when absent.
+EVENT_PROFILE_FALLBACKS: tuple[tuple[str, str], ...] = (
+    ("event_model", "model"),
+    ("event_effort", "effort"),
+    ("event_thinking", "thinking"),
+)
+
+
 @dataclass(frozen=True)
 class AgentConfig:
     model: str = "claude-sonnet-5"
@@ -267,6 +291,49 @@ class AgentConfig:
     #: the capability off this value — and therefore the whole prompt — is what it
     #: was before this change.
     system_prompt: str = build_system_prompt()
+    #: The triage profile (design D11): the model, effort and thinking of sessions
+    #: started by an event turn. Each defaults to the chat value above, so a config
+    #: naming none of them runs triage exactly as chat. An explicit ``None`` on the
+    #: two reasoning fields defers to the CLI; ``event_model`` has no ``None``.
+    event_model: str = INHERIT_CHAT
+    event_effort: str | None = INHERIT_CHAT
+    event_thinking: str | None = INHERIT_CHAT
+
+    def __post_init__(self) -> None:
+        # Resolved once, at construction. `dataclasses.replace(cfg, model=...)`
+        # passes the already-resolved event values back in, so it does NOT
+        # re-inherit: a test overriding a chat value that way must set the event
+        # value too (or build a new AgentConfig).
+        for event_field, chat_field in EVENT_PROFILE_FALLBACKS:
+            if getattr(self, event_field) is INHERIT_CHAT:
+                object.__setattr__(self, event_field, getattr(self, chat_field))
+
+
+@dataclass(frozen=True)
+class TriageRecordingConfig:
+    """Triage recording (design D13). ``enabled`` is the rollback flag.
+
+    Deliberately the only key. The recordings' bounds (count, age, size) are module
+    constants reviewed in code, and their directory is derived from ``audit.path``
+    (``AuditConfig.triage_recordings_dir``), so no key can place them elsewhere.
+    """
+
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
+class ReplayConfig:
+    """The replay judge (design D14/D15): its model and effort, nothing else.
+
+    The output directory is derived from ``audit.path``
+    (``AuditConfig.triage_replays_dir``). The judge's thinking stays unset, and a
+    replay's own model and effort are command arguments, not config.
+    """
+
+    judge_model: str = "claude-fable-5-1"
+    #: Never ``None``: a grade records the judge's effort, and a CLI-chosen one
+    #: would make two grades of the same case silently incomparable.
+    judge_effort: str = "high"
 
 
 @dataclass(frozen=True)
@@ -492,6 +559,23 @@ class AuditConfig:
 
     path: str = "/data/audit/henk-audit.jsonl"
 
+    # Triage recordings, reference cases and replay outputs live beside the audit
+    # log, on the same volume and its backup (design D13/D14; secure-deployment,
+    # "Recording paths are derived from the audit path"). Properties, not fields:
+    # no config key and no constructor argument can place them elsewhere.
+
+    @property
+    def triage_recordings_dir(self) -> Path:
+        return Path(self.path).parent / "triage-recordings"
+
+    @property
+    def triage_cases_dir(self) -> Path:
+        return Path(self.path).parent / "triage-cases"
+
+    @property
+    def triage_replays_dir(self) -> Path:
+        return Path(self.path).parent / "triage-replays"
+
 
 @dataclass(frozen=True)
 class GateConfig:
@@ -654,6 +738,10 @@ class Config:
     homelab_query: HomelabQueryConfig = field(default_factory=HomelabQueryConfig)
     homelab_docs: HomelabDocsConfig = field(default_factory=HomelabDocsConfig)
     sessions: SessionsConfig = field(default_factory=SessionsConfig)
+    triage_recording: TriageRecordingConfig = field(
+        default_factory=TriageRecordingConfig
+    )
+    replay: ReplayConfig = field(default_factory=ReplayConfig)
     secrets: Secrets = field(default_factory=Secrets)
 
     @classmethod
@@ -839,18 +927,57 @@ class Config:
         )
         _validate_sessions_settings(sessions)
 
+        triage_recording_sec = _optional_section(
+            raw, "triage_recording", TriageRecordingConfig
+        )
+        triage_recording = TriageRecordingConfig(
+            enabled=bool(
+                triage_recording_sec.get("enabled", TriageRecordingConfig.enabled)
+            )
+        )
+        replay_sec = _optional_section(raw, "replay", ReplayConfig)
+        replay = ReplayConfig(
+            judge_model=_require_model(
+                replay_sec, "judge_model", ReplayConfig.judge_model, "replay"
+            ),
+            judge_effort=_require_level(
+                replay_sec, "judge_effort", ReplayConfig.judge_effort, "replay"
+            ),
+        )
+
+        # The chat profile is resolved first, and the triage profile falls back to
+        # the RESOLVED chat values (design D11), not to the dataclass defaults: an
+        # overridden chat model or effort carries over to triage when the event keys
+        # are absent, which is the case on rp5.
+        chat_model = agent_sec.get("model", AgentConfig.model)
+        chat_effort = _require_choice(
+            agent_sec, "effort", AgentConfig.effort, EFFORT_LEVELS, "agent"
+        )
+        chat_thinking = _require_choice(
+            agent_sec, "thinking", AgentConfig.thinking, THINKING_MODES, "agent"
+        )
+
         config = cls(
             owner=OwnerConfig(
                 id=require_nonempty(owner_sec, "id", "owner"),
                 timezone=_require_owner_timezone(owner_sec, reminders),
             ),
             agent=AgentConfig(
-                model=agent_sec.get("model", AgentConfig.model),
-                effort=_require_choice(
-                    agent_sec, "effort", AgentConfig.effort, EFFORT_LEVELS, "agent"
+                model=chat_model,
+                effort=chat_effort,
+                thinking=chat_thinking,
+                # Validated only when present: absent inherits the chat value as
+                # loaded, which is not validated and must not start refusing here.
+                event_model=(
+                    _require_model(agent_sec, "event_model", chat_model, "agent")
+                    if "event_model" in agent_sec
+                    else chat_model
                 ),
-                thinking=_require_choice(
-                    agent_sec, "thinking", AgentConfig.thinking, THINKING_MODES, "agent"
+                event_effort=_require_choice(
+                    agent_sec, "event_effort", chat_effort, EFFORT_LEVELS, "agent"
+                ),
+                event_thinking=_require_choice(
+                    agent_sec, "event_thinking", chat_thinking, THINKING_MODES, "agent"
                 ),
                 idle_timeout_seconds=int(
                     agent_sec.get("idle_timeout_seconds", AgentConfig.idle_timeout_seconds)
@@ -918,6 +1045,8 @@ class Config:
             homelab_query=homelab_query,
             homelab_docs=homelab_docs,
             sessions=sessions,
+            triage_recording=triage_recording,
+            replay=replay,
             secrets=Secrets.from_env(env),
         )
         # Post-assembly on purpose: the two values it relates deliberately live in
@@ -1270,6 +1399,64 @@ def _require_choice(
         f"{section_name}.{key} ({value!r}) must be one of {', '.join(choices)}, "
         "or null to use the CLI default"
     )
+
+
+def _require_level(
+    section: Mapping[str, Any], key: str, default: str, section_name: str
+) -> str:
+    """An effort level that must be set: ``_require_choice`` without the null escape."""
+    value = _require_choice(section, key, default, EFFORT_LEVELS, section_name)
+    if value is None:
+        raise ConfigError(
+            f"{section_name}.{key} must be one of {', '.join(EFFORT_LEVELS)}; "
+            "null is not accepted here, because the effort is recorded with every "
+            "result and must not be left to the CLI"
+        )
+    return value
+
+
+def _require_model(
+    section: Mapping[str, Any], key: str, default: str, section_name: str
+) -> str:
+    """A model name that falls back to ``default`` when absent and is never null.
+
+    Absent and null differ on purpose: absent inherits, while null has no meaning
+    for a model (there is no "CLI default model" this setting could defer to), so
+    it is refused rather than passed to the SDK as ``None``.
+    """
+    value = section.get(key, default)
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(
+            f"{section_name}.{key} ({value!r}) must be a non-empty model name; "
+            "omit the key to use the default"
+        )
+    return value
+
+
+def _optional_section(
+    raw: Mapping[str, Any], name: str, cls: type
+) -> Mapping[str, Any]:
+    """An optional section whose keys are exactly ``cls``'s fields.
+
+    An unknown key is refused rather than ignored: a silently ignored
+    ``triage_recording.path`` or ``replay.output_dir`` would let the owner believe
+    the files moved, when their directories are derived from ``audit.path`` and
+    their bounds are module constants.
+    """
+    value = raw.get(name)
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ConfigError(f"config section {name!r} must be a mapping")
+    allowed = {f.name for f in dataclasses.fields(cls)}
+    unknown = sorted(str(k) for k in value if k not in allowed)
+    if unknown:
+        raise ConfigError(
+            f"unknown key {name}.{unknown[0]}; {name} accepts only "
+            f"{', '.join(sorted(allowed))}. Its directories are derived from "
+            "audit.path and its bounds are fixed in code."
+        )
+    return value
 
 
 def _require_safe_length(signal_sec: Mapping[str, Any]) -> int:

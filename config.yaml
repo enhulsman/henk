@@ -43,6 +43,17 @@ agent:
   thinking: "adaptive"
   idle_timeout_seconds: 3600
   approval_timeout_seconds: 300
+  # The triage profile: model, effort and thinking for sessions started by an
+  # event turn (an owner follow-up inside one stays on it; /new or idle expiry
+  # returns to the chat profile above). Left COMMENTED OUT because absent is the
+  # default: each absent key takes the chat value above, so shipping them absent
+  # changes nothing. An explicit null on event_effort or event_thinking defers to
+  # the CLI, which is NOT the same as absent; a null event_model is refused.
+  # Opus 5.5 rejects disabled thinking, which is why event_thinking exists.
+  #
+  #   event_model: "claude-opus-5-5"
+  #   event_effort: "high"
+  #   event_thinking: "adaptive"
 
 endpoints:
   gatus:
@@ -217,6 +228,24 @@ gate:
 # deployed config that predates this section keeps working untouched.
 audit:
   path: "/data/audit/henk-audit.jsonl"
+
+# Triage recording. Every triage leaves one bounded local recording of what the
+# model saw and did, for replay. `enabled: false` is the rollback. This is the
+# ONLY key, deliberately: the recordings live in `triage-recordings/` beside the
+# audit log above (derived from audit.path, on the same volume and backup), and
+# their bounds (200 files, 30 days, 256 KB each) are constants in code. Any other
+# key here is refused at startup rather than silently ignored.
+triage_recording:
+  enabled: true
+
+# The replay judge, used only by the owner-run replay entry point (never by the
+# live process). Replay outputs go to `triage-replays/` beside the audit log,
+# derived rather than configured. A replay's own model and effort are command
+# arguments; the judge's thinking stays unset. judge_effort must be one of
+# low|medium|high|xhigh|max, and null is refused: every grade records it.
+replay:
+  judge_model: "claude-fable-5-1"
+  judge_effort: "high"
 
 # The named-query tool (homelab_query). Ships ENABLED: it rides the tag:henk
 # egress homelab_health already uses (rp5:8080, vps:9090), so there is no host

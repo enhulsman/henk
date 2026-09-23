@@ -181,30 +181,30 @@ The capture is persisted only on rp5's audit volume.
 
 ## 2. Config surface
 
-- [ ] 2.1 Tests first, *Defaults change nothing*. A config omitting `agent.event_model`,
+- [x] 2.1 Tests first, *Defaults change nothing*. A config omitting `agent.event_model`,
   `agent.event_effort` and `agent.event_thinking` yields event values equal to the
   **resolved** chat values, including overridden chat values. Assert this through the
   built event factory's config.
-- [ ] 2.2 Tests first, the explicit values:
+- [x] 2.2 Tests first, the explicit values:
   - `event_effort: null` and `event_thinking: null` defer to the CLI, which is not the
     same as absent;
   - `event_model: null` is refused, naming the key;
   - both keys are validated by the same `_require_choice` path as the chat keys.
-- [ ] 2.3 Tests first:
+- [x] 2.3 Tests first:
   - `triage_recording.enabled` defaults to true;
   - `replay.judge_model` defaults to `claude-fable-5-1`;
   - `replay.judge_effort` defaults to `high` and is validated against `EFFORT_LEVELS`;
   - each default holds through `Config.from_dict` with its section absent.
-- [ ] 2.4 Test the invariants:
+- [x] 2.4 Test the invariants:
   - `Secrets.from_env` is unchanged;
   - no new key names a path, token or URL;
   - no key configures an archive, digest or recording bound, because those are module
     constants;
   - the recording and replay-output directories are derived from `audit.path`
     (*Recording paths are derived from the audit path*).
-- [ ] 2.5 Add the keys to the sample `config.yaml`, with the agreement test. The profile
+- [x] 2.5 Add the keys to the sample `config.yaml`, with the agreement test. The profile
   keys go in commented out, because absent is their default.
-- [ ] 2.6 Implement the profile resolution in the agent section of `Config.from_dict`
+- [x] 2.6 Implement the profile resolution in the agent section of `Config.from_dict`
   (today at `henk/config.py:847-854`), plus `TriageRecordingConfig` and `ReplayConfig`,
   with each default pinned in both places.
 
