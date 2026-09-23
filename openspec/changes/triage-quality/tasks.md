@@ -54,7 +54,7 @@
 
 ## 1. Measure first (probes; owner steps marked)
 
-- [ ] 1.1 Re-probe on the live Prometheus, read-only, and record label names and counts:
+- [x] 1.1 Re-probe on the live Prometheus, read-only, and record label names and counts:
   - the label sets of `container_memory_working_set_bytes`, `container_memory_swap` and
     `container_cpu_usage_seconds_total` on both cadvisor jobs, and whether the CPU counter
     carries a per-`cpu` label. This decides D4's `max by (name)`;
@@ -64,7 +64,7 @@
 
   The `High memory usage` `for` (5m) is already pinned at `backend-probe.md:525` and is
   not re-probed.
-- [ ] 1.2 Record the SDK ending surface from the installed `claude_agent_sdk` 0.2.123, so
+- [x] 1.2 Record the SDK ending surface from the installed `claude_agent_sdk` 0.2.123, so
   that group 9 can build its fake stream from the real field paths:
   - the `AssistantMessage.error`/`.stop_reason` paths (`types.py:1026-1037`);
   - the `ResultMessage.stop_reason`/`.is_error`/`.api_error_status` paths
@@ -78,10 +78,10 @@
 - [ ] 1.4 From rp5's audit log, count event-triage records per day (counts only). Confirm
   that 90 days fits in 500 archived handoffs and that 30 days fits in 200 recordings.
   If not, record the corrected constants for groups 6 and 10.
-- [ ] 1.5 Confirm that the label set of a fired `HenkSwapPressure` payload matches the
+- [x] 1.5 Confirm that the label set of a fired `HenkSwapPressure` payload matches the
   identity derivation and D9's node derivation, recording labels only. The value block is
   settled: `A or B` returns A's value.
-- [ ] 1.6 Transcribe the rp5 restart measurement into `notes/evidence-probe.md` under the
+- [x] 1.6 Transcribe the rp5 restart measurement into `notes/evidence-probe.md` under the
   verdict line `restart-signal cadvisor-pi5: verified`: `wordle-web`, ~09:58:55 CEST
   2026-09-23, `resets()` 0→1 within one scrape, the counter from ~2014 s to 1.9 s,
   `container_start_time_seconds` and `changes()` flat, a scrape interval of ~30 s.
@@ -89,7 +89,7 @@
   taiga-docker-taiga-front-1` on the vps. `resets(...{job="cadvisor-vps",...}[15m])` went
   to 1, the counter fell to 0.61 s, and `changes(container_start_time_seconds[15m])`
   stayed 0. Verdict: `restart-signal cadvisor-vps: verified`. It is transcribed in 1.8.
-- [ ] 1.8 Write 1.1–1.7 into `notes/evidence-probe.md` under standing rule 1, with one
+- [x] 1.8 Write 1.1–1.7 into `notes/evidence-probe.md` under standing rule 1, with one
   machine-readable verdict line per cadvisor job (read by test 3.8). Add the host-unit
   and systemd-state measurements from the findings notes: 27 and 36 unit series; the
   288/288 `failed` and 281/288 `activating` shapes, with placeholder unit names.
