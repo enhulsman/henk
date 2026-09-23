@@ -66,3 +66,12 @@ On rp5 there are 588 files (3 x (195 + manifest)); every directory is `700 pi` a
 file `600`. The sha256 over all files matched the workstation copy. The workstation
 scratch was then deleted (done, 2026-09-23). The rp5 staging directory remains
 **pending** the owner's move in 1b.5.
+
+## 1b.5: the capture moved into place
+
+Owner, 2026-09-23, from a root shell on rp5 (the `ssh -t` form failed first: `pi`'s
+sudo does not allow `test`). `triage-cases/2026-09-23-capture/` is `10001:10001`, mode
+`700`, with 588 files. `2026-09-23-raw/` is still `0:0`, mode `700`. The agent confirmed
+the same day that `/home/pi/triage-capture-staging` no longer exists, so every transit
+copy is gone. The `triage-cases/` directory's own ownership was set by the same chained
+command. The agent cannot read it without sudo, so it is not verified independently.

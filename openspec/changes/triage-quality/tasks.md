@@ -171,7 +171,7 @@ The capture is persisted only on rp5's audit volume.
   - in `notes/evidence-probe.md`, record the transfer (date, file count, both transit
     paths deleted or pending), the request and response counts per `T`, and any non-200
     statuses.
-- [ ] 1b.5 **Owner, one sudo step on rp5:**
+- [x] 1b.5 **Owner, one sudo step on rp5:**
   - `sudo mv /home/pi/<staging> /var/lib/docker/volumes/henk_henk_audit/_data/triage-cases/2026-09-23-capture`;
   - `cd /var/lib/docker/volumes/henk_henk_audit/_data && sudo chown 10001:10001 triage-cases && sudo chown -R 10001:10001 triage-cases/2026-09-23-capture`,
     leaving the root-only `2026-09-23-raw/` untouched.
