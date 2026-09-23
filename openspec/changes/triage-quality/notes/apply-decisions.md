@@ -72,3 +72,53 @@ test were added for it.
 - rp5/rp2 `host_service_state` stays uncaptured, as D5 specifies. The closure costs
   nothing: the systemd collector was measured absent on both nodes, so there is no series
   to lose to retention.
+
+## Group 5: audit schema v5
+
+**Decisions.**
+- v5 (`henk/audit/schema/audit-record.v5.schema.json`) was generated from v4 by script.
+  The only changes are `$id`, the top-level description, the `schema_version` const 5,
+  the `memory_hash` and `outcome` descriptions, and the four new properties.
+  `test_no_v4_field_is_changed` enforces that.
+- `outcome`'s `no-reply` value is documented in its description, not enforced as an
+  enum. An enum would tighten a v4 field, which D16 forbids. `effort` has no enum either:
+  D16 names no value set, and an enum would reject a future SDK level.
+- The four new `session_record` keyword arguments default to null and are always
+  present in the record, the same convention `memory_hash` uses. `[]` and null stay
+  distinct. No caller is wired here: group 8 writes `prior_handoff_ids`, group 9
+  `profile`/`effort`, and group 10 `recording_id`.
+- **`prior_handoff_ids` holds the handoff archive's integer row ids** (decided after
+  the review gate). D8's archive has an `id` and a nullable `message_id`, and the spec
+  asks the record to list *every* handoff the digest showed. A handoff without a
+  published id would be unrepresentable as a message id. The schema's `items` are
+  `integer`, and the builder refuses a bare string and any non-`int` id, `bool`
+  included. **Group 6 must create `handoffs.id` as `INTEGER PRIMARY KEY AUTOINCREMENT`**,
+  so a row id is never reused after pruning. Known limit: a store rebuilt from nothing
+  restarts at 1, which makes older audit references ambiguous. That is accepted as rare,
+  and the recording carries the digest text.
+
+**Inverted version pins** (standing rule 6, following cc2ed38's v3 → v4 precedent; none
+weakened, per the review):
+- `tests/test_audit_receipts.py`: `test_schema_version_is_four` became `_five`, and v4
+  joined the prior-documents loop.
+- `tests/test_audit_v4.py`: the current-version pin moved to `test_audit_v5.py`. The v4
+  test now pins the v4 document's name and const. The closed-vocabulary test asserts the
+  v4 reminder branch's `detail` enum. The v3-rejection test validates against v4
+  explicitly.
+- `tests/test_reminders_delivery_audit.py`: delivery records validate against the v4
+  document when relabelled v4.
+
+**Mutation table:** 25 mutants, all killed. The implementer's 22: version left at 4;
+the current path still pointing at v4; the v4 path aliased; `profile` required;
+`recording_id` non-nullable; the `profile` enum removed; `prior_handoff_ids` items
+untyped; `effort` untyped; `additionalProperties` added; `memory_hash` non-null; the v4
+`transition` enum narrowed; the `memory_hash` description not rewritten; `no-reply`
+undocumented; the v4 document edited; the `recording_id` kwarg dropped; the `profile`
+kwarg dropped; the id list aliased; `[]` collapsed to null; the `effort` key omitted; the
+bare-string guard removed; rehydrate skipping `profile` records; the cap count reading
+`recording_id`. Plus three for the integer-id fix: the builder's `type(...) is int`
+loosened to `isinstance` (a `bool` would pass), the builder's id check removed, and the
+schema `items` loosened to `number`.
+
+Out of scope, and already stale before this change: `README.md:169` still says
+`schema_version: 2`. It belongs to the group 13 close-out.

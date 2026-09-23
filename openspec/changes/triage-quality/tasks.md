@@ -309,13 +309,13 @@ The capture is persisted only on rp5's audit volume.
 
 ## 5. Audit schema v5
 
-- [ ] 5.1 Tests first:
+- [x] 5.1 Tests first:
   - *New records declare the new version*;
   - *Old records remain valid* (v1–v4);
   - every v5 field is optional and nullable;
   - an event record with a non-null `memory_hash` validates.
-- [ ] 5.2 Tests first, *A mixed-version log rehydrates identically*.
-- [ ] 5.3 Implement `audit-record.v5.schema.json`, `SCHEMA_VERSION = 5`, the path
+- [x] 5.2 Tests first, *A mixed-version log rehydrates identically*.
+- [x] 5.3 Implement `audit-record.v5.schema.json`, `SCHEMA_VERSION = 5`, the path
   constant, the new `session_record` keyword arguments, and the version-history comment.
 
 ## 6. Handoff archive (triage-handoff)

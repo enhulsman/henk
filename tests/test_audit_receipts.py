@@ -23,6 +23,7 @@ from henk.audit import (
     AUDIT_SCHEMA_V1_PATH,
     AUDIT_SCHEMA_V2_PATH,
     AUDIT_SCHEMA_V3_PATH,
+    AUDIT_SCHEMA_V4_PATH,
     SCHEMA_VERSION,
     AuditLog,
     MutationReceipts,
@@ -189,14 +190,15 @@ def test_a_failing_audit_write_is_reported_not_raised(tmp_path: Path):
     assert receipts.record(tool="capture", tier="standing", outcome="authorized")
 
 
-# --- Schema version 4 -----------------------------------------------------
+# --- Schema version 5 -----------------------------------------------------
 
 
-def test_schema_version_is_four():
-    # The version pin, moved 3 -> 4 by reminders-core: v4 adds the `reminder`
-    # record type and the `scheduler` initiator. This assertion exists so a bump
-    # is always deliberate, which is exactly the service it performed here.
-    assert SCHEMA_VERSION == 4
+def test_schema_version_is_five():
+    # The version pin, moved 3 -> 4 by reminders-core (the `reminder` record type
+    # and the `scheduler` initiator) and 4 -> 5 by triage-quality (the session
+    # record's `profile`, `effort`, `recording_id` and `prior_handoff_ids`). This
+    # assertion exists so a bump is always deliberate.
+    assert SCHEMA_VERSION == 5
 
 
 def test_v3_session_record_carries_executed_and_memory_hash():
@@ -223,6 +225,7 @@ def test_prior_schema_documents_remain_committed_and_valid():
         (AUDIT_SCHEMA_V1_PATH, 1),
         (AUDIT_SCHEMA_V2_PATH, 2),
         (AUDIT_SCHEMA_V3_PATH, 3),
+        (AUDIT_SCHEMA_V4_PATH, 4),
     ):
         schema = json.loads(path.read_text())
         assert schema["properties"]["schema_version"]["const"] == version
@@ -259,6 +262,17 @@ def test_prior_schema_documents_remain_committed_and_valid():
         "at": 3.0,
     }
     jsonschema.validate(v3, json.loads(AUDIT_SCHEMA_V3_PATH.read_text()))
+
+    v4 = {
+        "schema_version": 4,
+        "record_type": "reminder",
+        "reminder_id": 1,
+        "transition": "scheduled",
+        "initiated_by": "model",
+        "due_at": 4.0,
+        "at": 4.0,
+    }
+    jsonschema.validate(v4, json.loads(AUDIT_SCHEMA_V4_PATH.read_text()))
 
 
 def test_v3_rejects_a_v2_shaped_approvals_entry():

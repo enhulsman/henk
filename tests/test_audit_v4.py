@@ -35,6 +35,10 @@ from henk.audit import (
 )
 
 SCHEMA = json.loads(AUDIT_SCHEMA_PATH.read_text())
+#: The document v4 shipped. Since triage-quality bumped the current version to 5,
+#: the reminder contract is asserted against the CURRENT document (SCHEMA, which
+#: carries the reminder branch over unchanged) and the v4-specific pins against this.
+V4_SCHEMA = json.loads(AUDIT_SCHEMA_V4_PATH.read_text())
 
 
 def _validate(record) -> None:
@@ -44,11 +48,13 @@ def _validate(record) -> None:
 # --- The version and the documents ---------------------------------------
 
 
-def test_the_current_version_is_four_and_its_document_is_committed():
-    assert SCHEMA_VERSION == 4
-    assert AUDIT_SCHEMA_V4_PATH == AUDIT_SCHEMA_PATH
-    assert AUDIT_SCHEMA_PATH.name == "audit-record.v4.schema.json"
-    assert SCHEMA["properties"]["schema_version"]["const"] == 4
+def test_the_v4_document_stays_committed_and_pins_version_four():
+    # Was "the current version is four". triage-quality moved the current version to
+    # 5 (tests/test_audit_v5.py pins it); the v4 document stays, under its own name.
+    assert SCHEMA_VERSION == 5
+    assert AUDIT_SCHEMA_V4_PATH != AUDIT_SCHEMA_PATH
+    assert AUDIT_SCHEMA_V4_PATH.name == "audit-record.v4.schema.json"
+    assert V4_SCHEMA["properties"]["schema_version"]["const"] == 4
 
 
 def test_every_prior_version_document_stays_committed():
@@ -65,12 +71,14 @@ def test_every_prior_version_document_stays_committed():
         ] == version
 
 
-def test_new_records_of_every_type_declare_version_four():
+def test_new_records_of_every_type_declare_the_current_version():
+    # Was pinned to 4; new records now declare 5 (triage-quality) and validate
+    # against the current document, which still carries the reminder branch.
     for record in (
         session_record(trigger="owner-message"),
         reminder_record(reminder_id=1, due_at=1.0, transition="scheduled"),
     ):
-        assert record["schema_version"] == 4
+        assert record["schema_version"] == SCHEMA_VERSION
         _validate(record)
 
 
@@ -132,10 +140,17 @@ def test_a_reminder_records_detail_is_a_closed_vocabulary_not_free_text():
         with pytest.raises(jsonschema.ValidationError):
             _validate(record)
 
-    # Tightening the reminder branch is deliberately NOT a version bump: no reminder
-    # record with a `detail` value has ever been written, so nothing already on disk
-    # becomes invalid, and an authorization record's free-text `detail` is untouched.
-    assert SCHEMA_VERSION == 4
+    # Tightening the reminder branch was deliberately NOT a version bump: no reminder
+    # record with a `detail` value had ever been written, so nothing already on disk
+    # became invalid, and an authorization record's free-text `detail` is untouched.
+    # The tightening therefore lives in the v4 document itself (the later v5 bump is
+    # triage-quality's, not this one's).
+    v4_reminder_branch = next(
+        branch["then"]
+        for branch in V4_SCHEMA["allOf"]
+        if branch["if"]["properties"]["record_type"]["const"] == "reminder"
+    )
+    assert v4_reminder_branch["properties"]["detail"]["enum"] == ["partial", None]
     authorization = authorization_record(
         tool="capture",
         tier="standing",
@@ -272,6 +287,7 @@ def test_no_audit_configured_is_a_designed_no_op(tmp_path: Path):
 
 
 def test_a_v3_record_validates_against_v3_and_not_against_v4():
+    # Against the v4 DOCUMENT explicitly: since v5, `_validate` is the current one.
     v3_document = json.loads(AUDIT_SCHEMA_V3_PATH.read_text())
     v3_record = {
         "schema_version": 3,
@@ -285,11 +301,15 @@ def test_a_v3_record_validates_against_v3_and_not_against_v4():
     jsonschema.validate(v3_record, v3_document)
     # And v4's document pins its own version, so the two cannot be confused.
     with pytest.raises(jsonschema.ValidationError):
-        _validate(v3_record)
+        jsonschema.validate(v3_record, V4_SCHEMA)
     # A `reminder` record is not expressible in v3 at all, which is why the version
-    # had to increment.
+    # had to increment. Declared as v3, so the refusal is the record type's and not
+    # merely the version const's.
+    as_v3 = dict(
+        reminder_record(reminder_id=1, due_at=1.0, transition="scheduled"),
+        schema_version=3,
+    )
     with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate(
-            reminder_record(reminder_id=1, due_at=1.0, transition="scheduled"),
-            v3_document,
-        )
+        jsonschema.validate(as_v3, v3_document)
+    # ...while the same record declared as v4 is exactly what v4 was written for.
+    jsonschema.validate(dict(as_v3, schema_version=4), V4_SCHEMA)

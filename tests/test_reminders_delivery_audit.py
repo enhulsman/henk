@@ -2,13 +2,15 @@
 
 The scheduler is exercised through the **real** `AuditLog` and `ReminderReceipts` here,
 not through a collecting double: the claim is that a durable JSONL record exists on disk
-and validates against the committed v4 document, and a double proves neither half.
+and validates against the committed document, and a double proves neither half.
 
-The whole point of this group is that it needs no schema version bump. `reminders-core`
+The whole point of this group is that it needed no schema version bump. `reminders-core`
 declared v4's complete transition enumeration and its `scheduler` initiator precisely so
 the delivery half could ship without one — a schema document being a validation contract
-rather than an inventory of what the current build happens to emit. Every test below
-asserts against `SCHEMA_VERSION == 4` and the same document that shipped then.
+rather than an inventory of what the current build happens to emit. The version has
+since moved to 5 for an unrelated reason (triage-quality's session-record fields), so the
+tests below validate against the current document AND show that every delivery record
+was already expressible in the v4 document that shipped with reminders-core.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import pytest
 
 from henk.audit import (
     AUDIT_SCHEMA_PATH,
+    AUDIT_SCHEMA_V4_PATH,
     REMINDER_TRANSITIONS,
     SCHEMA_VERSION,
     AuditLog,
@@ -50,6 +53,7 @@ from tests.test_reminders_scheduler import (
 )
 
 SCHEMA = json.loads(AUDIT_SCHEMA_PATH.read_text())
+V4_SCHEMA = json.loads(AUDIT_SCHEMA_V4_PATH.read_text())
 
 #: The four transitions only the delivery half writes.
 DELIVERY_TRANSITIONS = (DELIVERED, DELIVERED_LATE, MISSED, ABANDONED)
@@ -124,7 +128,9 @@ async def test_each_delivery_transition_writes_one_validating_record(
     assert len(records) == 1, _records(audit_path)
     record = records[0]
     jsonschema.validate(record, SCHEMA)
-    assert record["schema_version"] == 4
+    assert record["schema_version"] == SCHEMA_VERSION
+    # Expressible in the v4 document as it shipped: delivery needed no bump.
+    jsonschema.validate(dict(record, schema_version=4), V4_SCHEMA)
     assert record["record_type"] == "reminder"
     assert record["reminder_id"] == row.id
     assert record["due_at"] == row.due_at
@@ -158,19 +164,26 @@ async def test_no_delivery_record_carries_the_reminders_text(tmp_path: Path):
 
 
 async def test_the_schema_version_is_not_bumped_by_the_delivery_half(tmp_path: Path):
-    """v4 was written to make this group a no-op for the version pin."""
-    assert SCHEMA_VERSION == 4
-    assert SCHEMA["properties"]["schema_version"]["const"] == 4
+    """v4 was written to make this group a no-op for the version pin.
+
+    The current version is 5 (triage-quality); what this test protects is that the
+    delivery half never needed a version of its own, so it asserts against the v4
+    document that shipped with reminders-core.
+    """
+    assert V4_SCHEMA["properties"]["schema_version"]["const"] == 4
     # And every transition the scheduler can write was already enumerated by v4.
     for transition in DELIVERY_TRANSITIONS:
         assert transition in REMINDER_TRANSITIONS
+        assert transition in V4_SCHEMA["properties"]["transition"]["enum"]
+    assert "scheduler" in V4_SCHEMA["properties"]["initiated_by"]["enum"]
     assert "scheduler" in SCHEMA["properties"]["initiated_by"]["enum"]
 
     store, repo, scheduler, channel, audit_path = _build(tmp_path)
     _seed(repo, due_at=NOW - 60)
     await scheduler.tick()
     for record in _records(audit_path):
-        assert record["schema_version"] == 4
+        assert record["schema_version"] == SCHEMA_VERSION
+        jsonschema.validate(dict(record, schema_version=4), V4_SCHEMA)
     store.close()
 
 

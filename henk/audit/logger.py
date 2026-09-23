@@ -35,18 +35,25 @@ logger = logging.getLogger("henk.audit")
 #: enumeration, delivery's half included, so shipping `reminder-delivery` needs no
 #: further bump — a schema document is a validation contract, not an inventory of
 #: what the current build emits.
-SCHEMA_VERSION = 4
+#: v5: the session record's `profile` (`chat` | `event`), `effort`, `recording_id`
+#: and `prior_handoff_ids`, all optional and nullable; the session `outcome` values
+#: (`completed`, `error`, `refused`, `no-reply`) documented; `memory_hash` re-described
+#: for event records, which now receive recall. No v4 field changes, so a v4 reader
+#: (in-process: `EventPipeline.rehydrate`) reads v5 records identically. The bump is
+#: still required: any structural change increments (triage-quality design D16).
+SCHEMA_VERSION = 5
 
 _SCHEMA_DIR = Path(__file__).resolve().parent / "schema"
 
 #: The current schema, matching :data:`SCHEMA_VERSION`. Historical versions stay
 #: committed so records that declare an older version still validate (audit-log
 #: spec: prior schema versions remain readable).
-AUDIT_SCHEMA_PATH = _SCHEMA_DIR / "audit-record.v4.schema.json"
+AUDIT_SCHEMA_PATH = _SCHEMA_DIR / "audit-record.v5.schema.json"
 AUDIT_SCHEMA_V1_PATH = _SCHEMA_DIR / "audit-record.v1.schema.json"
 AUDIT_SCHEMA_V2_PATH = _SCHEMA_DIR / "audit-record.v2.schema.json"
 AUDIT_SCHEMA_V3_PATH = _SCHEMA_DIR / "audit-record.v3.schema.json"
-AUDIT_SCHEMA_V4_PATH = AUDIT_SCHEMA_PATH
+AUDIT_SCHEMA_V4_PATH = _SCHEMA_DIR / "audit-record.v4.schema.json"
+AUDIT_SCHEMA_V5_PATH = AUDIT_SCHEMA_PATH
 
 #: Owner-command receipts carry a bounded effect summary — a receipt is evidence,
 #: not a transcript, and the audit log is not a place to spill free text.
@@ -283,8 +290,26 @@ def session_record(
     model: str | None = None,
     usage: Mapping[str, Any] | None = None,
     at: float | None = None,
+    profile: str | None = None,
+    effort: str | None = None,
+    recording_id: str | None = None,
+    prior_handoff_ids: Sequence[int] | None = None,
 ) -> dict[str, Any]:
-    """Build one session record. Field names/types match the current JSON Schema."""
+    """Build one session record. Field names/types match the current JSON Schema.
+
+    The four v5 fields default to null so a caller that names none of them still
+    builds a valid record. ``prior_handoff_ids`` keeps ``[]`` (a triage that showed
+    no prior handoffs) distinct from ``None`` (not an event triage). Its ids are
+    the handoff archive's integer row ids. A bare string is refused, because
+    ``list()`` would split it into one false "id" per character, and so is any
+    non-integer id (``bool`` included, since it is an ``int`` subclass).
+    """
+    if isinstance(prior_handoff_ids, str):
+        raise TypeError("prior_handoff_ids takes a sequence of ids, not one string")
+    if prior_handoff_ids is not None and any(
+        type(i) is not int for i in prior_handoff_ids
+    ):
+        raise TypeError("prior_handoff_ids takes the archive's integer row ids")
     return {
         "schema_version": SCHEMA_VERSION,
         "record_type": "session",
@@ -303,6 +328,12 @@ def session_record(
         "model": model,
         "usage": dict(usage) if usage is not None else None,
         "at": at,
+        "profile": profile,
+        "effort": effort,
+        "recording_id": recording_id,
+        "prior_handoff_ids": (
+            list(prior_handoff_ids) if prior_handoff_ids is not None else None
+        ),
     }
 
 
