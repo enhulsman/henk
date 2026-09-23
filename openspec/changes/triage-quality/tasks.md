@@ -127,7 +127,7 @@ Independent of groups 2–11: the script carries its own template list. It follo
 
 The capture is persisted only on rp5's audit volume.
 
-- [ ] 1b.1 Tests first, `henk/replay/capture.py`, with a fake transport:
+- [x] 1b.1 Tests first, `henk/replay/capture.py`, with a fake transport:
   - *Instant captures are pinned to the evaluation time*: `time=T` on instant queries,
     and `end=T` plus the registry step on range queries;
   - *The capture covers every argument combination*: every PromQL expression of every
@@ -152,7 +152,7 @@ The capture is persisted only on rp5's audit volume.
     single spelling `/system\\.slice/.+\\.service`.
   - *The capture refuses an unsafe output path*: the output path must be an existing
     mode-700 directory owned by the invoking user.
-- [ ] 1b.2 Implement the capture script from the registry's templates, with the D5 table's
+- [x] 1b.2 Implement the capture script from the registry's templates, with the D5 table's
   canonical templates written out for the roles the registry lacks. **D4 stays exactly as
   in that table, whatever 1.1 finds**, so this does not wait on 1.1 (design D5). Read
   rp5's effective `query_range_max_points` from its `config.yaml`, read-only. `HomelabQueryTool`
@@ -162,7 +162,7 @@ The capture is persisted only on rp5's audit volume.
   [notification time + 120 s debounce, the triage record's audit `at`]. Choose at least
   three `T` values spanning it, including both ends. Record the interval and the chosen
   `T` values, as times only, in `notes/evidence-probe.md`.
-- [ ] 1b.4 **Agent-run, soon; hard limit 2026-10-07 06:30Z:**
+- [x] 1b.4 **Agent-run, soon; hard limit 2026-10-07 06:30Z:**
   - on the workstation, from the repo checkout, run the capture at each `T` into a
     mode-700 scratch directory, one `<T>/` subdirectory per `T`;
   - stream it to rp5 with
