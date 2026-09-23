@@ -801,3 +801,100 @@ were killed.
   storm.
 - The `terminal_reason` enum was extracted from the bundled CLI, and the gate hook's
   return shape was read, as described above.
+
+## Group 10: triage recording
+
+The recorder is `henk/replay/recorder.py`, with its schema at
+`henk/replay/schema/triage-recording.v1.schema.json`. `_TranscriptAccumulator` is in
+`henk/agent/sdk_session.py`, and `TranscriptCall` is in `session.py`. The core calls
+`_record_triage` before `_flush_event_triage`, and the runtime builds
+`_triage_recorder(config)`. The fixtures are in `tests/fixtures/replay/recordings/` and
+contain placeholders only. The suite moved from 3115 to 3213 passed, with 3 skipped, all
+SDK-gated.
+
+**Decisions.**
+- **An absent key means recording is on** (`config.py:327`, loader `:941`), so rp5
+  records after deploy with no config edit, as D13 intends.
+- **The core does not import `henk.replay`.** The recorder is injected and duck-typed as
+  `record(**kw) -> str | None`, and the core accepts only a `str` link.
+- **The recording is written synchronously in the serial queue, before the flush,** so the
+  record links a file that exists. It is at most 256 KB with one fsync. The file is
+  ASCII-escaped JSON, mode 0600, in a directory of mode 0700. The write is atomic: a temp
+  file in the same directory, then a rename.
+- **Transcript.**
+  - It is the last turn only, reset at the top of `run_turn`.
+  - Gate denials and hook blocks appear as error tool results. That is the CLI's
+    behaviour for a deny. Confidence: moderate. **13.4 should confirm this on a live
+    denied call.**
+  - A session with no `transcript()`, or one that raises, records `transcript: []` with
+    `complete: false` and `incomplete_reasons: ["transcript-unavailable"]`, never as "no
+    calls".
+- **Additions to D13's contents:**
+  - `profile` is an object carrying name, model, effort and thinking;
+  - `usage`, which `compare` shows;
+  - `observed_model`, `approvals`, `announceable`, `suppressed_count`,
+    `prior_handoff_ids` and `incomplete_reasons`.
+- **Size bound.**
+  - Results are shortened largest-first to a common size. Each carries the marker
+    `[truncated by the recorder: N bytes removed]`, plus `truncated_bytes`.
+  - Content, reply and arguments are never cut.
+  - **Not covered by the spec:** a recording that cannot fit even with every result
+    emptied is not written. The link is null and an error is logged.
+- **Retention.**
+  - Age is read from the id's timestamp, not the mtime, and a recording exactly 30 days
+    old is kept.
+  - Only `<id>.json` files, `triage-replays/<id>/` and the recorder's own temp files are
+    deleted. A replay symlink is unlinked, never followed.
+  - Stale temp files older than an hour are removed. This is an addition.
+  - `triage-cases/` is never touched.
+- **Cases.**
+  - `add_case` refuses an existing case unless `replace=True`, a raw directory without
+    `case.json`, and an id that is not one path component.
+  - Past 20 cases it raises `CaseBoundReached` and evicts nothing.
+  - `list_cases` skips raw directories quietly and warns on unreadable ones, which covers
+    11.4's *Only case.json directories are cases*.
+
+**Seams for groups 11 and 12b.**
+- Group 11: `list_recordings`, `load_recording` and `recording_path` (the traversal
+  guard), `factory_fingerprint`, `system_prompt_hash`, `tool_definitions_hash` and
+  `is_recording_id`.
+- `factory_fingerprint` hashes the tool name, description and parameters, sorted by name,
+  the same fields `_adapt_tool` exposes (`sdk_session.py:265`).
+- Group 12b: `list_cases`, `add_case`, `CASE_FILE` and `MAX_REFERENCE_CASES`.
+- The schema allows `reconstructed: true` with `arguments: "unknown"` and null hashes, and
+  an optional `reference` object (`branch`, `culprit`, `mechanism` and `fix` required,
+  `notes` optional).
+- It sets `additionalProperties: false`, so 12b's `case.json` must wrap a v1 recording or
+  bump the schema to v2.
+
+**Carry-forward to group 13:** run the SDK-gated
+`tests/test_triage_recording.py::test_the_fake_blocks_match_the_installed_sdk` in the
+container, together with group 9's two.
+
+**Mutation table.** 76 mutants were run with `python -B`, each file md5-restored: 75
+killed, and 1 equivalent.
+- The equivalent one is A9: a second result for the same tool-use id is ignored, but a
+  tool-use id only ever gets one result.
+- Five first survived, and all five were real test gaps, now closed:
+  - S10: the test mutated the wrong fixture;
+  - C13: the mutant was too weak;
+  - C14: the test passed one object as both the chat and the event factory;
+  - R6: the cases directory's own mtime was recent;
+  - R23: no test made `prune()` itself raise.
+- The families covered:
+  - schema (S1-S11);
+  - transcript accumulation (A1-A8);
+  - core wiring and isolation (C1-C14);
+  - retention, cases, size, atomicity and the fingerprint (R1-R36);
+  - rehydration, the off switch and runtime wiring (X1-X6).
+
+**Tests modified:** none.
+
+**Review gate (orchestrator).**
+- The bounds were checked against `design.md:650-651`: 256 KB, 200 files, 30 days and 20
+  cases.
+- The fixtures were grepped: the only address is `192.0.2.10`, and there are no real
+  hostnames.
+- `live-denied.json` was read: both the gate-denied and the hook-blocked call are recorded
+  with `is_error` true.
+- The suite was re-run: 3213 passed, 3 skipped.

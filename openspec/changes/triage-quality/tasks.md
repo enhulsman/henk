@@ -445,12 +445,12 @@ The capture is persisted only on rp5's audit volume.
 
 ## 10. Triage recording (triage-replay)
 
-- [ ] 10.1 Tests first:
+- [x] 10.1 Tests first:
   - the recording schema validates the fixtures;
   - *A triage leaves a recording*;
   - *Denied calls are recorded too*;
   - *An errored triage is still recorded*.
-- [ ] 10.2 Tests first:
+- [x] 10.2 Tests first:
   - *Recording does not widen audit capture* (`RESULT_CAPTURING_TOOLS` unchanged);
   - *A recording failure does not disturb the triage*;
   - *Recording can be turned off*;
@@ -458,14 +458,14 @@ The capture is persisted only on rp5's audit volume.
   - *A triage record links its recording and history*;
   - *Non-triage records carry null evidence links*;
   - *References carry no content*.
-- [ ] 10.3 Tests first:
+- [x] 10.3 Tests first:
   - *Reference cases survive recording retention* (the count bound of 20, refusal past
     it, no eviction);
   - *An oversized recording is marked, not silently cut*;
   - *Retention holds its bounds*;
   - *Rehydration ignores recordings*;
   - an atomic write.
-- [ ] 10.4 Implement:
+- [x] 10.4 Implement:
   - `_TranscriptAccumulator` and `transcript()`;
   - the per-turn slice;
   - `henk/replay/recorder.py`;

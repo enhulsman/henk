@@ -43,6 +43,7 @@ from henk.gate.approval import ApprovalGate
 from henk.reminders.note import DeliveredReminderNote
 from henk.reminders.scheduler import ReminderScheduler
 from henk.reminders.timeparse import TimeResolver
+from henk.replay.recorder import TriageRecorder
 from henk.store import build_stores
 from henk.tools import build_production_registry, build_time_resolver
 
@@ -241,6 +242,9 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         # Event sessions only; owner sessions, and every session after `/new` or
         # idle expiry, come from `factory` above.
         event_factory=event_factory,
+        # One recording per event triage (triage-quality D13), or None when
+        # `triage_recording.enabled` is false (the rollback; absent means true).
+        recorder=_triage_recorder(config),
     )
     dispatcher = Dispatcher(AllowlistFilter(config.owner.id), gate, core)
 
@@ -272,6 +276,21 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
             scheduler=scheduler,
         ),
         client,
+    )
+
+
+def _triage_recorder(config: Config) -> TriageRecorder | None:
+    """The triage recorder, or None when recording is turned off (D13).
+
+    Its directories are the ones derived from `audit.path`, beside the audit log on
+    the same volume and backup; no key can place them elsewhere. Constructing it
+    does no I/O: the directory appears with the first recording.
+    """
+    if not config.triage_recording.enabled:
+        return None
+    return TriageRecorder(
+        config.audit.triage_recordings_dir,
+        replays_dir=config.audit.triage_replays_dir,
     )
 
 

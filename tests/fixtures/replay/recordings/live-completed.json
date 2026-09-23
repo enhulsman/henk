@@ -1,0 +1,85 @@
+{
+ "announceable": true,
+ "approvals": [],
+ "at": 1790144100.5,
+ "complete": true,
+ "content": "===== BEGIN UNTRUSTED SENSOR DATA =====\n[incident 1] source=grafana identity=grafana:HenkDiskFull:host-a.example state=firing notified=2026-09-23T06:13:03Z (notification time) received=2026-09-23T06:14:03Z\ntitle: [FIRING:1] HenkDiskFull henk (host-a.example)\n===== END UNTRUSTED SENSOR DATA =====\n\nPlaceholder framing.",
+ "ending": {
+  "error_class": null,
+  "http_status": null,
+  "outcome": "completed"
+ },
+ "hashes": {
+  "system_prompt": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+  "tool_definitions": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+ },
+ "incidents": [
+  {
+   "event_id": "evt-0001",
+   "identity_key": "grafana:HenkDiskFull:host-a.example",
+   "message": "Value: A=91.2\nLabels:\n - alertname = HenkDiskFull\n - host = host-a.example\n - node = vps\n",
+   "name": "HenkDiskFull",
+   "notified": 1790143983,
+   "prior_handoff_ref": null,
+   "received": 1790144043.0,
+   "recurrence": false,
+   "source": "grafana",
+   "state": "firing",
+   "title": "[FIRING:1] HenkDiskFull henk (host-a.example)"
+  }
+ ],
+ "incomplete_reasons": [],
+ "observed_model": "claude-opus-5-5",
+ "prior_handoff_ids": [
+  3,
+  7
+ ],
+ "profile": {
+  "effort": "high",
+  "model": "claude-opus-5-5",
+  "name": "event",
+  "thinking": null
+ },
+ "reconstructed": false,
+ "recording_id": "20260923T061500Z-0000000a",
+ "reply": "Diagnosis: placeholder (confidence: moderate)\nFix: placeholder\nPickup: run henk-pickup",
+ "schema": "henk.triage-recording.v1",
+ "suppressed_count": 0,
+ "transcript": [
+  {
+   "arguments": {
+    "host": "vps",
+    "query": "memory_movers",
+    "window": "6h"
+   },
+   "is_error": null,
+   "name": "homelab_query",
+   "result": "example-a.service 612 MiB peak at 2026-09-23T06:05:00Z on 192.0.2.10",
+   "tool_use_id": "tu-1"
+  },
+  {
+   "arguments": {
+    "host": "vps",
+    "query": "host_service_state"
+   },
+   "is_error": null,
+   "name": "homelab_query",
+   "result": "example-b.service activating since 2026-09-23T06:01:00Z",
+   "tool_use_id": "tu-2"
+  },
+  {
+   "arguments": {
+    "document": "placeholder handoff"
+   },
+   "is_error": null,
+   "name": "publish_handoff",
+   "result": "handoff published (id: msg-0001)",
+   "tool_use_id": "tu-3"
+  }
+ ],
+ "usage": {
+  "cache_read_input_tokens": null,
+  "input_tokens": 1200,
+  "output_tokens": 300
+ }
+}

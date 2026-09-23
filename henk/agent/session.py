@@ -9,7 +9,7 @@ imports ``claude_agent_sdk``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Any, Mapping, Protocol, runtime_checkable
 
 
 #: The one tool whose RESULT the application reads rather than merely recording:
@@ -33,6 +33,25 @@ class ToolCallRecord:
     name: str
     tool_class: str | None = None
     result_id: str | None = None
+
+
+@dataclass(frozen=True)
+class TranscriptCall:
+    """One tool call of a turn, as the model made it and as it was answered (D13).
+
+    For the triage recording only, never the audit record: it carries the
+    arguments and the result text, which is exactly what the audit path must not
+    hold (``RESULT_CAPTURING_TOOLS``). ``result`` is None when no answer arrived
+    before the turn ended, and ``is_error`` is the SDK's flag as reported, None
+    when it reported none. A call the hook or the gate denied is here too, with the
+    denial text the model received as its result.
+    """
+
+    name: str
+    arguments: Mapping[str, Any] = field(default_factory=dict)
+    result: str | None = None
+    is_error: bool | None = None
+    tool_use_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -96,6 +115,12 @@ class AgentSession(Protocol):
     # without it, like one whose ``ending()`` raises or returns None, is treated
     # as reporting no signal, so every existing fake keeps working.
     # def ending(self) -> TurnEnding: ...
+
+    # Optional: sessions MAY report the last turn's tool calls, arguments and
+    # answers for the triage recording (triage-quality D13). A session without it,
+    # or one whose ``transcript()`` raises, is recorded as "transcript
+    # unavailable", never as a turn that made no calls.
+    # def transcript(self) -> tuple[TranscriptCall, ...]: ...
 
 
 @runtime_checkable

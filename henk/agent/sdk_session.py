@@ -35,6 +35,7 @@ from henk.agent.session import (
     PROFILES,
     SessionStats,
     ToolCallRecord,
+    TranscriptCall,
     TurnEnding,
 )
 from henk.gate.approval import ApprovalGate
@@ -420,6 +421,58 @@ class _StatsAccumulator:
         )
 
 
+class _TranscriptAccumulator:
+    """Folds one turn's SDK stream into its tool calls, for the recording (D13).
+
+    Beside :class:`_StatsAccumulator` on the same ``observe`` call, and separate
+    from it on purpose: this one keeps every call's arguments and result text,
+    which the audit path must never hold, so ``RESULT_CAPTURING_TOOLS`` and the
+    audit record are untouched by it. Reset at the start of every turn, so it
+    holds the LAST turn only: the triage turn, when read at triage completion.
+
+    Duck-typed like the stats accumulator: a ``ToolUseBlock`` has ``id``, ``name``
+    and ``input``; a ``ToolResultBlock`` has ``tool_use_id``, ``content`` and
+    ``is_error`` (claude_agent_sdk 0.2.157). A call the ``PreToolUse`` hook or
+    ``can_use_tool`` denied is answered in the stream with the denial text as an
+    error result, so it is recorded like any other call.
+    """
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self._calls: list[dict[str, Any]] = []
+        self._by_id: dict[str, dict[str, Any]] = {}
+
+    def observe(self, message: Any) -> None:
+        # The stats accumulator's idiom: a UserMessage's plain-string content
+        # iterates as characters, which carry no block attributes and are skipped.
+        for block in getattr(message, "content", None) or []:
+            tool_use_id = getattr(block, "tool_use_id", None)
+            if tool_use_id is not None:  # ToolResultBlock
+                call = self._by_id.get(tool_use_id)
+                if call is not None:
+                    call["result"] = _tool_result_text(getattr(block, "content", None))
+                    call["is_error"] = getattr(block, "is_error", None)
+                continue
+            name = getattr(block, "name", None)
+            block_id = getattr(block, "id", None)
+            if name is not None and block_id is not None:  # ToolUseBlock
+                arguments = getattr(block, "input", None)
+                call = {
+                    "name": _strip_mcp_prefix(name),
+                    "arguments": dict(arguments) if isinstance(arguments, Mapping) else {},
+                    "result": None,
+                    "is_error": None,
+                    "tool_use_id": block_id,
+                }
+                self._calls.append(call)
+                self._by_id[block_id] = call
+
+    def snapshot(self) -> tuple[TranscriptCall, ...]:
+        return tuple(TranscriptCall(**call) for call in self._calls)
+
+
 def _is_result_message(message: Any) -> bool:
     """``ResultMessage`` duck-typed: it alone carries ``is_error`` AND ``subtype``.
     (``SystemMessage`` has ``subtype`` without ``is_error``; ``ToolResultBlock``
@@ -499,10 +552,13 @@ class _SdkAgentSession:
         self._connected = False
         self._stats = _StatsAccumulator(tool_classes)
         self._ending = _EndingObserver()
+        self._transcript = _TranscriptAccumulator()
 
     async def run_turn(self, text: str) -> str:
-        # First, before anything that can raise: ending() is the LAST turn's.
+        # First, before anything that can raise: ending() and transcript() are the
+        # LAST turn's.
         self._ending.reset()
+        self._transcript.reset()
         if not self._connected:
             await self._client.connect()
             self._connected = True
@@ -511,6 +567,7 @@ class _SdkAgentSession:
         async for message in self._client.receive_response():
             self._stats.observe(message)
             self._ending.observe(message)
+            self._transcript.observe(message)
             for block in getattr(message, "content", None) or []:
                 chunk = getattr(block, "text", None)
                 if chunk:
@@ -523,6 +580,10 @@ class _SdkAgentSession:
     def ending(self) -> TurnEnding:
         """How the last turn ended, from the SDK's structured signals (D12)."""
         return self._ending.snapshot()
+
+    def transcript(self) -> tuple[TranscriptCall, ...]:
+        """The last turn's tool calls with arguments and answers (D13)."""
+        return self._transcript.snapshot()
 
     async def close(self) -> None:  # pragma: no cover - requires the live client
         if self._connected:

@@ -30,6 +30,10 @@ Responsibilities (v1.2):
   before its text; an ending other than ``completed`` discards the reply, and an
   announceable incident gets the application-authored incomplete-triage notice
   instead (triage-quality D12);
+- every event triage, errored ones included, leaves one recording through the
+  injected recorder before its record is flushed, and the record links it by id;
+  a recording failure leaves a null link and changes nothing else
+  (triage-quality D13);
 - every agent turn is framed for the gate with its turn type, announceability and
   the session's taint (design D10), cleared on every exit path including errors:
   the gate can only enforce turn scope if the core tells it what turn is running;
@@ -157,6 +161,10 @@ class _SessionAudit:
     profile: str = CHAT_PROFILE
     effort: str | None = None
     model: str | None = None
+    #: The id of this triage's recording (triage-quality D13), set only on an
+    #: event-triage acc and only once the file is written; None everywhere else,
+    #: so a failed recording is a null link, never a false one.
+    recording_id: str | None = None
     #: Cumulative session stats at this acc's start; when set, the acc's record
     #: reports only stats accrued SINCE it (delta), so an owner interrogation
     #: continuing an event session is audited without double-counting the triage.
@@ -186,6 +194,7 @@ class AgentCore:
         tool_names: Iterable[str] | None = None,
         handoff_archive: Any | None = None,
         event_factory: SessionFactory | None = None,
+        recorder: Any | None = None,
     ) -> None:
         self._factory = factory
         # The triage profile's factory (D11): used ONLY by `_start_event_session`.
@@ -257,6 +266,9 @@ class AgentCore:
         # ONLY by the event path, for the related-handoff digest; no owner-turn path
         # touches it. None renders no digest.
         self._handoff_archive = handoff_archive
+        # Writes one recording per event triage (triage-quality D13). None, when
+        # `triage_recording.enabled` is false or in a unit test, records nothing.
+        self._recorder = recorder
         # Whether THIS session has already received its recall block. Keyed on the
         # first TURN that read it rather than session creation: an event turn that
         # injected it marks the session (triage-quality D7), and one that could not
@@ -447,6 +459,11 @@ class AgentCore:
                 # or refusal is not a triage, and has no diagnosis to record.
                 self._acc.triage_arc_complete = False
         self._last_activity = self._clock()
+        # D13: record the triage before its record is flushed, so the record's
+        # link names a file that exists. Never raises; a failure links nothing.
+        recording_id = self._record_triage(turn, content, reply, ending, digest)
+        if self._acc is not None:
+            self._acc.recording_id = recording_id
 
         # D3: make this triage durable now (session stays open for owner
         # interrogation), then advance the checkpoint gated on that write. An
@@ -697,7 +714,7 @@ class AgentCore:
         """Always open a fresh isolated session for a new incident (D5 displace)."""
         await self._close_session()
         # The triage profile (D11): the only place the event factory is used.
-        factory = self._event_factory if self._event_factory is not None else self._factory
+        factory = self._triage_factory()
         self._session = factory.create()
         self._last_activity = self._clock()
         # The ONLY way an event turn enters a session, so taint cannot be missed.
@@ -734,6 +751,42 @@ class AgentCore:
             await session.close()
         except Exception:  # pragma: no cover - best effort
             logger.warning("error closing session", exc_info=True)
+
+    def _triage_factory(self) -> SessionFactory:
+        """The factory event sessions come from: the triage profile's when wired."""
+        return self._event_factory if self._event_factory is not None else self._factory
+
+    def _record_triage(
+        self, turn: EventTurn, content: str, reply: str | None, ending: Any, digest: Any
+    ) -> str | None:
+        """Write this triage's recording; its id, or None when none was written.
+
+        Never raises, and logs no content: the recording holds tool output and
+        memory, the log does not. The transcript is the session's last turn, which
+        is this triage turn; a session without ``transcript()`` records as
+        "transcript unavailable" (``None``), never as a turn with no calls.
+        """
+        if self._recorder is None:
+            return None
+        try:
+            recording_id = self._recorder.record(
+                turn=turn,
+                content=content,
+                reply=reply,
+                ending=ending,
+                factory=self._triage_factory(),
+                transcript=self._session_transcript(self._session),
+                stats=self._session_stats(self._session),
+                prior_handoff_ids=digest.shown_ids,
+                approvals=list(self._acc.approvals) if self._acc is not None else [],
+            )
+        except Exception as exc:
+            logger.error(
+                "triage recording failed (%s); the triage record links none",
+                type(exc).__name__,
+            )
+            return None
+        return recording_id if isinstance(recording_id, str) else None
 
     @staticmethod
     def _profile_of(factory: SessionFactory) -> dict[str, Any]:
@@ -796,6 +849,7 @@ class AgentCore:
             approvals=acc.approvals,
             memory_hash=acc.memory_hash,
             prior_handoff_ids=acc.prior_handoff_ids,
+            recording_id=acc.recording_id,
             profile=acc.profile,
             effort=acc.effort,
             outcome=acc.outcome,
@@ -884,6 +938,22 @@ class AgentCore:
             logger.warning("could not read the turn's ending signals", exc_info=True)
             return None
         return ending if isinstance(ending, TurnEnding) else None
+
+    @staticmethod
+    def _session_transcript(session: AgentSession | None) -> tuple | None:
+        """The session's last-turn tool calls, or None for "not available".
+
+        ``transcript()`` is optional on the protocol, like ``ending()``: a session
+        without it, or one whose ``transcript()`` raises, reports none."""
+        getter = getattr(session, "transcript", None)
+        if getter is None:
+            return None
+        try:
+            return tuple(getter())
+        except Exception as exc:
+            # The class only: a transcript's text belongs in the recording, not here.
+            logger.warning("could not read the turn's transcript (%s)", type(exc).__name__)
+            return None
 
     @staticmethod
     def _session_stats(session: AgentSession) -> SessionStats | None:

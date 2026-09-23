@@ -1,0 +1,72 @@
+{
+ "announceable": true,
+ "approvals": [],
+ "at": 1790144100.5,
+ "complete": false,
+ "content": "===== BEGIN UNTRUSTED SENSOR DATA =====\n[incident 1] source=grafana identity=grafana:HenkDiskFull:host-a.example state=firing notified=2026-09-23T06:13:03Z (notification time) received=2026-09-23T06:14:03Z\ntitle: [FIRING:1] HenkDiskFull henk (host-a.example)\n===== END UNTRUSTED SENSOR DATA =====\n\nPlaceholder framing.",
+ "ending": {
+  "error_class": null,
+  "http_status": null,
+  "outcome": "completed"
+ },
+ "hashes": {
+  "system_prompt": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+  "tool_definitions": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+ },
+ "incidents": [
+  {
+   "event_id": "evt-0001",
+   "identity_key": "grafana:HenkDiskFull:host-a.example",
+   "message": "Value: A=91.2\nLabels:\n - alertname = HenkDiskFull\n - host = host-a.example\n - node = vps\n",
+   "name": "HenkDiskFull",
+   "notified": 1790143983,
+   "prior_handoff_ref": null,
+   "received": 1790144043.0,
+   "recurrence": false,
+   "source": "grafana",
+   "state": "firing",
+   "title": "[FIRING:1] HenkDiskFull henk (host-a.example)"
+  }
+ ],
+ "incomplete_reasons": [
+  "truncated"
+ ],
+ "observed_model": "claude-opus-5-5",
+ "prior_handoff_ids": [],
+ "profile": {
+  "effort": "high",
+  "model": "claude-opus-5-5",
+  "name": "event",
+  "thinking": null
+ },
+ "reconstructed": false,
+ "recording_id": "20260923T061800Z-0000000d",
+ "reference": {
+  "branch": "fullness (A=98.39); the I/O branch was also true",
+  "culprit": "example-a.service page-cache burst after a package upgrade",
+  "fix": "a boot-only drop-in for example-a.service and more swap",
+  "mechanism": "not a leak; recurs on every upgrade of the example package"
+ },
+ "reply": "Diagnosis: placeholder (confidence: moderate)\nFix: placeholder\nPickup: run henk-pickup",
+ "schema": "henk.triage-recording.v1",
+ "suppressed_count": 0,
+ "transcript": [
+  {
+   "arguments": {
+    "host": "vps",
+    "query": "memory_movers",
+    "window": "24h"
+   },
+   "is_error": null,
+   "name": "homelab_query",
+   "result": "placeholder long result\n[truncated by the recorder: 123456 bytes removed]",
+   "tool_use_id": "tu-1",
+   "truncated_bytes": 123456
+  }
+ ],
+ "usage": {
+  "cache_read_input_tokens": null,
+  "input_tokens": 1200,
+  "output_tokens": 300
+ }
+}
