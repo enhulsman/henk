@@ -1,0 +1,34 @@
+{
+ "T": 1790144998,
+ "T_iso": "2026-09-23T06:29:58Z",
+ "arguments": {
+  "node": "vps",
+  "window": "1h"
+ },
+ "body": {
+  "data": {
+   "result": [],
+   "resultType": "matrix"
+  },
+  "status": "success"
+ },
+ "expression": "node_systemd_unit_state{job=\"node-exporter-vps\",state=~\"activating|failed\"} == 1",
+ "http_status": 200,
+ "kind": "range",
+ "max_points": 60,
+ "query": "host_service_state",
+ "request": {
+  "params": {
+   "end": 1790144998,
+   "query": "node_systemd_unit_state{job=\"node-exporter-vps\",state=~\"activating|failed\"} == 1",
+   "start": 1790141398,
+   "step": 62
+  },
+  "path": "/api/v1/query_range"
+ },
+ "role": "bad_states",
+ "schema": "henk.triage-capture.v1",
+ "source": "written-out",
+ "step": 62,
+ "window": "1h"
+}

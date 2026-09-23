@@ -1100,3 +1100,94 @@ worktree, and both groups md5-verified clean afterwards. Future parallel groups 
 
 **Not verified locally:** the real judge `create()` over an empty MCP server, because the
 SDK is only in the image. Group 13 should cover it.
+
+## Group 12b: cases, rebuild, fixture, and the 12a/12b integration
+
+12b was built in a worktree against group 11, in parallel with 12a, then applied onto 12a
+by an integration pass. That pass also fixed a real bug between the two groups.
+
+**New files:**
+- `henk/replay/rebuild.py`;
+- the `cases` and `rebuild` subcommands;
+- the placeholder fixture `tests/fixtures/replay/case-2026-09-23/`: 3 T directories of 23
+  capture records each, plus event, audit, handoff and reference stand-ins;
+- `tests/replay_case_fixture.py`, the fixture generator.
+
+The suite moved from 3401 to 3475 passed, with 3 skipped, all SDK-gated.
+
+**Decisions.**
+- **The capture is referenced in place, never copied.** `--capture` must lie inside
+  `triage-cases/`, and the case stores a path relative to it.
+- **`rebuild` writes group 11's case layout.** It adds top-level `grades:
+  "current-renderers"`, `statement`, `original_candidate` and `rebuild` metadata, which
+  `load_case` ignores. The reference goes in `recording.reference`.
+- **The event is composed with no recall and no digest.** Its framing uses the tool names
+  of the live registry, so rp5's `homelab_docs` step appears. The recorded calls are the
+  audit record's tool names, with arguments `unknown`.
+- **The interval is derived:** the notification time plus the current
+  `events.debounce_seconds`, up to the triage record's `at`. A T outside it is refused.
+  `arrival_time` is the notification time, because the receive time was not preserved.
+- **Records.**
+  - A v4 record's profile is recorded as `chat`, with null effort, thinking and hashes.
+  - The recording id is deterministic, so `--replace` is stable.
+- **Checks and bounds.**
+  - Every check runs before the first write: the batch check against existing cases, and
+    the bound of 20.
+  - `cases` lists an unloadable case as `invalid`, because it still counts toward the
+    bound.
+- **Drift at rebuild** uses `capture_drift`, which already fills the window through
+  `with_range_end` (`case.py:327`) and compares `kind` (`case.py:277`). The 12b
+  carry-forward is therefore met.
+- **The publication test** runs the real `.githooks/pre-commit` in a scratch repo that
+  stages only the fixture files. A control test plants a tailnet address to prove the
+  check is live. A third test checks that every fixture address is RFC 5737.
+- **The `targets_unavailable` item was dropped**, because group 11 already implemented it.
+
+**The integration fix (a real bug).** `grade` and `compare` built the original candidate
+from `recording.reply` plus mapping-shaped `publish_handoff` arguments. A rebuilt case has
+`reply = None` and `arguments: "unknown"`, so its original would have been graded empty.
+- **Now** `ReplayCase.original_candidate` is loaded and validated, and the judge sees:
+  - the handoff document under `handoffs`;
+  - a composed, bracketed line, `REPLY_NOT_PRESERVED` (`compare.py:65`), stating that the
+    replay tool wrote it, that the reply was not preserved, and the recorded diagnosis
+    and confidence;
+  - a `NOT_PRESERVED_INSTRUCTION` outside the data block, only when that line is used.
+- **No reply is invented.** No model field is read from the candidate, so blindness is
+  preserved.
+- **The tradeoff:** the historical candidate can be told apart. Confidence that this is
+  acceptable: moderate. The alternative was scoring an absent reply.
+- **The empty-original guard.**
+  - An original with no reply, no handoff and no diagnosis is refused before spend when
+    the source is reconstructed, or when it is a live recording that ended `completed`.
+  - A live recording that ended `error`, `refused` or `no-reply` is still graded as that
+    ending.
+- The grade file gains `"original": {source, reply_preserved}`.
+
+**The judge parser now accepts exactly one enclosing code fence** (```json or a bare
+```), with only whitespace outside it. Fence plus prose, two fences, an unclosed fence,
+and a fence of another language all stay unparseable. The fence carries no score, so
+stripping it invents nothing, and it saves the owner a paid re-run.
+
+**One command dispatch.** Every subcommand runs `precheck`, then the config load, then
+`check_audit_log`, then its handler. `tests/test_replay_cli.py` pins the command set to
+exactly {list, run, compare, grade, cases, rebuild}.
+
+**Mutation tables.**
+- 12b: 54 mutants, all killed. Two first survived, and both gaps are closed: R3 (the tool
+  names) and C5 (raw directories skipped quietly).
+- The integration: 14 mutants, all killed. They cover the candidate source, the empty
+  guard, blindness and the fence rule.
+
+**Known cosmetic issue, not fixed:** for a rebuilt original, `grade`'s terminal line
+prints `(model, None)`, because the effort is unknown.
+
+**12.6 is the owner step on rp5.** It needs the group 13 deploy first, so the image carries
+12a and 12b. rp5's `events.debounce_seconds` must be 120, or the default.
+
+**Review gate (orchestrator).**
+- The fixture was checked: the only addresses are `192.0.2.20` and `.21`, and there are no
+  real domains or unit names.
+- `rebuild`'s reference placement was checked (`rebuild.py:379`).
+- The rp5 paths in the owner sequence were checked against memory: the checkout is
+  `/home/pi/Coding/henk`, and the volume is `henk_henk_audit`.
+- The suite was re-run after integration: 3475 passed.

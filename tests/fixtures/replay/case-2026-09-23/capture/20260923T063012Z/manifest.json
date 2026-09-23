@@ -1,0 +1,277 @@
+{
+ "T": 1790145012,
+ "T_iso": "2026-09-23T06:30:12Z",
+ "files": [
+  {
+   "arguments": {
+    "node": "vps",
+    "resource": "memory",
+    "window": "15m"
+   },
+   "file": "0033-node_resource_trend-memory-node=vps-resource=memory-window=15m.json",
+   "http_status": 200,
+   "query": "node_resource_trend",
+   "role": "memory",
+   "source": "registry"
+  },
+  {
+   "arguments": {
+    "node": "vps",
+    "resource": "memory",
+    "window": "1h"
+   },
+   "file": "0034-node_resource_trend-memory-node=vps-resource=memory-window=1h.json",
+   "http_status": 200,
+   "query": "node_resource_trend",
+   "role": "memory",
+   "source": "registry"
+  },
+  {
+   "arguments": {
+    "node": "vps",
+    "resource": "swap_used",
+    "window": "15m"
+   },
+   "file": "0045-node_resource_trend-swap_used-node=vps-resource=swap_used-window=15m.json",
+   "http_status": 200,
+   "query": "node_resource_trend",
+   "role": "swap_used",
+   "source": "registry"
+  },
+  {
+   "arguments": {
+    "node": "vps",
+    "resource": "swap_used",
+    "window": "1h"
+   },
+   "file": "0046-node_resource_trend-swap_used-node=vps-resource=swap_used-window=1h.json",
+   "http_status": 200,
+   "query": "node_resource_trend",
+   "role": "swap_used",
+   "source": "registry"
+  },
+  {
+   "arguments": {
+    "node": "vps",
+    "resource": "swap_io",
+    "window": "15m"
+   },
+   "file": "0049-node_resource_trend-swap_io-node=vps-resource=swap_io-window=15m.json",
+   "http_status": 200,
+   "query": "node_resource_trend",
+   "role": "swap_io",
+   "source": "registry"
+  },
+  {
+   "arguments": {
+    "node": "vps",
+    "resource": "swap_io",
+    "window": "1h"
+   },
+   "file": "0050-node_resource_trend-swap_io-node=vps-resource=swap_io-window=1h.json",
+   "http_status": 200,
+   "query": "node_resource_trend",
+   "role": "swap_io",
+   "source": "registry"
+  },
+  {
+   "arguments": {},
+   "file": "0081-scrape_targets-up.json",
+   "http_status": 200,
+   "query": "scrape_targets",
+   "role": "up",
+   "source": "registry"
+  },
+  {
+   "arguments": {},
+   "file": "0082-scrape_targets-up_over_window.json",
+   "http_status": 200,
+   "query": "scrape_targets",
+   "role": "up_over_window",
+   "source": "registry"
+  },
+  {
+   "arguments": {
+    "node": "vps"
+   },
+   "file": "0092-container_state-last_seen-node=vps.json",
+   "http_status": 200,
+   "query": "container_state",
+   "role": "last_seen",
+   "source": "registry"
+  },
+  {
+   "arguments": {
+    "node": "vps"
+   },
+   "file": "0093-container_state-health_state-node=vps.json",
+   "http_status": 200,
+   "query": "container_state",
+   "role": "health_state",
+   "source": "registry"
+  },
+  {
+   "arguments": {
+    "node": "vps"
+   },
+   "file": "0094-container_state-oom_events-node=vps.json",
+   "http_status": 200,
+   "query": "container_state",
+   "role": "oom_events",
+   "source": "registry"
+  },
+  {
+   "arguments": {
+    "node": "vps"
+   },
+   "file": "0095-container_state-created-node=vps.json",
+   "http_status": 200,
+   "query": "container_state",
+   "role": "created",
+   "source": "registry"
+  },
+  {
+   "arguments": {
+    "node": "vps"
+   },
+   "file": "0096-container_state-memory_working_set-node=vps.json",
+   "http_status": 200,
+   "query": "container_state",
+   "role": "memory_working_set",
+   "source": "written-out"
+  },
+  {
+   "arguments": {
+    "node": "vps"
+   },
+   "file": "0097-container_state-swap-node=vps.json",
+   "http_status": 200,
+   "query": "container_state",
+   "role": "swap",
+   "source": "written-out"
+  },
+  {
+   "arguments": {
+    "node": "vps"
+   },
+   "file": "0098-container_state-restarts_15m-node=vps.json",
+   "http_status": 200,
+   "query": "container_state",
+   "role": "restarts_15m",
+   "source": "written-out"
+  },
+  {
+   "arguments": {
+    "node": "vps"
+   },
+   "file": "0099-container_state-restarts_24h-node=vps.json",
+   "http_status": 200,
+   "query": "container_state",
+   "role": "restarts_24h",
+   "source": "written-out"
+  },
+  {
+   "arguments": {
+    "node": "vps",
+    "window": "1h"
+   },
+   "file": "0139-memory_movers-movers_max-node=vps-window=1h.json",
+   "http_status": 200,
+   "query": "memory_movers",
+   "role": "movers_max",
+   "source": "written-out"
+  },
+  {
+   "arguments": {
+    "node": "vps",
+    "window": "1h"
+   },
+   "file": "0140-memory_movers-movers_min-node=vps-window=1h.json",
+   "http_status": 200,
+   "query": "memory_movers",
+   "role": "movers_min",
+   "source": "written-out"
+  },
+  {
+   "arguments": {
+    "node": "vps",
+    "window": "1h"
+   },
+   "file": "0141-memory_movers-movers_series-node=vps-window=1h.json",
+   "http_status": 200,
+   "query": "memory_movers",
+   "role": "movers_series",
+   "source": "written-out"
+  },
+  {
+   "arguments": {
+    "node": "vps",
+    "window": "1h"
+   },
+   "file": "0150-host_service_state-bad_states-node=vps-window=1h.json",
+   "http_status": 200,
+   "query": "host_service_state",
+   "role": "bad_states",
+   "source": "written-out"
+  },
+  {
+   "arguments": {
+    "node": "vps",
+    "window": "1h"
+   },
+   "file": "0151-host_service_state-unit_count-node=vps-window=1h.json",
+   "http_status": 200,
+   "query": "host_service_state",
+   "role": "unit_count",
+   "source": "written-out"
+  },
+  {
+   "arguments": {
+    "container": "example-web",
+    "node": "vps"
+   },
+   "file": "0156-container_state-named_container-container=example-web-node=vps.json",
+   "http_status": 200,
+   "query": "container_state",
+   "role": "named_container",
+   "source": "named-follow-up"
+  },
+  {
+   "arguments": {
+    "container": "example-worker",
+    "node": "vps"
+   },
+   "file": "0157-container_state-named_container-container=example-worker-node=vps.json",
+   "http_status": 200,
+   "query": "container_state",
+   "role": "named_container",
+   "source": "named-follow-up"
+  }
+ ],
+ "max_points": 60,
+ "named_followups": {
+  "rp5": {
+   "complete": true,
+   "failed_roles": [],
+   "names": 0
+  },
+  "vps": {
+   "complete": true,
+   "failed_roles": [],
+   "names": 2
+  }
+ },
+ "per_query": {
+  "container_state": 8,
+  "container_state_named": 2,
+  "host_service_state": 2,
+  "memory_movers": 3,
+  "node_resource_trend": 6,
+  "scrape_targets": 2
+ },
+ "request_count": 23,
+ "schema": "henk.triage-capture.v1",
+ "status_counts": {
+  "200": 23
+ }
+}

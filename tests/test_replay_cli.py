@@ -302,13 +302,20 @@ def test_list_skips_an_unreadable_recording_with_a_warning(tmp_path):
     assert bad in err
 
 
-def test_cases_and_rebuild_are_not_commands_yet(tmp_path):
-    # compare and grade are commands since group 12a (tests/test_replay_compare.py,
-    # tests/test_replay_grade.py); cases and rebuild belong to group 12b.
+def test_the_command_set_is_exactly_the_six_commands_each_with_a_handler(tmp_path):
+    # Groups 11, 12a and 12b together: list and run, compare and grade, cases and
+    # rebuild. One dispatch mechanism: every command names its handler, so none
+    # falls through to another command's code.
+    import argparse
+
+    parser = cli._parser()
+    [commands] = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
+    assert set(commands.choices) == {"list", "run", "compare", "grade", "cases", "rebuild"}
+    for name, sub in commands.choices.items():
+        assert callable(sub.get_default("handler")), name
     config = make_config(tmp_path)
-    for command in ("cases", "rebuild"):
-        with pytest.raises(SystemExit):
-            _main(config, [command])
+    with pytest.raises(SystemExit):
+        _main(config, ["judge"])
 
 
 # --- The run writer ---------------------------------------------------------------

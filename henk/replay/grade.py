@@ -34,9 +34,21 @@ order a seeded shuffle gives (:func:`order_candidates`) and labelled ``A``,
 ``B``... in that order. The seed and the label-to-run mapping are recorded in
 the grade file only.
 
+**The original candidate** is :func:`henk.replay.compare.original_of`: the
+recording's reply and transcript handoffs, or, for a rebuilt case whose reply
+was not preserved, the case's ``original_candidate``: the original handoff under
+``handoffs`` and, as the reply, :data:`~henk.replay.compare.REPLY_NOT_PRESERVED`
+stating the recorded diagnosis and confidence. The judge is told, outside the
+data block, what that line is (:data:`NOT_PRESERVED_INSTRUCTION`). **An empty
+original is never graded silently:** one with no reply, no handoff and no
+recorded diagnosis is refused before any session, unless it is a live
+recording whose ending (error, refused, no-reply) is itself the explicit record
+of why it is empty.
+
 **Scores are never invented.** The reply must be exactly one JSON object of the
-required shape (:func:`parse_judge_output`). Anything else is recorded as
-``unparseable`` with the raw text and the problem, and no score. The session's
+required shape (:func:`parse_judge_output`), optionally inside exactly one
+enclosing code fence with nothing but whitespace outside it. Anything else is
+recorded as ``unparseable`` with the raw text and the problem, and no score. The session's
 ending is classified by :func:`henk.agent.ending.classify_ending` first: a
 refusal is recorded as ``refused``, an error as ``error``, an empty reply as
 ``no-reply``, each with no score.
@@ -67,7 +79,7 @@ from henk.agent.session import TurnEnding
 from henk.config import EFFORT_LEVELS
 from henk.gate.approval import ApprovalGate
 from henk.replay.case import iso
-from henk.replay.compare import ORIGINAL, load_runs, original_handoffs
+from henk.replay.compare import ORIGINAL, Original, load_runs, original_of
 from henk.replay.harness import NullChannel, ReplayReceipts
 from henk.replay.recorder import is_recording_id, new_recording_id, write_atomically
 from henk.replay.run import (
@@ -166,6 +178,14 @@ NO_REFERENCE_INSTRUCTION = (
     "No verified reference is available for this incident. Judge from the incident "
     "and the evidence the candidates received."
 )
+#: Outside the data block, when one candidate's reply is the composed line.
+NOT_PRESERVED_INSTRUCTION = (
+    "One candidate's owner-facing reply was not preserved. Its reply field is a "
+    "bracketed line composed by the replay tool, not by the triage, stating the "
+    "diagnosis and confidence the triage recorded. Grade that candidate on its "
+    "handoff and on that recorded diagnosis and confidence, and do not count the "
+    "missing reply against it."
+)
 
 #: A grade's status. Only ``scored`` carries scores.
 STATUS_SCORED = "scored"
@@ -237,13 +257,36 @@ def _calls_view(calls: Any) -> list[dict[str, Any]]:
     ]
 
 
-def _original_view(recording: Mapping[str, Any]) -> dict[str, Any]:
+def _original_view(source: ReplaySource, original: Original) -> dict[str, Any]:
+    """The original in the candidate shape. Never its model: that stays in the
+    grade file's mapping."""
+    recording = source.recording
     return {
         "ending": (recording.get("ending") or {}).get("outcome"),
-        "reply": recording.get("reply"),
-        "handoffs": original_handoffs(recording),
+        "reply": original.shown_reply(),
+        "handoffs": list(original.handoffs),
         "tool_calls": _calls_view(recording.get("transcript")),
     }
+
+
+def check_original(source: ReplaySource, original: Original) -> None:
+    """Refuse an empty original before any session: grading it would score
+    nothing and look like a verdict. A live recording whose ending says why it
+    is empty (error, refused, no-reply) is graded as that ending."""
+    if not original.empty:
+        return
+    outcome = (source.recording.get("ending") or {}).get("outcome")
+    if not source.reconstructed and outcome != COMPLETED:
+        return
+    if source.reconstructed:
+        why = ("its reply was not preserved and the case carries no original_candidate "
+               "with a handoff or a diagnosis")
+    else:
+        why = "the recording ended completed with no reply and no handoff"
+    raise ReplayRefused(
+        f"the original candidate of {source.source_id} is empty: {why}. An empty "
+        "original is not graded. No model was called."
+    )
 
 
 def _run_view(run: Mapping[str, Any]) -> dict[str, Any]:
@@ -331,6 +374,7 @@ def build_judge_input(
     source: ReplaySource,
     candidates: Sequence[tuple[str, Mapping[str, Any]]],
     reference: Mapping[str, Any] | None,
+    reply_not_preserved: bool = False,
 ) -> str:
     """The prompt: instructions, then the one data block, then the output format."""
     recording = source.recording
@@ -353,6 +397,7 @@ def build_judge_input(
         "which order. Tool results that the rubric calls harness limits are not the "
         "candidates' failures.",
         REFERENCE_INSTRUCTION if reference is not None else NO_REFERENCE_INSTRUCTION,
+        *([NOT_PRESERVED_INSTRUCTION] if reply_not_preserved else []),
         "",
         DATA_BEGIN,
         block,
@@ -392,13 +437,31 @@ def _exact_keys(value: Any, expected: Sequence[str], where: str) -> Mapping[str,
     return value
 
 
+#: One enclosing fence: ```json or a bare ``` on the first line, ``` alone on the
+#: last, and whitespace only outside it (the text is stripped first).
+_ENCLOSING_FENCE = re.compile(r"\A```(?:json)?[ \t]*\r?\n(?P<body>.*?)\r?\n[ \t]*```\Z",
+                              re.DOTALL)
+
+
+def _unfenced(text: str) -> str:
+    """``text`` stripped, and, when it is exactly one enclosing code fence, its
+    body. A fence carries no score, so removing it invents nothing. A fence with
+    prose around it is left as it is; with two fences the body holds the inner
+    fence lines. Neither parses as one JSON value."""
+    stripped = text.strip()
+    match = _ENCLOSING_FENCE.match(stripped)
+    return stripped if match is None else match.group("body")
+
+
 def parse_judge_output(text: str, labels: Sequence[str]) -> ParsedJudgement:
     """Strict: one JSON object with exactly the labels, criteria and fields asked for.
 
-    Anything else, including text around the object or a code fence, is a
+    The one leniency: the object may sit inside exactly one enclosing code fence
+    (```json or a bare ```) with nothing but whitespace outside it. Anything else,
+    including text around the object, text around a fence, or two fences, is a
     problem; no partial scores are ever returned."""
     try:
-        parsed = json.loads(text.strip(), object_pairs_hook=_no_duplicates)
+        parsed = json.loads(_unfenced(text), object_pairs_hook=_no_duplicates)
     except _Unparseable as exc:
         return ParsedJudgement(None, str(exc))
     except ValueError as exc:
@@ -477,8 +540,10 @@ async def run_grade(
     rubric = load_rubric(RUBRIC_VERSION)
     recording = source.recording
     reference = check_reference(recording)
+    original = original_of(source)
+    check_original(source, original)
 
-    views: dict[str, dict[str, Any]] = {ORIGINAL: _original_view(recording)}
+    views: dict[str, dict[str, Any]] = {ORIGINAL: _original_view(source, original)}
     profiles: dict[str, Any] = {ORIGINAL: recording.get("profile")}
     for run in runs:
         run_id = run.get("run_id")
@@ -494,6 +559,7 @@ async def run_grade(
         rubric=rubric, source=source,
         candidates=[(label, views[key]) for label, key in labelled],
         reference=reference,
+        reply_not_preserved=original.reply_composed,
     )
     if len(prompt) > JUDGE_INPUT_MAX_CHARS:
         raise ReplayRefused(
@@ -560,6 +626,8 @@ async def run_grade(
         },
         "seed": seed,
         "reference_used": reference is not None,
+        "original": {"source": original.source,
+                     "reply_preserved": original.reply_preserved},
         "candidates": [_mapping_entry(label, key, profiles[key]) for label, key in labelled],
         "status": status,
         "ending": {"outcome": ending.outcome, "error_class": ending.error_class,

@@ -537,7 +537,7 @@ The capture is persisted only on rp5's audit volume.
 
 ## 12b. Cases, rebuild, targets seam, fixture and the first case (triage-replay)
 
-- [ ] 12.4 Commit a placeholder-safe fixture of the 2026-09-23 case to
+- [x] 12.4 Commit a placeholder-safe fixture of the 2026-09-23 case to
   `tests/fixtures/replay/`, with the same shape as the real case:
   - captured-response files for a few `T` values;
   - placeholder hosts and units, and RFC 5737 addresses;
@@ -546,7 +546,7 @@ The capture is persisted only on rp5's audit volume.
     page-cache burst triggered by a package upgrade; not a leak; recurs on upgrade.
 
   Add the test for *Fixtures pass the publication checks*.
-- [ ] 12.5 Implement `cases`. Then implement `rebuild`, which
+- [x] 12.5 Implement `cases`. Then implement `rebuild`, which
   builds one case per captured `T`, each as `triage-cases/2026-09-23-swap-T<HHMMSSZ>/case.json`,
   from four inputs:
   - the preserved ntfy event, composed with no recall and no digest;

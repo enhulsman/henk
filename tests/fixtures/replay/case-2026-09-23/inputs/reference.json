@@ -1,0 +1,7 @@
+{
+ "branch": "fullness: A=98.39 is above the 95% fullness bar; the swap I/O branch was also true",
+ "culprit": "example-a.service, a host systemd unit on host-a.example, not a container: a page-cache burst while it read the whole boot's journal",
+ "mechanism": "a package upgrade restarted example-a.service mid-uptime; its journal read pulled about 1 GB into page cache, attributed to the unit's cgroup, and idle container pages were swapped out in one step; not a leak",
+ "fix": "make example-a.service run at boot only, cap the journal size, and grow swap",
+ "notes": "one-off per event, but it recurs on every upgrade of that package"
+}

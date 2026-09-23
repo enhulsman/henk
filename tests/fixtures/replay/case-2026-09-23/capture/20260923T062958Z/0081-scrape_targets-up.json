@@ -1,0 +1,52 @@
+{
+ "T": 1790144998,
+ "T_iso": "2026-09-23T06:29:58Z",
+ "arguments": {},
+ "body": {
+  "data": {
+   "result": [
+    {
+     "metric": {
+      "__name__": "up",
+      "instance": "192.0.2.20:9100",
+      "job": "node-exporter-vps"
+     },
+     "value": [
+      1790144998,
+      "1"
+     ]
+    },
+    {
+     "metric": {
+      "__name__": "up",
+      "instance": "192.0.2.21:8080",
+      "job": "cadvisor-vps"
+     },
+     "value": [
+      1790144998,
+      "1"
+     ]
+    }
+   ],
+   "resultType": "vector"
+  },
+  "status": "success"
+ },
+ "expression": "up",
+ "http_status": 200,
+ "kind": "instant",
+ "max_points": 60,
+ "query": "scrape_targets",
+ "request": {
+  "params": {
+   "query": "up",
+   "time": 1790144998
+  },
+  "path": "/api/v1/query"
+ },
+ "role": "up",
+ "schema": "henk.triage-capture.v1",
+ "source": "registry",
+ "step": null,
+ "window": null
+}

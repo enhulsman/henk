@@ -17,7 +17,14 @@ the directory ``triage-cases/<case_id>/`` holding ``case.json``
   ``T``, the evaluation time it was captured at; and ``interval``,
   ``{"start", "end"}``, the span in which the original triage could have queried,
   which is the case's stated timing uncertainty;
-- ``drift`` (optional): the mismatches the rebuild listed.
+- ``drift`` (optional): the mismatches the rebuild listed;
+- ``original_candidate`` (optional, written by ``rebuild``): the original
+  triage as the preserved material holds it, because a rebuilt recording's
+  ``reply`` is null (the owner's message was not preserved) and its calls carry
+  no arguments. ``handoff_document`` (the original handoff without its ``[AI]``
+  label), ``diagnosis`` and ``confidence`` (from the audit record) are strings
+  or null; ``grade`` and ``compare`` build the original candidate from it
+  (:func:`henk.replay.compare.original_of`).
 
 A live recording kept as a reference case has no ``capture`` and is served its
 recorded calls like any recording.
@@ -102,6 +109,7 @@ class ReplayCase:
     interval_start: float | None = None
     interval_end: float | None = None
     listed_drift: tuple = ()
+    original_candidate: dict[str, Any] | None = None
 
     @property
     def reconstructed(self) -> bool:
@@ -160,6 +168,28 @@ def _check_no_memory_or_history(recording: Mapping[str, Any]) -> None:
         )
 
 
+#: The ``original_candidate`` fields ``grade`` and ``compare`` read; each is a
+#: string or null. Other fields (id, model, time) are kept for the owner only.
+_CANDIDATE_TEXT_FIELDS = ("handoff_document", "diagnosis", "confidence")
+
+
+def _original_candidate(case: Mapping[str, Any], case_id: str) -> dict[str, Any] | None:
+    original = case.get("original_candidate")
+    if original is None:
+        return None
+    if not isinstance(original, dict):
+        raise CaseInvalid(f"case {case_id!r}: original_candidate is not an object")
+    for key in _CANDIDATE_TEXT_FIELDS:
+        if not (original.get(key) is None or isinstance(original.get(key), str)):
+            raise CaseInvalid(f"case {case_id!r}: original_candidate.{key} must be a "
+                              "string or null")
+    arc = original.get("triage_arc_complete")
+    if not (arc is None or isinstance(arc, bool)):
+        raise CaseInvalid(f"case {case_id!r}: original_candidate.triage_arc_complete "
+                          "must be a boolean or null")
+    return dict(original)
+
+
 def _inside(root: Path, candidate: Path) -> bool:
     root = root.resolve()
     resolved = candidate.resolve()
@@ -185,9 +215,10 @@ def load_case(cases_dir: str | Path, case_id: str) -> ReplayCase:
     if not isinstance(recording, dict) or recording.get("schema") != RECORDING_SCHEMA:
         raise CaseInvalid(f"case {case_id!r} does not wrap a {RECORDING_SCHEMA} recording")
     listed = case.get("drift") or ()
+    original = _original_candidate(case, case_id)
     if not recording.get("reconstructed"):
         return ReplayCase(case_id=case_id, recording=recording,
-                          listed_drift=tuple(listed))
+                          listed_drift=tuple(listed), original_candidate=original)
     _check_no_memory_or_history(recording)
     spec = case.get("capture")
     if not isinstance(spec, dict):
@@ -213,6 +244,7 @@ def load_case(cases_dir: str | Path, case_id: str) -> ReplayCase:
         interval_start=float(interval["start"]),
         interval_end=float(interval["end"]),
         listed_drift=tuple(listed),
+        original_candidate=original,
     )
 
 

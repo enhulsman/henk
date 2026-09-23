@@ -430,7 +430,9 @@ docker compose run --rm --no-deps -e CLAUDE_CONFIG_DIR=/tmp/henk-replay henk pyt
   run of it when none is named): model, effort, ending, arc completeness and
   confidence, the arc lines, the start of the handoff, the tool calls in order with
   unrecorded ones marked `NOT RECORDED`, and tokens. It only reads files: no model
-  call, no request, nothing written.
+  call, no request, nothing written. For a rebuilt case (below), whose original
+  reply was not preserved, the original shows the recorded diagnosis and
+  confidence and the original handoff instead, and says `reply: not preserved`.
 - `grade <id> [run-id ...] [--judge-model M] [--judge-effort E] [--seed N]` has a
   judge with no tools score the original and each run (every run when none is
   named) on the five criteria of the committed rubric,
@@ -442,10 +444,17 @@ docker compose run --rm --no-deps -e CLAUDE_CONFIG_DIR=/tmp/henk-replay henk pyt
   with no model, effort or run id. The seed and which label is which run are written
   to the grade file, and printed, but never sent to the judge. A case carrying a
   verified `reference` is graded against it as ground truth.
+- A rebuilt case's original candidate is its original handoff plus the diagnosis and
+  confidence the audit record kept; its reply field is a bracketed line the replay
+  tool composes, saying the reply was not preserved. An original with no reply, no
+  handoff and no recorded diagnosis is refused before the judge runs (a live
+  recording that ended `error`, `refused` or `no-reply` is still graded as that
+  ending).
 - The grade lands in `triage-replays/<id>/grades/<grade-id>.json`, with the rubric
   version and hash, the judge model and effort, the seed, whether a reference was
   used, and per candidate and criterion a score and a one-line reason. When the
-  judge's answer does not parse, or its session refused or failed, the grade is still
+  judge's answer does not parse (one enclosing code fence is tolerated; prose around
+  it, or a second fence, is not), or its session refused or failed, the grade is still
   written, as `unparseable`, `refused`, `error` or `no-reply`, with the raw text and
   no scores, and `grade` exits 1.
 
@@ -462,6 +471,58 @@ Why this exact invocation:
   directory, so from a copy such as `henk.old` the project becomes `henkold`, with
   brand-new empty volumes. As a guard, the entry point refuses to run when the audit
   log does not exist, naming the path and this cause.
+
+#### Reference cases — `cases` and `rebuild`
+
+A reference case is a directory in `triage-cases/` (beside the audit log) holding a
+`case.json`. Nothing else there is a case: raw material and captures have none. At
+most 20 cases are kept, and a case is never evicted to make room.
+
+```bash
+docker compose run --rm --no-deps -e CLAUDE_CONFIG_DIR=/tmp/henk-replay henk python -m henk.replay cases
+docker compose run --rm --no-deps -e CLAUDE_CONFIG_DIR=/tmp/henk-replay henk python -m henk.replay rebuild \
+  --events /data/audit/triage-cases/<inputs>/<henk-events cache> \
+  --audit-records /data/audit/triage-cases/<inputs>/<audit records> \
+  --handoffs /data/audit/triage-cases/<inputs>/<henk-handoffs cache> \
+  --capture /data/audit/triage-cases/2026-09-23-capture \
+  --reference /data/audit/triage-cases/<inputs>/reference.json \
+  --case-prefix 2026-09-23-swap
+```
+
+- `cases` prints one line per case: its id, `reconstructed` with its capture time
+  and drift count, `live` with its recording id, or `invalid` with the reason (an
+  invalid case still counts toward the bound). A directory whose `case.json` cannot
+  be read is skipped with a warning.
+- `rebuild` builds a reconstructed case for a triage that has no recording, one per
+  captured evaluation time `T`, as `<prefix>-T<HHMMSSZ>`, and prints the ids it
+  wrote. Paths are the container's, under `/data/audit/`. Its inputs:
+  - `--events`: the preserved `henk-events` ntfy cache (JSON Lines). The frames the
+    triage record names are composed by the current composer, with no recall block
+    and no digest, so neither memory nor history can carry the answer.
+  - `--audit-records`: the preserved audit records. The event triage in them gives
+    the original call sequence (tool names, arguments `unknown`), the diagnosis, the
+    confidence and the handoff id. When they hold more than one event triage, name
+    it with `--event-id <ntfy id>`.
+  - `--handoffs`: the preserved `henk-handoffs` cache, for the original handoff. If
+    ntfy delivered it as an attachment, pass its text with `--handoff-document`.
+  - `--capture`: the capture (`python -m henk.replay.capture`), one
+    `YYYYMMDDTHHMMSSZ/` directory per `T`. It must lie inside `triage-cases/`,
+    because the case refers to it by a relative path and never copies it.
+  - `--reference`: the owner's verified ground truth, a JSON object with `branch`,
+    `culprit`, `mechanism` and `fix` (non-empty strings) and an optional `notes`.
+- Before writing, `rebuild` checks every captured answer against the current
+  registry and configuration: expression, kind, `T`, and for a range answer the
+  point budget and step. Mismatches are printed as `DRIFT` lines and recorded in the
+  case, and a replay does not serve them.
+- A `T` outside the triage's interval (notification time plus the debounce, to the
+  triage record's time) is refused. An existing case is refused unless `--replace`
+  is given. A batch that would pass the bound of 20 writes nothing.
+- A rebuilt case grades the **current** renderers' evidence over a re-capture, not
+  the evidence the original triage saw. The case, `rebuild` and every `run` of it
+  say so.
+- `rebuild` spends nothing: it calls no model and makes no network request.
+  `cases` and `rebuild` need no `CLAUDE_CONFIG_DIR`, but the same compose form keeps
+  one invocation for every command.
 
 ## Local development
 

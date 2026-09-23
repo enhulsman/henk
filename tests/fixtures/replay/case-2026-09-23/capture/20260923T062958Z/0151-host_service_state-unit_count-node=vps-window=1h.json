@@ -1,0 +1,40 @@
+{
+ "T": 1790144998,
+ "T_iso": "2026-09-23T06:29:58Z",
+ "arguments": {
+  "node": "vps",
+  "window": "1h"
+ },
+ "body": {
+  "data": {
+   "result": [
+    {
+     "metric": {},
+     "value": [
+      1790144998,
+      "180"
+     ]
+    }
+   ],
+   "resultType": "vector"
+  },
+  "status": "success"
+ },
+ "expression": "count(node_systemd_unit_state{job=\"node-exporter-vps\"})",
+ "http_status": 200,
+ "kind": "instant",
+ "max_points": 60,
+ "query": "host_service_state",
+ "request": {
+  "params": {
+   "query": "count(node_systemd_unit_state{job=\"node-exporter-vps\"})",
+   "time": 1790144998
+  },
+  "path": "/api/v1/query"
+ },
+ "role": "unit_count",
+ "schema": "henk.triage-capture.v1",
+ "source": "written-out",
+ "step": null,
+ "window": "1h"
+}

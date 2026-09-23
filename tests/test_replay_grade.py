@@ -599,7 +599,17 @@ UNPARSEABLE = {
     "not json": lambda p, labels: "I think A is best.",
     "text before": lambda p, labels: "Here are the scores:\n" + json.dumps(p),
     "text after": lambda p, labels: json.dumps(p) + "\nHope this helps.",
-    "code fence": lambda p, labels: "```json\n" + json.dumps(p) + "\n```",
+    # One enclosing fence parses (test_one_enclosing_code_fence_parses); a fence
+    # with prose around it, or two fences, does not.
+    "code fence after prose": lambda p, labels: (
+        "Here are the scores:\n```json\n" + json.dumps(p) + "\n```"),
+    "code fence before prose": lambda p, labels: (
+        "```json\n" + json.dumps(p) + "\n```\nHope this helps."),
+    "two code fences": lambda p, labels: (
+        "```json\n" + json.dumps(p) + "\n```\n```json\n" + json.dumps(p) + "\n```"),
+    "unclosed code fence": lambda p, labels: "```json\n" + json.dumps(p),
+    "code fence of another language": lambda p, labels: (
+        "```python\n" + json.dumps(p) + "\n```"),
     "a list": lambda p, labels: json.dumps([p]),
     "score above range": _set(lambda p, l: (_first(p, l)["fix_quality"], "score"), 4),
     "score below range": _set(lambda p, l: (_first(p, l)["fix_quality"], "score"), -1),
@@ -670,6 +680,41 @@ def test_the_parser_accepts_surrounding_whitespace_only():
     payload = json.dumps(scores_for(labels))
     parsed = grade_mod.parse_judge_output(f"\n  {payload}\n", labels)
     assert parsed.problem is None and parsed.scores["B"]["fix_quality"]["score"] == 2
+
+
+@pytest.mark.parametrize("wrap", [
+    lambda body: "```json\n" + body + "\n```",
+    lambda body: "```\n" + body + "\n```",
+    lambda body: "\n  ```json  \n" + body + "\n  ```\n\n",
+    lambda body: "```json\r\n" + body + "\r\n```",
+], ids=["json fence", "bare fence", "fence in whitespace", "crlf fence"])
+def test_one_enclosing_code_fence_parses(wrap):
+    # The fence carries no score, so removing it invents nothing (spec
+    # *Unparseable judge output is not a score*).
+    labels = ["A", "B"]
+    parsed = grade_mod.parse_judge_output(wrap(json.dumps(scores_for(labels), indent=1)),
+                                          labels)
+    assert parsed.problem is None
+    assert parsed.scores["B"]["fix_quality"]["score"] == 2
+
+
+def test_a_fenced_judge_answer_is_scored_and_its_raw_text_kept(tmp_path):
+    config, rid, run_a, run_b = _setup(tmp_path)
+    maker = JudgeMaker(reply=lambda prompt: "```json\n" + valid_reply(prompt) + "\n```")
+    code, _, err = _grade(config, rid, [run_a, run_b], maker, "--seed", "1")
+    assert code == 0, err
+    [grade] = _grades(config, rid)
+    assert grade["status"] == "scored" and grade["problem"] is None
+    assert grade["raw_text"].startswith("```json\n")
+
+
+def test_a_fence_body_that_is_not_the_shape_is_still_unparseable():
+    labels = ["A"]
+    payload = scores_for(labels)
+    payload["candidates"]["A"]["fix_quality"]["score"] = 4
+    parsed = grade_mod.parse_judge_output("```json\n" + json.dumps(payload) + "\n```",
+                                          labels)
+    assert parsed.scores is None and "fix_quality.score" in parsed.problem
 
 
 @pytest.mark.parametrize("score", [0, 1, 2, 3])

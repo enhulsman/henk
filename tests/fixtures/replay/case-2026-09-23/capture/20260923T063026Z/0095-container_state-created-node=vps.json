@@ -1,0 +1,52 @@
+{
+ "T": 1790145026,
+ "T_iso": "2026-09-23T06:30:26Z",
+ "arguments": {
+  "node": "vps"
+ },
+ "body": {
+  "data": {
+   "result": [
+    {
+     "metric": {
+      "job": "cadvisor-vps",
+      "name": "example-web"
+     },
+     "value": [
+      1790145026,
+      "1789108226"
+     ]
+    },
+    {
+     "metric": {
+      "job": "cadvisor-vps",
+      "name": "example-worker"
+     },
+     "value": [
+      1790145026,
+      "1789108226"
+     ]
+    }
+   ],
+   "resultType": "vector"
+  },
+  "status": "success"
+ },
+ "expression": "container_start_time_seconds{job=\"cadvisor-vps\",name!=\"\"}",
+ "http_status": 200,
+ "kind": "instant",
+ "max_points": 60,
+ "query": "container_state",
+ "request": {
+  "params": {
+   "query": "container_start_time_seconds{job=\"cadvisor-vps\",name!=\"\"}",
+   "time": 1790145026
+  },
+  "path": "/api/v1/query"
+ },
+ "role": "created",
+ "schema": "henk.triage-capture.v1",
+ "source": "registry",
+ "step": null,
+ "window": null
+}

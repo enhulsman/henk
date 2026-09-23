@@ -1,0 +1,77 @@
+{
+ "T": 1790145012,
+ "T_iso": "2026-09-23T06:30:12Z",
+ "arguments": {
+  "node": "vps",
+  "window": "1h"
+ },
+ "body": {
+  "data": {
+   "result": [
+    {
+     "metric": {
+      "id": "/system.slice/example-a.service",
+      "instance": "192.0.2.21:8080",
+      "job": "cadvisor-vps"
+     },
+     "value": [
+      1790145012,
+      "1075838976"
+     ]
+    },
+    {
+     "metric": {
+      "id": "/system.slice/example-b.service",
+      "instance": "192.0.2.21:8080",
+      "job": "cadvisor-vps"
+     },
+     "value": [
+      1790145012,
+      "50331648"
+     ]
+    },
+    {
+     "metric": {
+      "instance": "192.0.2.21:8080",
+      "job": "cadvisor-vps",
+      "name": "example-web"
+     },
+     "value": [
+      1790145012,
+      "220200960"
+     ]
+    },
+    {
+     "metric": {
+      "instance": "192.0.2.21:8080",
+      "job": "cadvisor-vps",
+      "name": "example-worker"
+     },
+     "value": [
+      1790145012,
+      "220200960"
+     ]
+    }
+   ],
+   "resultType": "vector"
+  },
+  "status": "success"
+ },
+ "expression": "max_over_time(container_memory_working_set_bytes{job=\"cadvisor-vps\",id=~\"/system\\\\.slice/.+\\\\.service\"}[1h]) or max_over_time(container_memory_working_set_bytes{job=\"cadvisor-vps\",name!=\"\"}[1h])",
+ "http_status": 200,
+ "kind": "instant",
+ "max_points": 60,
+ "query": "memory_movers",
+ "request": {
+  "params": {
+   "query": "max_over_time(container_memory_working_set_bytes{job=\"cadvisor-vps\",id=~\"/system\\\\.slice/.+\\\\.service\"}[1h]) or max_over_time(container_memory_working_set_bytes{job=\"cadvisor-vps\",name!=\"\"}[1h])",
+   "time": 1790145012
+  },
+  "path": "/api/v1/query"
+ },
+ "role": "movers_max",
+ "schema": "henk.triage-capture.v1",
+ "source": "written-out",
+ "step": null,
+ "window": "1h"
+}
