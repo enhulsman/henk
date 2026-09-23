@@ -1015,3 +1015,88 @@ were killed.
   The run container shares tailscale's network namespace, so the refusing transport and
   the stubs are the whole isolation layer. 13.3's `docker inspect` checks what else the
   run container holds.
+
+## Group 12a: rubric, judge, compare and grade
+
+New files:
+- `henk/replay/rubric/triage-rubric.v1.md`: five criteria, 0-3 anchors, the harness-limit
+  instruction, and how to use a verified reference;
+- `henk/replay/grade.py`;
+- `henk/replay/compare.py`.
+
+`__main__.py` gained `compare` and `grade`. The suite moved from 3298 to 3401 passed,
+with 3 skipped, all SDK-gated.
+
+**Decisions.**
+- **Rubric pinning.** Hashes are pinned per version in code (`grade.py:95`) and in the
+  test. `load_rubric` refuses a mismatched or unpinned file before any spend, so a rubric
+  edited on rp5 cannot grade.
+- **The judge's session** (`build_judge_factory`, `grade.py:203`):
+  - it is the production `SdkSessionFactory` over an empty `ToolRegistry`, with the
+    closed hook;
+  - its gate runs over `NullChannel` with the `REPLAY_TURN` framing;
+  - it has its own system prompt, never Henk's;
+  - thinking is always unset, and `grade` has no `--thinking` option.
+- **The judge's input** (`build_judge_input`, `grade.py:328`):
+  - it is one JSON data block between `DATA_BEGIN`/`DATA_END`, neutralised with
+    `neutralise_markers` plus the phrase "GRADING DATA";
+  - candidates are labelled in a seeded random order. The label-to-run mapping appears
+    only in the grade file, and the seed is drawn with `secrets` unless `--seed` is given;
+  - each candidate is `{label, ending, reply, handoffs, tool_calls}` only. No model,
+    profile, effort or `served` tags are shown.
+- **The reference** is read only from the recording's schema-defined `reference`
+  (`check_reference`, `grade.py:271`). A malformed reference is refused before spend,
+  never dropped.
+- **Parsing is strict** (`parse_judge_output`, `grade.py:395`):
+  - exactly one JSON object, with no fence, no prose and no duplicate keys;
+  - scores are ints 0-3, with bools rejected;
+  - reasons are one non-empty line of at most 300 characters.
+
+  Statuses are `scored`, `unparseable`, `refused`, `error` and `no-reply`. The ending is
+  classified with group 9's `classify_ending` before any parsing. A grade without scores
+  is still written, and `grade` then exits 1.
+- **Pre-spend checks.**
+  - `--judge-model` and `--judge-effort` are validated in `precheck` before the config is
+    read.
+  - The configured `replay.judge_model` is checked against `^claude-` at grade time, not
+    in `config.py`, so live startup is unchanged.
+  - The judge input is bounded at 400,000 characters.
+  - `grade` requires `CLAUDE_CONFIG_DIR`.
+- **Layout.** Grade files go to `triage-replays/<source>/grades/<grade_id>.json`, so they
+  are never read as runs, and retention removes them with their recording. `compare`
+  strips control characters before printing.
+
+**Tests modified:** `tests/test_replay_cli.py:305`. The "only list and run" test would
+have passed vacuously, because argparse exits on a missing id. It became a
+not-yet-commands test for `cases` and `rebuild`, which group 12b replaces.
+
+**Mutation table.** 82 mutants were run with `python -B`, each file md5-restored. All 82
+were killed.
+- Eight first survived, and all eight gaps are closed:
+  - R6: an unknown-version guard;
+  - P8: duplicate keys;
+  - P13: a non-object not caught;
+  - V8 and V9: `resolve_judge` re-validation;
+  - C12: a non-run file;
+  - C13: a constant ending;
+  - C15: a non-id run name.
+- The redundant `parse_constant` was removed.
+- The families covered:
+  - rubric pinning (R1-R6);
+  - blindness (B1-B9);
+  - the empty registry, the gate and thinking (E1-E3);
+  - the reference (F1-F6);
+  - parse strictness (P1-P13);
+  - ending classification (Q1-Q6);
+  - pre-spend validation (V1-V9);
+  - the grade write (W1-W4);
+  - the judge input (J1-J7);
+  - compare (C1-C19).
+
+**Incident, harmless.** The parallel 12b agent overwrote the shared
+`scratchpad/mutate.py`, and 12a ran it once. It mutated and restored one file inside 12b's
+worktree, and both groups md5-verified clean afterwards. Future parallel groups need
+**separate scratch subdirectories.**
+
+**Not verified locally:** the real judge `create()` over an empty MCP server, because the
+SDK is only in the image. Group 13 should cover it.

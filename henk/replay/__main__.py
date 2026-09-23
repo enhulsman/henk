@@ -16,8 +16,19 @@ Commands:
   level; both are checked before the configuration is read, so a typo spends
   nothing. Thinking left out is left unset (the CLI's default).
 
-``compare``, ``grade``, ``cases`` and ``rebuild`` belong to later task groups
-(12a, 12b) and are not commands yet.
+- ``compare <id> [run ...]`` prints the original triage beside the named runs
+  (every run of the source when none is named). A pure file read: no session,
+  no request, nothing written.
+- ``grade <id> [run ...] [--judge-model M] [--judge-effort E] [--seed N]`` has
+  the no-tool judge score the original and the runs against the committed
+  rubric, and writes a grade file under the replays directory. The judge runs
+  on ``replay.judge_model``/``replay.judge_effort`` unless overridden, with
+  thinking unset; overrides are checked before the configuration is read. It
+  spends real tokens, so it needs ``CLAUDE_CONFIG_DIR`` like ``run``. Exit 1
+  means the grade was written without scores (unparseable, refused, error).
+
+``cases`` and ``rebuild`` belong to a later task group (12b) and are not
+commands yet.
 
 Guards, each before any model call:
 
@@ -40,6 +51,8 @@ import time
 from typing import Any, Callable, Mapping, Sequence, TextIO
 
 from henk.config import Config
+from henk.replay import compare as compare_mod
+from henk.replay import grade as grade_mod
 from henk.replay.case import iso
 from henk.replay.recorder import list_recordings, load_recording
 from henk.replay.run import (
@@ -77,7 +90,31 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--model", required=True, help="a Claude model identifier")
     run.add_argument("--effort", required=True, help="an SDK effort level")
     run.add_argument("--thinking", default=None, help="a thinking mode (default: unset)")
+    _add_compare_parser(commands)
+    _add_grade_parser(commands)
     return parser
+
+
+def _add_compare_parser(commands) -> None:
+    compare = commands.add_parser(
+        "compare", help="show the original triage beside its replay runs (reads files only)")
+    compare.add_argument("id", help="a recording id, or a reference case id")
+    compare.add_argument("runs", nargs="*", help="run ids (default: every run of it)")
+    compare.set_defaults(handler=compare_mod.command)
+
+
+def _add_grade_parser(commands) -> None:
+    grade = commands.add_parser(
+        "grade", help="have the no-tool judge score the original and its runs")
+    grade.add_argument("id", help="a recording id, or a reference case id")
+    grade.add_argument("runs", nargs="*", help="run ids (default: every run of it)")
+    grade.add_argument("--judge-model", default=None,
+                       help="a Claude model identifier (default: replay.judge_model)")
+    grade.add_argument("--judge-effort", default=None,
+                       help="an SDK effort level (default: replay.judge_effort)")
+    grade.add_argument("--seed", type=int, default=None,
+                       help="the candidate-order seed (default: drawn and recorded)")
+    grade.set_defaults(handler=grade_mod.command, precheck=grade_mod.precheck)
 
 
 def _list(config: Config, stdout: TextIO, stderr: TextIO) -> int:
@@ -155,6 +192,9 @@ def main(
     environ = os.environ if environ is None else environ
     args = _parser().parse_args(argv)
     try:
+        precheck = getattr(args, "precheck", None)
+        if precheck is not None:
+            precheck(args, environ)
         if args.command == "run":
             # Checked before the configuration is even read: nothing can spend.
             validate_model(args.model)
@@ -168,6 +208,10 @@ def main(
                 )
         config = load_config()
         check_audit_log(config)
+        handler = getattr(args, "handler", None)
+        if handler is not None:
+            return handler(config, args, clock=clock, stdout=stdout, stderr=stderr,
+                           create_session=create_session or _default_create_session)
         if args.command == "list":
             return _list(config, stdout, stderr)
         return _run(config, args, clock=clock, stdout=stdout, stderr=stderr,

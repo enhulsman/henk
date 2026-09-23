@@ -519,19 +519,19 @@ The capture is persisted only on rp5's audit volume.
 
 ## 12a. Rubric, judge, compare and grade (triage-replay)
 
-- [ ] 12.1 Write `henk/replay/rubric/triage-rubric.v1.md`: five criteria with 0–3
+- [x] 12.1 Write `henk/replay/rubric/triage-rubric.v1.md`: five criteria with 0–3
   anchors, the harness-limit instruction, and how to use a verified reference. Test *A
   rubric change is a new version*.
-- [ ] 12.2 Tests first:
+- [x] 12.2 Tests first:
   - *Side-by-side comparison*;
   - *The judge has no tools*;
   - *The judge is blind to models*.
-- [ ] 12.3 Tests first:
+- [x] 12.3 Tests first:
   - *The judge scores against the committed rubric*;
   - *A verified reference sharpens the grade*;
   - *Unparseable judge output is not a score*;
   - *A judge refusal is recorded as refused*.
-- [ ] 12.3a Implement `compare` and `grade`: the judge session over an empty
+- [x] 12.3a Implement `compare` and `grade`: the judge session over an empty
   `ToolRegistry`, `replay.judge_model`/`judge_effort`, and thinking unset. If 1.3 found
   Fable unavailable, stop at the judge and record the blocker.
 

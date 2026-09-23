@@ -192,7 +192,7 @@ existing `henk_audit` volume (already in the rp5 backup allowlist).
 | `henk/store/` | One SQLite file on the audit volume: capped memory repository, capture inbox behind the swappable `InboxStore` seam, reminders repository + the explicit transaction boundary |
 | `henk/reminders/` | Time resolution (DST-correct, zone-explicit), the polling delivery scheduler, and the delivered-reminder note |
 | `henk/tools/` | `homelab_health`, `homelab_query` (+ its reviewable `query_registry`, renderers, and the address projection), `homelab_docs` (corpus sectioniser, allowlisted index, stamp reader), `sessions_read` (two-stage topic poll, label gate, shape-constrained render; `backend_failure` holds the shared backend-failure sentences), `todo_read`, `notify`, `publish_handoff`, `store_memory`, `capture`, `inbox_read`, `remind`, `cancel_reminder`, `reminders_read` (+ deferred `taiga_read`) and the production registry |
-| `henk/replay/` | Triage recording (bounded, beside the audit log), the first-case capture script, and the owner-run replay entry point (`python -m henk.replay`: stub registry, refusing transport, null channel, reconstructed-case serving, run writer) |
+| `henk/replay/` | Triage recording (bounded, beside the audit log), the first-case capture script, and the owner-run replay entry point (`python -m henk.replay`: stub registry, refusing transport, null channel, reconstructed-case serving, run writer, `compare`, and `grade` with its versioned rubric and no-tool judge) |
 | `henk/app.py`, `henk/runtime.py`, `henk/__main__.py` | Composition, production wiring, entrypoint |
 | `deploy/session-publisher/` | The **workstation** session publisher (stdlib-only Python 3.11+, systemd user timer, example config, README) — committed here, tested by this suite, deliberately **not** in the image |
 | `config.yaml` | Non-secret settings | `.env` | Secrets (git-ignored) |
@@ -418,6 +418,36 @@ docker compose run --rm --no-deps -e CLAUDE_CONFIG_DIR=/tmp/henk-replay henk pyt
   gate's decisions, the unrecorded-call count, token usage and drift. Drift, a system
   prompt or tool definitions that changed since the recording was made, is also
   printed to the terminal.
+
+Comparing and grading runs uses the same invocation:
+
+```bash
+docker compose run --rm --no-deps -e CLAUDE_CONFIG_DIR=/tmp/henk-replay henk python -m henk.replay compare <recording-or-case-id> [<run-id> ...]
+docker compose run --rm --no-deps -e CLAUDE_CONFIG_DIR=/tmp/henk-replay henk python -m henk.replay grade <recording-or-case-id> [<run-id> ...]
+```
+
+- `compare <id> [run-id ...]` prints the original triage beside the named runs (every
+  run of it when none is named): model, effort, ending, arc completeness and
+  confidence, the arc lines, the start of the handoff, the tool calls in order with
+  unrecorded ones marked `NOT RECORDED`, and tokens. It only reads files: no model
+  call, no request, nothing written.
+- `grade <id> [run-id ...] [--judge-model M] [--judge-effort E] [--seed N]` has a
+  judge with no tools score the original and each run (every run when none is
+  named) on the five criteria of the committed rubric,
+  `henk/replay/rubric/triage-rubric.v1.md`. The judge runs on `replay.judge_model`
+  (default `claude-fable-5-1`) at `replay.judge_effort` (default `high`), with
+  thinking unset. The overrides are checked like `run`'s, before anything else. It
+  spends real tokens, and needs `CLAUDE_CONFIG_DIR` like `run`.
+- The judge is blind: it sees the candidates as `A`, `B`, … in a seeded random order,
+  with no model, effort or run id. The seed and which label is which run are written
+  to the grade file, and printed, but never sent to the judge. A case carrying a
+  verified `reference` is graded against it as ground truth.
+- The grade lands in `triage-replays/<id>/grades/<grade-id>.json`, with the rubric
+  version and hash, the judge model and effort, the seed, whether a reference was
+  used, and per candidate and criterion a score and a one-line reason. When the
+  judge's answer does not parse, or its session refused or failed, the grade is still
+  written, as `unparseable`, `refused`, `error` or `no-reply`, with the raw text and
+  no scores, and `grade` exits 1.
 
 Why this exact invocation:
 

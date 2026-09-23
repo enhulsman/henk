@@ -302,9 +302,11 @@ def test_list_skips_an_unreadable_recording_with_a_warning(tmp_path):
     assert bad in err
 
 
-def test_only_list_and_run_are_commands(tmp_path):
+def test_cases_and_rebuild_are_not_commands_yet(tmp_path):
+    # compare and grade are commands since group 12a (tests/test_replay_compare.py,
+    # tests/test_replay_grade.py); cases and rebuild belong to group 12b.
     config = make_config(tmp_path)
-    for command in ("compare", "grade", "cases", "rebuild"):
+    for command in ("cases", "rebuild"):
         with pytest.raises(SystemExit):
             _main(config, [command])
 
