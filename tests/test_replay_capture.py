@@ -9,7 +9,9 @@ whose transport records what it was asked for, so "the instant query carried
 `time=T`" is a property of the HTTP traffic, not of a data structure the script
 could build correctly and then fail to send.
 
-**The written-out templates are literals in this file.** They are never parsed
+**The D5 templates are literals in this file.** The capture once wrote them out
+itself; tasks 3.9 and 4.4 retired those copies, so they now pin the registry's
+templates and the request set the rp5 capture sent. They are never parsed
 from `design.md`, which moves at archive. They are the D5 canonical table, byte
 for byte, and the host-unit regex has exactly one spelling:
 `/system\\.slice/.+\\.service`, a backslash-escaped dot inside a PromQL
@@ -275,10 +277,13 @@ def test_every_registry_request_matches_what_the_live_tool_would_send(out_dir):
                 )
                 assert key in sent, (name, arguments, role)
                 checked[kind] += 1
-    # 80 trends + 12 dns series are ranges; 2 + 1 + 16 + 12 are instant. The
-    # container count is 16 since task 3.9 moved D3/D4's four roles into the
-    # registry (it was 8 while the script wrote them out).
-    assert checked == {"range": 92, "instant": 31}
+    # Ranges: 80 trends + 12 dns series + 8 `movers_series` (2 nodes x 4
+    # windows) + 4 `bad_states` (vps x 4 windows) = 104. Instant: 2 + 1 + 16
+    # container + 12 dns mappings + 16 `movers_max`/`movers_min` + 4
+    # `unit_count` = 51. The container count is 16 since task 3.9 and the movers
+    # and service rows are counted here since task 4.4 moved them into the
+    # registry (it was 92/31 while the script wrote them out).
+    assert checked == {"range": 104, "instant": 51}
 
 
 def test_only_the_two_prometheus_query_routes_are_requested(out_dir):
@@ -330,7 +335,9 @@ def test_every_registry_prometheus_expression_is_captured_in_every_combination(o
     # of that query that has a historical form.
     roles = {(q, r) for q, r, _, _ in captured}
     assert {("scrape_targets", "up"), ("scrape_targets", "up_over_window")} <= roles
-    assert expected == 80 + 2 + 1 + 16 + 24
+    # Every one of the 155 static requests is a registry expression since task
+    # 4.4 (it was 123 while the five D5 host-coverage rows were written out).
+    assert expected == 80 + 2 + 1 + 16 + 24 + 24 + 8 == STATIC_REQUESTS_PER_T
 
 
 def test_gatus_and_the_targets_api_are_never_captured(out_dir):
@@ -340,36 +347,30 @@ def test_gatus_and_the_targets_api_are_never_captured(out_dir):
     assert all("targets" not in r["request"]["path"] for r in _records(out_dir, T_START))
 
 
-#: The D5 rows task 3.9 moved into the registry and retired from the script.
-RETIRED_TO_REGISTRY = frozenset(
-    {
-        ("container_state", "memory_working_set"),
-        ("container_state", "swap"),
-        ("container_state", "restarts_15m"),
-        ("container_state", "restarts_24h"),
-    }
-)
+#: The D5 rows moved into the registry and retired from the script: the four
+#: `container_state` rows in task 3.9, the five host-coverage rows in task 4.4.
+RETIRED_TO_REGISTRY = frozenset(D5_TEMPLATES)
 
 
-def test_the_written_out_templates_are_byte_equal_to_the_D5_table():
-    """Every D5 row lives in exactly one place, byte-equal to the literal.
+def _registry_kind(query: str, role: str) -> str:
+    entry = QUERY_REGISTRY[query]
+    ranged = entry.range_query and (entry.range_roles is None or role in entry.range_roles)
+    return "range" if ranged else "instant"
 
-    Task 3.9 retired the four `container_state` rows: they are pinned in the
-    REGISTRY now, and the script writes out only the rows the registry lacks.
+
+def test_the_registry_templates_are_byte_equal_to_the_D5_table():
+    """Every D5 row lives in exactly one place, the registry, byte-equal to the literal.
+
+    Task 3.9 retired the four `container_state` rows and task 4.4 the five
+    host-coverage rows, so the script writes nothing out any more.
     """
-    table = {
-        (t.query, t.role): (t.kind, t.template) for t in capture.WRITTEN_OUT_TEMPLATES
-    }
-    assert table == {k: v for k, v in D5_TEMPLATES.items() if k not in RETIRED_TO_REGISTRY}
-    for query, role in RETIRED_TO_REGISTRY:
-        kind, literal = D5_TEMPLATES[(query, role)]
-        entry = QUERY_REGISTRY[query]
-        assert entry.expressions[role] == literal, (query, role)
-        assert kind == "instant" and not entry.range_query
-    # Retired means retired: no D5 row is in both places.
-    for query, role in table:
-        entry = QUERY_REGISTRY.get(query)
-        assert entry is None or role not in entry.expressions, (query, role)
+    assert RETIRED_TO_REGISTRY == set(D5_TEMPLATES) and len(D5_TEMPLATES) == 9
+    for (query, role), (kind, literal) in D5_TEMPLATES.items():
+        assert QUERY_REGISTRY[query].expressions[role] == literal, (query, role)
+        assert _registry_kind(query, role) == kind, (query, role)
+    # Retired means retired: the script carries no copy of any row.
+    assert not hasattr(capture, "WRITTEN_OUT_TEMPLATES")
+    assert not hasattr(capture, "WRITTEN_OUT_DOMAINS")
     host_unit = r'"/system\\.slice/.+\\.service"'
     for kind, template in D5_TEMPLATES.values():
         if "id=~" in template:
@@ -379,18 +380,29 @@ def test_the_written_out_templates_are_byte_equal_to_the_D5_table():
             assert "\\\\\\\\" not in template
 
 
-def test_the_written_out_domains_follow_the_design():
-    domains = capture.WRITTEN_OUT_DOMAINS
-    movers = domains["memory_movers"]
-    assert movers.nodes == ("rp5", "vps", "rp2")
-    assert dict(movers.job_map) == dict(CADVISOR_JOBS)
-    assert set(movers.unavailable) == {"rp2"}
-    assert movers.windows == PROMETHEUS_WINDOWS
-    services = domains["host_service_state"]
-    assert services.nodes == ("rp5", "vps", "rp2")
-    assert dict(services.job_map) == dict(NODE_EXPORTER_JOBS)
-    assert set(services.unavailable) == {"rp5", "rp2"}
-    assert services.windows == PROMETHEUS_WINDOWS
+def test_the_host_coverage_domains_are_the_ones_the_capture_used():
+    """The registry's domains are the ones the script's written-out copies had.
+
+    Before task 4.4 the capture carried D5's domains itself (nodes rp5/vps/rp2,
+    rp2 unavailable for `memory_movers`, rp5 and rp2 for `host_service_state`,
+    the four Prometheus windows). The rp5 capture was taken with those, so the
+    registry must answer exactly the same combinations.
+    """
+    expected = {
+        "memory_movers": (CADVISOR_JOBS, {"rp2"}),
+        "host_service_state": (NODE_EXPORTER_JOBS, {"rp5", "rp2"}),
+    }
+    for query, (job_map, unavailable) in expected.items():
+        entry = QUERY_REGISTRY[query]
+        assert entry.parameter("node").domain == ("rp5", "vps", "rp2")
+        assert entry.parameter("window").domain == PROMETHEUS_WINDOWS
+        assert dict(entry.job_map) == dict(job_map)
+        answered = {
+            node
+            for node in ("rp5", "vps", "rp2")
+            if plan_query(query, {"node": node, "window": "1h"}).outcome is QueryOutcome.ANSWERED
+        }
+        assert answered == {"rp5", "vps", "rp2"} - unavailable, query
 
 
 def test_movers_apply_the_range_function_per_selector(out_dir):
@@ -448,8 +460,9 @@ def test_the_written_out_expressions_are_filled_per_node_and_window(out_dir):
     assert len(got) == 8 + 24 + 8
     for record in records:
         if (record["query"], record["role"]) in D5_TEMPLATES:
-            retired = (record["query"], record["role"]) in RETIRED_TO_REGISTRY
-            assert record["source"] == ("registry" if retired else "written-out")
+            # Every D5 row is read from the registry since task 4.4. The rp5
+            # capture recorded "written-out" for the nine; only the label moved.
+            assert record["source"] == "registry"
             want_kind = D5_TEMPLATES[(record["query"], record["role"])][0]
             assert record["kind"] == want_kind
             assert record["request"]["path"] == (
@@ -461,7 +474,12 @@ def test_the_written_out_expressions_are_filled_per_node_and_window(out_dir):
 
 
 def _registry_with_the_d5_roles() -> dict[str, QueryEntry]:
-    """The registry as groups 3 and 4 will leave it, for these roles only."""
+    """A registry built from the D5 literals and D5's domains alone.
+
+    Written before groups 3 and 4 as "the registry they will leave". With both
+    landed, the real registry must capture exactly what this hand-built one
+    does, which is what the rp5 capture sent from its written-out copies.
+    """
     def fill_roles(query: str) -> dict[str, str]:
         return {role: tpl for (q, role), (_, tpl) in D5_TEMPLATES.items() if q == query}
 
@@ -539,7 +557,7 @@ def test_the_count_is_unchanged_once_the_registry_has_the_roles(tmp_path, monkey
 
 
 def test_the_registry_wins_over_a_written_out_copy(out_dir, monkeypatch):
-    """A written-out template is used only for a role the registry lacks."""
+    """The capture sends whatever the registry holds; no copy can shadow it."""
     container = QUERY_REGISTRY["container_state"]
     drifted = 'container_memory_swap{job="<job>",name!="",drifted="1"}'
     monkeypatch.setitem(

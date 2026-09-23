@@ -330,6 +330,99 @@ sweep (review finding 3).
   every window. The result states `end` as the window's end, and uses the last range
   point only to decide whether a series has gone silent.
 
+## Group 4: host-coverage queries
+
+`memory_movers` and `host_service_state` are registered, rendered and caveated. The
+capture's last five written-out templates are retired, so `plan_requests` reads only
+the registry. Group 4 added 63 tests, and the combined suite on `main`, after group 6,
+is 2884 passed, 1 skipped.
+
+**Decisions.**
+- **The denominator is the window's point count, not 288** (`RangeWindow.point_count`,
+  `henk/tools/query_registry.py:888`).
+  - This follows the probe (`evidence-probe.md:138-142`, `:348`). At the default
+    60-point budget a 24h window has 59 points, and no `range_step_seconds` value can
+    give 288.
+  - The tests pin 59/59 and 57/59 at 60 points, and 289/289 at a 289-point budget. That
+    keeps the scenario's 5-minute shape.
+- **`unit_count` is rendered only as "N unit-state series"** (`query_renderers.py:1176`).
+  A test forbids `\d+ units`. The not-derivable wording keeps the spec's "reported no
+  units", because zero series does mean zero units.
+- **A crash loop means `activating` in strictly more than half the expected points.**
+  - The first test of this survived mutation, because every 60-point window has an odd
+    point count. The test now uses a 10-point budget.
+  - Without a range window, no fraction or flag is given.
+- **"Present at the window's end" uses the group 3 half-step rule**, now shared as
+  `_short_of_last_point` (`query_renderers.py:238`).
+  - Mutant M35 showed that no test pinned its half-step tolerance: Prometheus returns
+    millisecond stamps, and the clock is a float.
+  - The new jitter tests cover it, and cover `_window_lines` through the shared helper.
+- **The two parts of a `memory_movers` result come from different reads.**
+  - The peak value is the exact `max_over_time`.
+  - The peak time is the highest range point, so it is one step coarse, and the result
+    says so.
+  - A cgroup with no range series gets "peak time not resolved". The gone-flag is set
+    only when the range answer was readable.
+- **An unreadable response is not-derivable, never an empty list** (`_readable`,
+  `query_renderers.py:925`).
+- **The prompt summary drops the query count instead of deriving it.** `config.py`
+  cannot import the registry, because `henk/tools/__init__.py:9` imports `henk.config`.
+  The enum and per-query summaries already derive from the registry
+  (`homelab_query.py:72`, `:75`). The unknown-name refusal now derives its count as well.
+- **The caveat gate** (`test_every_backticked_query_name_in_a_caveat_is_registered`)
+  checks every backticked snake_case token in registry prose. Each must be a registered
+  query or a metric one of the templates reads. It failed before group 4, because
+  `memory_movers` dangled, and it passes after.
+
+**Carry-forward to group 12b.** The request set is unchanged: the same count (155),
+expressions, kinds and params. Two things differ from the rp5 capture, whose records say
+`source: "written-out"`: new records say `source: "registry"`, and file sequence order
+has changed. **Rebuild must key records on (query, role, arguments), never on sequence
+number or `source`.**
+
+**Review-gate note (orchestrator).**
+- Checked:
+  - the D5 literals byte-compared by hand against `design.md:295-299`;
+  - a rendered `host_service_state` result read in full.
+- Accepted, not changed: "in that state from X to Y" spans a unit's first to last
+  sample, even when it missed samples in between. The fraction beside it says so.
+
+**Mutation table.** 37 mutants were run with `python -B`, and all 37 were killed.
+- Two first survived and were closed: M20, the crash-loop `>=` at half, and M35, the
+  half-step tolerance.
+- The families covered:
+  - template shape and escaping (M1-M3);
+  - range roles and holes (M4-M6);
+  - the join key (M7);
+  - the gone-flag (M8-M9, M22);
+  - ranking (M10-M11, M33-M34);
+  - peak time and value (M12, M31);
+  - resolution text (M13);
+  - no-series and unreadable handling (M14-M17);
+  - the denominator (M18-M19);
+  - crash-loop rules (M20-M21);
+  - scrubbing (M23);
+  - series vs units (M24, M37);
+  - zero-valued points (M25);
+  - hand-maintained counts (M26-M27);
+  - capture coverage (M28);
+  - the caveat gate (M29);
+  - job maps and domains (M30, M32);
+  - the shared gap tolerance (M35);
+  - the caveat text (M36).
+
+**Tests modified** (the spec changed; none weakened).
+- `tests/test_query_registry.py`:
+  - the enum has eight names, with the old six kept as `READ_DEPTH_QUERY_NAMES` for the
+    read-depth spec parser;
+  - four queries now declare range roles;
+  - the domain test covers all eight.
+- `tests/test_replay_capture.py`:
+  - parity counts went from 92/31 to 104/51, and the expression count from 123 to 155;
+  - `RETIRED_TO_REGISTRY` holds all nine rows;
+  - `source` is `registry`.
+- `tests/test_query_triage_evidence.py`: the written-out table is asserted gone.
+
 ## Group 6: handoff archive
 
 The store is `henk/store/handoffs.py`, and `IncidentContext` and its provider are in

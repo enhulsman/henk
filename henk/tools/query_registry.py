@@ -106,6 +106,15 @@ SCRAPE_TARGETS_LOOKBACK = "24h"
 #: `Unavailable` below (triage-quality D3); ``CADVISOR_JOBS`` stays the job map.
 CONTAINER_NODES: tuple[str, ...] = ("rp5", "vps", "rp2")
 
+#: `memory_movers`' and `host_service_state`'s node domains: their OWN tuples
+#: (triage-quality D5), equal in value to `CONTAINER_NODES` today and kept apart
+#: from it on purpose. rp2 runs no cadvisor, so it is a whole-query
+#: `Unavailable` of `memory_movers`. Only the vps node-exporter runs the systemd
+#: collector (measured 2026-09-23, evidence-probe 1.1), so rp5 and rp2 are
+#: whole-query `Unavailable` entries of `host_service_state`.
+MOVERS_NODES: tuple[str, ...] = ("rp5", "vps", "rp2")
+HOST_SERVICE_NODES: tuple[str, ...] = ("rp5", "vps", "rp2")
+
 #: cadvisor jobs whose restart signal was verified against a known restart: the
 #: `restart-signal <job>: verified` lines of triage-quality
 #: `notes/evidence-probe.md` (1.6 `cadvisor-pi5`, 1.7 `cadvisor-vps`). On each,
@@ -389,7 +398,7 @@ class QueryPlan:
         return self.entry.range_query
 
 
-# --- The six entries -------------------------------------------------------
+# --- The entries -----------------------------------------------------------
 
 _NODE_PARAM_DESCRIPTION = "Which node to measure."
 _WINDOW_PROM_DESCRIPTION = "How far back to look."
@@ -440,6 +449,48 @@ _CONTAINER_EXPRESSIONS: Mapping[str, str] = {
     "restarts_15m": 'max by (name) (resets(container_cpu_usage_seconds_total{job="<job>",name!=""}[15m]))',
     "restarts_24h": 'max by (name) (resets(container_cpu_usage_seconds_total{job="<job>",name!=""}[24h]))',
 }
+
+
+# D5's two cgroup populations, as PromQL selectors. The host-unit regex has ONE
+# spelling on the wire, a backslash-escaped dot inside a PromQL double-quoted
+# string; the raw string below produces exactly that byte sequence.
+_MOVERS_UNITS = r'container_memory_working_set_bytes{job="<job>",id=~"/system\\.slice/.+\\.service"}'
+_MOVERS_NAMED = 'container_memory_working_set_bytes{job="<job>",name!=""}'
+
+#: D5's `memory_movers` templates, the canonical table byte for byte. A range
+#: function takes one vector selector only: Prometheus answers
+#: `max_over_time((a or b)[1h])` with HTTP 400 ("ranges only allowed for vector
+#: selectors", verified live 2026-09-23). So each function wraps one selector and
+#: the two populations are joined with `or` outside them. Nothing is filled from
+#: a result.
+_MOVERS_EXPRESSIONS: Mapping[str, str] = {
+    "movers_max": f"max_over_time({_MOVERS_UNITS}[<window>]) or max_over_time({_MOVERS_NAMED}[<window>])",
+    "movers_min": f"min_over_time({_MOVERS_UNITS}[<window>]) or min_over_time({_MOVERS_NAMED}[<window>])",
+    # The time of each peak. A range query over an instant `or` is valid.
+    "movers_series": f"{_MOVERS_UNITS} or {_MOVERS_NAMED}",
+}
+
+#: D5's `host_service_state` templates, byte for byte. The design table's
+#: backslash before the `|` is Markdown escaping; the text is `activating|failed`.
+_HOST_SERVICE_EXPRESSIONS: Mapping[str, str] = {
+    "bad_states": 'node_systemd_unit_state{job="<job>",state=~"activating|failed"} == 1',
+    # Proof the collector ran. It counts SERIES, units x states (1320 = 264 x 5
+    # on the vps, evidence-probe 1.1), so it is rendered as unit-state series.
+    "unit_count": 'count(node_systemd_unit_state{job="<job>"})',
+}
+
+#: rp2's whole-query hole, shared by every cadvisor-backed query.
+_RP2_NO_CADVISOR = (
+    "rp2 runs no cadvisor, so no container metrics exist for it: there is no "
+    "container-metrics job to query on this node."
+)
+
+#: rp5's and rp2's `host_service_state` hole (evidence-probe 1.1).
+_NO_SYSTEMD_COLLECTOR = (
+    "node-exporter on this node runs without the systemd collector; measured "
+    "2026-09-23: `node_systemd_unit_state` has series only for "
+    "`node-exporter-vps`."
+)
 
 
 def restart_aspect_holes(verified: frozenset[str]) -> tuple[Unavailable, ...]:
@@ -648,12 +699,7 @@ _REGISTRY: dict[str, QueryEntry] = {
             "`memory_movers` covers them.",
         ),
         unavailable=(
-            Unavailable(
-                parameters={"node": "rp2"},
-                aspect=None,
-                reason="rp2 runs no cadvisor, so no container metrics exist for "
-                "it: there is no container-metrics job to query on this node.",
-            ),
+            Unavailable(parameters={"node": "rp2"}, aspect=None, reason=_RP2_NO_CADVISOR),
             # Shortened from read-depth's wording because the renderer now prints
             # it in the health column of every row (triage-quality D3).
             Unavailable(
@@ -715,6 +761,80 @@ _REGISTRY: dict[str, QueryEntry] = {
             "a broken query.",
         ),
     ),
+    # D5: the two host-coverage queries. Both are measurements (cadvisor's
+    # cgroup working set, node-exporter's systemd unit state), not alert-rule
+    # state, so "No rule-state query" holds.
+    "memory_movers": QueryEntry(
+        name="memory_movers",
+        backend=QueryBackend.PROMETHEUS,
+        summary="Which cgroups' working-set memory moved most in the window, "
+        "host systemd units and containers ranked together, each with its peak "
+        "and the time of the peak.",
+        expressions=_MOVERS_EXPRESSIONS,
+        parameters=(
+            QueryParameter(
+                "node",
+                MOVERS_NODES,
+                _NODE_PARAM_DESCRIPTION,
+                note="rp2 runs no cadvisor: it is in domain and answers as not "
+                "derivable, never as an empty ranking",
+            ),
+            QueryParameter("window", PROMETHEUS_WINDOWS, _WINDOW_PROM_DESCRIPTION),
+        ),
+        renderer=renderers.render_memory_movers,
+        job_map=CADVISOR_JOBS,
+        range_query=True,
+        range_roles=frozenset({"movers_series"}),
+        caveats=(
+            "Working set includes active page cache, which is what memory "
+            "pressure tracks: a burst of file reads shows up here as working set.",
+            "A unit or container that did not exist for the whole window moved "
+            "from absent: its movement is measured over the samples it has, not "
+            "from zero.",
+            "A stopped container has no series: the exporter drops it, so a "
+            "container that stopped before the window began is not ranked at all.",
+            "No bar: no alert rule defines a threshold for one cgroup's memory, so "
+            "this is a ranking, not a comparison.",
+        ),
+        unavailable=(
+            Unavailable(parameters={"node": "rp2"}, aspect=None, reason=_RP2_NO_CADVISOR),
+        ),
+    ),
+    "host_service_state": QueryEntry(
+        name="host_service_state",
+        backend=QueryBackend.PROMETHEUS,
+        summary="Which host systemd units were failed or activating in the "
+        "window, with the share of samples in that state, and how many "
+        "unit-state series the collector reported.",
+        expressions=_HOST_SERVICE_EXPRESSIONS,
+        parameters=(
+            QueryParameter(
+                "node",
+                HOST_SERVICE_NODES,
+                _NODE_PARAM_DESCRIPTION,
+                note="only the vps node-exporter runs the systemd collector; rp5 "
+                "and rp2 are in domain and answer as not derivable",
+            ),
+            QueryParameter("window", PROMETHEUS_WINDOWS, _WINDOW_PROM_DESCRIPTION),
+        ),
+        renderer=renderers.render_host_service_state,
+        job_map=NODE_EXPORTER_JOBS,
+        range_query=True,
+        range_roles=frozenset({"bad_states"}),
+        caveats=(
+            "Unit state is node-exporter's systemd collector reading, a "
+            "measurement: no alert rule's state is read.",
+            "Samples are the range query's points, one per step: a state that "
+            "began and ended between two points is not seen.",
+            "The collector's count is of unit-state series: node-exporter exports "
+            "each unit once per state, so it proves the collector ran and is not "
+            "a count of units.",
+        ),
+        unavailable=(
+            Unavailable(parameters={"node": "rp5"}, aspect=None, reason=_NO_SYSTEMD_COLLECTOR),
+            Unavailable(parameters={"node": "rp2"}, aspect=None, reason=_NO_SYSTEMD_COLLECTOR),
+        ),
+    ),
 }
 
 QUERY_REGISTRY: Mapping[str, QueryEntry] = _REGISTRY
@@ -763,6 +883,16 @@ class RangeWindow:
     @property
     def last_point(self) -> float:
         return self.start + ((self.end - self.start) // self.step) * self.step
+
+    @property
+    def point_count(self) -> int:
+        """How many points the request evaluates, ``start`` and the last point included.
+
+        A series present throughout has this many samples, so it is the
+        denominator `host_service_state` states. It equals
+        :func:`expected_point_count` for a window built by :func:`range_window`.
+        """
+        return int((self.end - self.start) // self.step) + 1
 
 
 def range_window(window: str, end: float, max_points: int) -> RangeWindow:
@@ -826,8 +956,8 @@ def plan_query(
     if query_name not in QUERY_REGISTRY:
         raise QueryRefused(
             f"unknown query_name {query_name!r}. homelab_query answers a closed "
-            f"set of six named queries: {', '.join(QUERY_NAMES)}. No request was "
-            "issued."
+            f"set of {len(QUERY_NAMES)} named queries: {', '.join(QUERY_NAMES)}. "
+            "No request was issued."
         )
     entry = QUERY_REGISTRY[query_name]
     declared = {parameter.name for parameter in entry.parameters}

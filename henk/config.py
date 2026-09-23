@@ -91,13 +91,19 @@ REMINDER_TOOL_SUMMARIES: tuple[tuple[str, str], ...] = (
 #: the corpus half ships off until rp5 has a clone, a timer and an allowlist.
 #: Like `REMINDER_TOOL_SUMMARIES`, each is a capability flag — with a flag off the
 #: prompt is byte-identical to the one before that capability existed.
+#:
+#: The summary names no query count. The enum itself reaches the model through
+#: the tool's schema, which `homelab_query.build_parameters_schema` derives from
+#: the registry; a number typed here ("one of six") went stale when triage-quality
+#: added two queries, and this module cannot import the registry to derive one
+#: (`henk.tools` imports `henk.config`).
 QUERY_TOOL_SUMMARIES: tuple[tuple[str, str], ...] = (
     (
         "homelab_query",
         "answer a specific homelab question — since when, how much, which one — "
-        "by running one of six named, owner-reviewed queries over the monitoring "
-        "backends. It takes no query expression: every argument is chosen from a "
-        "fixed set.",
+        "by running one of a fixed set of named, owner-reviewed queries over the "
+        "monitoring backends. It takes no query expression: every argument is "
+        "chosen from a fixed set.",
     ),
 )
 DOCS_TOOL_SUMMARIES: tuple[tuple[str, str], ...] = (

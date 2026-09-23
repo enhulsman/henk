@@ -272,13 +272,13 @@ The capture is persisted only on rp5's audit volume.
 
 ## 4. Host-coverage queries (homelab-tools)
 
-- [ ] 4.1 Tests first:
+- [x] 4.1 Tests first:
   - *The host-coverage queries are enumerated*;
   - the rewritten *No rule-state query is registered*: no entry reads `ALERTS` or a rule
     API;
   - the domain scenarios for `memory_movers` and `host_service_state`, including *Host
     service state is not available where the collector is missing*.
-- [ ] 4.2 Tests first, `memory_movers`:
+- [x] 4.2 Tests first, `memory_movers`:
   - *A host unit's page-cache burst is named with its peak time* (a placeholder unit
     moving ~100 MB → ~1 GB);
   - *Range functions wrap only vector selectors*: no `_over_time(` whose argument is a
@@ -291,13 +291,13 @@ The capture is persisted only on rp5's audit volume.
   - *Peak-time resolution is stated*;
   - *No series is not an empty ranking*;
   - the point budget holds at `24h`.
-- [ ] 4.3 Tests first, `host_service_state`:
+- [x] 4.3 Tests first, `host_service_state`:
   - *A persistently failed unit is reported with its fraction* (288/288, placeholder
     unit);
   - *A crash-looping unit is flagged* (281/288 `activating`);
   - *A healthy host proves the query ran*;
   - *A silent collector is not health*.
-- [ ] 4.4 Test first that the `memory_movers` (`movers_max`, `movers_min`, `movers_series`)
+- [x] 4.4 Test first that the `memory_movers` (`movers_max`, `movers_min`, `movers_series`)
   and `host_service_state` (`bad_states`, `unit_count`) expressions and role names are
   **byte-equal** to `capture.py`'s written-out templates and to the D5 literals
   **hardcoded in the test**, which never parses `design.md`. The `bad_states` literal is

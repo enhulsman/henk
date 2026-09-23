@@ -1,4 +1,4 @@
-"""The six named queries' renderers: a backend response becomes owner-readable.
+"""The named queries' renderers: a backend response becomes owner-readable.
 
 Each registry entry points at the renderer named after it, so the mapping is
 checkable by inspection and a copy-paste that aims two entries at one renderer
@@ -10,7 +10,7 @@ fixed:
 ``payloads`` is keyed by the plan's expression and route roles, holding each
 backend response as parsed JSON.
 
-Four rules hold across all six, and each has a named failure mode:
+Four rules hold across all of them, and each has a named failure mode:
 
 **No address, ever.** Every label set goes through :func:`project_labels` and
 every backend-authored string through :func:`scrub_addresses`. The second is not
@@ -18,10 +18,12 @@ belt-and-braces: Prometheus's `lastError` — which the spec requires surfacing 
 almost always quotes the scrape URL, so a renderer that only filtered labels
 would publish an address in the one field the owner most wants to read.
 
-**A summary, never the series.** The two range queries report first / last / min
+**A summary, never the series.** The two trend queries report first / last / min
 / max and a direction, each figure with the UTC time it refers to, plus the
 window's end — the request's end, carried on the plan, never the last sample.
-The samples between them never reach the result at any window.
+The samples between them never reach the result at any window. The two
+host-coverage queries (`memory_movers`, `host_service_state`) read a range too,
+and report a ranking or per-unit sample counts from it, never its samples.
 
 **Three outcomes stay three.** A response that comes back empty for an in-domain
 request renders as *not derivable*, not as a measurement of nothing — the same
@@ -233,6 +235,19 @@ def _duration(seconds: float) -> str:
     return f"{seconds / 3600.0:.1f} hours"
 
 
+def _short_of_last_point(last_at: float, window: "RangeWindow") -> bool:
+    """Whether a series' last sample falls short of the window's last range point.
+
+    THE "not present at the window's end" rule, shared by every range renderer.
+    It is judged against the last range point, never against ``end``: when the
+    step does not divide the window the last point lies before ``end`` (1430 s
+    for 24h at 60 points), so a check against ``end`` would call every healthy
+    24h series silent. Half a step of tolerance absorbs Prometheus's
+    millisecond timestamps.
+    """
+    return last_at < window.last_point - window.step / 2
+
+
 def _window_lines(summary: _Summary, window: "RangeWindow | None") -> list[str]:
     """What the window's end says about the series, beyond the summary line.
 
@@ -245,7 +260,7 @@ def _window_lines(summary: _Summary, window: "RangeWindow | None") -> list[str]:
     """
     if window is None:
         return []
-    if summary.last_at < window.last_point - window.step / 2:
+    if _short_of_last_point(summary.last_at, window):
         return [
             f"No sample for the last {_duration(window.end - summary.last_at)} of the "
             f"window: the series' last sample is at {_stamp(summary.last_at)} and the "
@@ -902,3 +917,283 @@ def render_dns_performance(plan: "QueryPlan", payloads: Mapping[str, Any]) -> st
         lines.append(f"Bars for {node}: " + "; ".join(bars) + f" — {verdict}.")
     lines.extend(_caveats(plan))
     return "\n".join(lines)
+
+
+# --- Host coverage: shared ---------------------------------------------------
+
+
+def _readable(payload: Any) -> bool:
+    """A Prometheus success body whose `data.result` is a list.
+
+    The host-coverage renderers turn an empty result into a statement (no
+    cgroup moved; no unit failed), so an unreadable body must not reach that
+    branch: it would read as health. :func:`_result` stays tolerant for the
+    other renderers, whose empty branch is already not-derivable.
+    """
+    if not isinstance(payload, Mapping) or payload.get("status") != "success":
+        return False
+    data = payload.get("data")
+    return isinstance(data, Mapping) and isinstance(data.get("result"), list)
+
+
+def _range_end_lines(window: "RangeWindow | None", judged: str) -> list[str]:
+    """The window's end, and what "at the window's end" is judged against.
+
+    ``judged`` names what the result decides at the last range point, so the
+    sentence says what the reader may and may not take from it.
+    """
+    if window is None:
+        return [
+            "The range window was not supplied with this plan, so no end time is "
+            f"stated and {judged} is not judged."
+        ]
+    lines = [f"Window ends at {_stamp(window.end)}."]
+    if window.end - window.last_point >= 60.0:
+        lines.append(
+            f"The last range point is at {_stamp(window.last_point)}: the "
+            f"{window.step}s step does not divide the window evenly, so {judged} "
+            "is judged at that point."
+        )
+    return lines
+
+
+# --- memory_movers ---------------------------------------------------------
+
+#: A host service unit's cgroup under cadvisor, `/system.slice/<unit>.service`:
+#: the population D5's `id=~` selector reads.
+_HOST_UNIT_ID = re.compile(r"/system\.slice/(?P<unit>[^/]+\.service)")
+
+#: How many movers a result names. The ranking is a pointer, not the population.
+MOVERS_SHOWN = 5
+
+
+def _by_id(payload: Any) -> dict[str, tuple[dict[str, str], Mapping[str, Any]]]:
+    """Series keyed by the cgroup `id` label ALONE.
+
+    Not by the full label set: the instant `_over_time` results drop `__name__`
+    while the range results keep it, plus the `container_label_*` labels, so a
+    full-label join would match nothing (D5).
+    """
+    out: dict[str, tuple[dict[str, str], Mapping[str, Any]]] = {}
+    for series in _result(payload):
+        labels = _labels(series)
+        cgroup = labels.get("id")
+        if cgroup and cgroup not in out:
+            out[cgroup] = (labels, series)
+    return out
+
+
+def _mover_name(cgroup: str, labels: Mapping[str, str]) -> tuple[str, str, str | None]:
+    """(population, row label, auto-name annotation) for one cgroup."""
+    name = labels.get("name")
+    if name:
+        return "container", f"container `{scrub_addresses(name)}`", auto_name_annotation(name)
+    match = _HOST_UNIT_ID.fullmatch(cgroup)
+    if match:
+        return "host unit", f"host unit `{scrub_addresses(match.group('unit'))}`", None
+    return "other", f"cgroup `{scrub_addresses(cgroup)}`", None
+
+
+def render_memory_movers(plan: "QueryPlan", payloads: Mapping[str, Any]) -> str:
+    """The cgroups whose working set moved most, host units and containers together.
+
+    Ranked by max − min, from the instant `max_over_time`/`min_over_time`
+    answers, which are exact over every raw sample in the window. The peak's
+    TIME comes from the range answer, so it is one range step coarse, and the
+    result says so. A ranked cgroup with no sample at the last range point is
+    flagged as gone at the window's end: the 2026-09-23 culprit ranked first and
+    had no series at T (D5).
+    """
+    node = plan.arguments["node"]
+    window_name = plan.arguments["window"]
+    job = plan.entry.job_map.get(node, "") if plan.entry.job_map else ""
+    window = plan.range_window
+
+    if not (_readable(payloads.get("movers_max")) and _readable(payloads.get("movers_min"))):
+        return _not_derivable(
+            plan,
+            f"job {job}'s working-set answer could not be read, so no ranking is "
+            "given. An unreadable answer is not a ranking of nothing",
+        )
+    maxima = _by_id(payloads.get("movers_max"))
+    minima = _by_id(payloads.get("movers_min"))
+    if not maxima:
+        return _not_derivable(
+            plan,
+            f"job {job} returned no working-set series for any host unit or named "
+            f"container over {window_name}: no cgroup series were returned, which "
+            "is not the same statement as 'nothing moved'",
+        )
+    range_readable = _readable(payloads.get("movers_series"))
+    ranged = _by_id(payloads.get("movers_series")) if range_readable else {}
+
+    movers: list[tuple[float, str, float, float, dict[str, str]]] = []
+    for cgroup, (labels, series) in maxima.items():
+        peak = _instant(series)
+        low = _instant(minima[cgroup][1]) if cgroup in minima else None
+        if peak is None or low is None:
+            continue
+        merged = {**(ranged[cgroup][0] if cgroup in ranged else {}), **labels}
+        movers.append((peak[1] - low[1], cgroup, peak[1], low[1], merged))
+    if not movers:
+        return _not_derivable(
+            plan,
+            f"job {job} returned no cgroup with both a maximum and a minimum over "
+            f"{window_name}, so no movement can be computed",
+        )
+    movers.sort(key=lambda item: (-item[0], item[1]))
+
+    populations = [_mover_name(cgroup, labels)[0] for _m, cgroup, _p, _l, labels in movers]
+    shown = movers[:MOVERS_SHOWN]
+    rows: list[str] = []
+    for rank, (moved, cgroup, peak, low, labels) in enumerate(shown, start=1):
+        _population, label, annotation = _mover_name(cgroup, labels)
+        parts = [f"moved by {_mib(moved)} (min {_mib(low)}, peak {_mib(peak)})"]
+        points = _points(ranged[cgroup][1]) if cgroup in ranged else []
+        if points:
+            summary = _summarise(points)
+            timing = f"peak at {_stamp(summary.max_at)}"
+            if summary.max_last_at != summary.max_at:
+                timing += f", last reached at {_stamp(summary.max_last_at)}"
+            parts.append(timing + f"; lowest at {_stamp(summary.min_at)}")
+        else:
+            parts.append(
+                "peak time not resolved: "
+                + ("no range sample for this cgroup" if range_readable else "the range answer could not be read")
+            )
+        row = f"  {rank}. {label}: " + "; ".join(parts)
+        if window is not None and range_readable and (
+            not points or _short_of_last_point(points[-1][0], window)
+        ):
+            row += " — no series at the window's end (stopped or exited)"
+        if annotation:
+            row += f" — {annotation}"
+        rows.append(row)
+
+    def _counted(count: int, noun: str) -> str:
+        return f"{count} {noun}{'' if count == 1 else 's'}"
+
+    header = [
+        f"memory_movers — {describe_target(job, {})} over {window_name}: "
+        f"{_counted(len(movers), 'cgroup')} measured "
+        f"({_counted(populations.count('host unit'), 'host unit')}, "
+        f"{_counted(populations.count('container'), 'container')}). "
+        f"Top {len(shown)} by movement (max − min over the window), UTC times:",
+    ]
+    resolution = (
+        [
+            "Peak and lowest times are the range points with the highest and "
+            "lowest working set, accurate to within one range step "
+            f"({window.step} s). The min and peak values are exact, from "
+            "min_over_time and max_over_time over every sample in the window."
+        ]
+        if window is not None
+        else []
+    )
+    return "\n".join(
+        [
+            *header,
+            *rows,
+            *resolution,
+            *_range_end_lines(window, "presence at the window's end"),
+            *_caveats(plan),
+        ]
+    )
+
+
+# --- host_service_state ----------------------------------------------------
+
+
+def render_host_service_state(plan: "QueryPlan", payloads: Mapping[str, Any]) -> str:
+    """Units failed or activating in the window, and proof the collector ran.
+
+    The count is checked FIRST: a collector that reported nothing makes an empty
+    bad-state list meaningless, so it is not derivable rather than healthy. The
+    count is units x states (node-exporter exports every unit once per state),
+    so it is rendered as unit-state series and never as a unit count
+    (evidence-probe 1.1).
+
+    Each row's denominator is the request's own point count, so the fraction
+    follows the configured budget (59 points over 24h at 60) rather than the
+    5-minute shape of the hand investigation.
+    """
+    node = plan.arguments["node"]
+    window_name = plan.arguments["window"]
+    job = plan.entry.job_map.get(node, "") if plan.entry.job_map else ""
+    window = plan.range_window
+
+    counts = _result(payloads.get("unit_count")) if _readable(payloads.get("unit_count")) else []
+    reading = _instant(counts[0]) if counts else None
+    reported = reading[1] if reading is not None else 0.0
+    if reported <= 0:
+        return _not_derivable(
+            plan,
+            "the systemd collector reported no units: "
+            f"count(node_systemd_unit_state) for job {job} returned "
+            f"{'zero' if counts else 'no series'}, so an empty list of failed "
+            "units would say nothing about this host",
+        )
+    if not _readable(payloads.get("bad_states")):
+        return _not_derivable(
+            plan,
+            "the failed/activating answer could not be read, so no unit is "
+            "reported either way. An unreadable answer is not a healthy host",
+        )
+
+    readings: list[tuple[str, str, list[tuple[float, float]]]] = []
+    for series in _result(payloads.get("bad_states")):
+        labels = _labels(series)
+        unit, state = labels.get("name", ""), labels.get("state", "")
+        points = [point for point in _points(series) if point[1] == 1.0]
+        if unit and state and points:
+            readings.append((unit, state, points))
+    readings.sort(key=lambda item: (-len(item[2]), item[0], item[1]))
+
+    expected = window.point_count if window is not None else None
+    rows: list[str] = []
+    for unit, state, points in readings:
+        samples = len(points)
+        fraction = f"{samples}/{expected}" if expected else f"{samples}"
+        parts = [
+            f"state {state}",
+            f"{state} in {fraction} samples over {window_name}",
+            f"in that state from {_stamp(points[0][0])} to {_stamp(points[-1][0])}",
+        ]
+        if window is None:
+            parts.append(f"whether it is still {state} at the window's end is not judged")
+        elif _short_of_last_point(points[-1][0], window):
+            parts.append(f"not {state} at the window's end")
+        else:
+            parts.append(f"still {state} at the window's end")
+        row = f"  `{scrub_addresses(unit)}`: " + "; ".join(parts)
+        if state == "activating" and expected and samples * 2 > expected:
+            row += (
+                " — probable crash loop: activating in most of the window's "
+                f"samples ({fraction})"
+            )
+        rows.append(row)
+
+    series_count = f"{reported:.0f} unit-state series"
+    if rows:
+        header = [
+            f"host_service_state — {describe_target(job, {})} over {window_name}, "
+            f"UTC times. Units in a failed or activating state at any sample: "
+            f"{len(rows)}. The collector reported {series_count} (node-exporter "
+            "exports each unit once per state), so the query ran.",
+        ]
+    else:
+        header = [
+            f"host_service_state — {describe_target(job, {})} over {window_name}: "
+            f"No unit was failed or activating in any sample over {window_name}. "
+            f"The collector reported {series_count} (node-exporter exports each "
+            "unit once per state), so the query ran and this is a reading, not an "
+            "empty answer.",
+        ]
+    return "\n".join(
+        [
+            *header,
+            *rows,
+            *_range_end_lines(window, "whether a unit is still in its state"),
+            *_caveats(plan),
+        ]
+    )

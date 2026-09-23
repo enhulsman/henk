@@ -906,8 +906,9 @@ def test_the_container_templates_are_byte_equal_to_the_d5_literals():
 
 
 def test_the_capture_no_longer_writes_out_the_container_rows():
-    written = {(t.query, t.role) for t in capture.WRITTEN_OUT_TEMPLATES}
-    assert not {q for q, _ in written} & {"container_state"}
+    # Task 4.4 retired the whole written-out table (group 3 retired these four
+    # rows, group 4 the remaining five), so no copy of any row survives.
+    assert not hasattr(capture, "WRITTEN_OUT_TEMPLATES")
     # The capture now sends exactly the registry's own container templates.
     requests = [r for r in capture.plan_requests() if r.query == "container_state"]
     assert {r.source for r in requests} == {"registry"}

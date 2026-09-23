@@ -13,16 +13,17 @@ current renderers.
 the tests pin that they cover the registry's whole argument space and that every
 range request is the one the tool would have sent with its clock at `T`.
 
-**Written-out templates.** The D5 canonical table added nine expression roles
-the registry did not have when this script had to run: D3's container memory,
-D4's restarts, and D5's two new queries. Their text is the D5 table, byte for
-byte, and it was written out here because Prometheus retention (the 24h windows
-ending in the triage interval fall out on 2026-10-07 06:30Z) would not wait. A
-written-out template is used only for a role the registry lacks, so the request
-count does not change as the registry catches up. Task 3.9 retired D3/D4's four
-`container_state` rows once the registry's copies were pinned byte-equal to the
-D5 literals; the capture reads them from the registry now. Task 4.4 retires the
-remaining five.
+**Every template comes from the registry.** The D5 canonical table added nine
+expression roles the registry did not have when this script had to run: D3's
+container memory, D4's restarts, and D5's two new queries. The 2026-09-23
+capture on rp5 sent them from copies written out here, byte for byte the D5
+table, because Prometheus retention (the 24h windows ending in the triage
+interval fall out on 2026-10-07 06:30Z) would not wait. Task 3.9 retired the
+four `container_state` copies and task 4.4 the remaining five, each once the
+registry's templates were pinned byte-equal to the D5 literals. The request set
+per `T` is unchanged by the retirement (155 static requests); only the records'
+`source` now reads "registry" for those roles where the rp5 capture recorded
+"written-out".
 
 **What is never captured.** `endpoint_history` is Gatus-backed, and
 `scrape_targets`' `/api/v1/targets` route takes no time parameter, so neither has
@@ -50,9 +51,6 @@ import httpx
 
 from henk.tools import query_registry
 from henk.tools.query_registry import (
-    CADVISOR_JOBS,
-    NODE_EXPORTER_JOBS,
-    PROMETHEUS_WINDOWS,
     WINDOW_SECONDS,
     QueryBackend,
     QueryEntry,
@@ -82,80 +80,6 @@ class CaptureRefused(RuntimeError):
 
 
 @dataclass(frozen=True)
-class WrittenTemplate:
-    """One row of the D5 canonical table."""
-
-    query: str
-    role: str
-    kind: str  # "instant" | "range"
-    template: str
-
-
-@dataclass(frozen=True)
-class WrittenDomain:
-    """The argument space of a query the registry does not have yet."""
-
-    nodes: tuple[str, ...]
-    job_map: Mapping[str, str]
-    unavailable: tuple[str, ...]
-    windows: tuple[str, ...]
-
-
-_UNITS = r'container_memory_working_set_bytes{job="<job>",id=~"/system\\.slice/.+\\.service"}'
-_NAMED = 'container_memory_working_set_bytes{job="<job>",name!=""}'
-
-#: The D5 canonical table's rows the registry does not have yet. Task 3.9
-#: retired the four `container_state` rows (the registry's `memory_working_set`,
-#: `swap`, `restarts_15m` and `restarts_24h` are pinned byte-equal to the D5
-#: literals in the tests); task 4.4 retires these five.
-WRITTEN_OUT_TEMPLATES: tuple[WrittenTemplate, ...] = (
-    WrittenTemplate(
-        "memory_movers",
-        "movers_max",
-        "instant",
-        f"max_over_time({_UNITS}[<window>]) or max_over_time({_NAMED}[<window>])",
-    ),
-    WrittenTemplate(
-        "memory_movers",
-        "movers_min",
-        "instant",
-        f"min_over_time({_UNITS}[<window>]) or min_over_time({_NAMED}[<window>])",
-    ),
-    WrittenTemplate("memory_movers", "movers_series", "range", f"{_UNITS} or {_NAMED}"),
-    WrittenTemplate(
-        "host_service_state",
-        "bad_states",
-        "range",
-        'node_systemd_unit_state{job="<job>",state=~"activating|failed"} == 1',
-    ),
-    WrittenTemplate(
-        "host_service_state",
-        "unit_count",
-        "instant",
-        'count(node_systemd_unit_state{job="<job>"})',
-    ),
-)
-
-#: The domains of D5's two new queries, as the design states them. rp2 runs no
-#: cadvisor; only the vps node-exporter runs the systemd collector (measured
-#: 2026-09-23). Used only while the registry has no entry of that name.
-WRITTEN_OUT_DOMAINS: Mapping[str, WrittenDomain] = {
-    "memory_movers": WrittenDomain(
-        nodes=("rp5", "vps", "rp2"),
-        job_map=CADVISOR_JOBS,
-        unavailable=("rp2",),
-        windows=PROMETHEUS_WINDOWS,
-    ),
-    "host_service_state": WrittenDomain(
-        nodes=("rp5", "vps", "rp2"),
-        job_map=NODE_EXPORTER_JOBS,
-        unavailable=("rp5", "rp2"),
-        windows=PROMETHEUS_WINDOWS,
-    ),
-}
-
-
-@dataclass(frozen=True)
 class CaptureRequest:
     query: str
     role: str
@@ -163,7 +87,9 @@ class CaptureRequest:
     kind: str
     expression: str
     window: str | None
-    source: str  # "registry" | "written-out" | "named-follow-up"
+    #: "registry" | "named-follow-up". The 2026-09-23 capture on rp5 also
+    #: recorded "written-out" for the nine D5 roles the registry lacked then.
+    source: str
 
     @property
     def key(self) -> tuple[str, str, tuple[tuple[str, str], ...]]:
@@ -183,15 +109,6 @@ def _is_range(entry: QueryEntry, role: str, window: str | None) -> bool:
     """The tool's own rule (`homelab_query.py` `_prometheus_request`)."""
     roles = entry.range_roles
     return entry.range_query and (roles is None or role in roles) and window is not None
-
-
-def _fill(template: str, fields: Mapping[str, str]) -> str:
-    filled = template
-    for name, value in fields.items():
-        filled = filled.replace(f"<{name}>", value)
-    if "<" in filled and ">" in filled:
-        raise CaptureRefused(f"internal error: unfilled placeholder in {template!r}")
-    return filled
 
 
 def _registry_requests(registry: Mapping[str, QueryEntry]) -> Iterator[CaptureRequest]:
@@ -216,52 +133,16 @@ def _registry_requests(registry: Mapping[str, QueryEntry]) -> Iterator[CaptureRe
                 )
 
 
-def _written_out_requests(registry: Mapping[str, QueryEntry]) -> Iterator[CaptureRequest]:
-    for template in WRITTEN_OUT_TEMPLATES:
-        entry = registry.get(template.query)
-        if entry is not None:
-            if template.role in entry.expressions:
-                continue
-            combinations = []
-            for arguments in _combinations(entry):
-                plan = plan_query(template.query, arguments)
-                if plan.outcome is QueryOutcome.ANSWERED:
-                    combinations.append((plan.arguments, entry.job_map or {}))
-        else:
-            domain = WRITTEN_OUT_DOMAINS[template.query]
-            combinations = [
-                ({"node": node, "window": window}, domain.job_map)
-                for node in domain.nodes
-                if node not in domain.unavailable
-                for window in domain.windows
-            ]
-        for arguments, job_map in combinations:
-            fields = {**arguments, "job": job_map[arguments["node"]]}
-            window = arguments.get("window")
-            yield CaptureRequest(
-                query=template.query,
-                role=template.role,
-                arguments=tuple(sorted(arguments.items())),
-                kind=template.kind if window is not None else "instant",
-                expression=_fill(template.template, fields),
-                window=window,
-                source="written-out",
-            )
-
-
 def plan_requests() -> list[CaptureRequest]:
     """Every request one `T` issues before its named-container follow-ups.
 
-    The union of the registry and the written-out templates, deduplicated by
-    (query, role, arguments), with the registry first. A collision would mean a
-    written-out copy slipped past the role check, which is a defect, not a
-    tie to break quietly.
+    Every Prometheus expression of every registry entry, in every in-domain
+    combination the registry answers, keyed by (query, role, arguments). A
+    repeated key is a defect, not a tie to break quietly.
     """
     registry = query_registry.QUERY_REGISTRY
     requests: dict[tuple, CaptureRequest] = {}
-    for request in itertools.chain(
-        _registry_requests(registry), _written_out_requests(registry)
-    ):
+    for request in _registry_requests(registry):
         if request.key in requests:
             raise CaptureRefused(f"internal error: two templates for {request.key}")
         requests[request.key] = request

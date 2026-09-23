@@ -69,8 +69,9 @@ def _triage_quality_file(relative: str) -> Path:
 #: not-derivable node, and two host-coverage queries join the enum.
 TRIAGE_SPEC = _triage_quality_file("specs/homelab-tools/spec.md").read_text()
 
-#: The six names, from the proposal's table and the spec's closed enum.
-EXPECTED_QUERY_NAMES = frozenset(
+#: The six names read-depth shipped, from its proposal's table and its spec's
+#: closed enum. The read-depth spec's domain list names exactly these.
+READ_DEPTH_QUERY_NAMES = frozenset(
     {
         "node_resource_trend",
         "scrape_targets",
@@ -81,10 +82,10 @@ EXPECTED_QUERY_NAMES = frozenset(
     }
 )
 
-#: The triage-quality delta's domain list names these too; a later task group
-#: registers the two new ones. Until then they are parsed (proving the parser
-#: covers the whole list) but not compared.
-TRIAGE_QUERY_NAMES = EXPECTED_QUERY_NAMES | {"memory_movers", "host_service_state"}
+#: The eight names since triage-quality D5: the two host-coverage queries joined
+#: the closed enum (task group 4), and the delta's domain list names all eight.
+TRIAGE_QUERY_NAMES = READ_DEPTH_QUERY_NAMES | {"memory_movers", "host_service_state"}
+EXPECTED_QUERY_NAMES = TRIAGE_QUERY_NAMES
 
 
 # --- Reading the pinned record --------------------------------------------
@@ -222,7 +223,7 @@ def pinned_marker(slug: str) -> str:
 
 
 def spec_parameter_domains(
-    spec: str = SPEC, expected: frozenset[str] = EXPECTED_QUERY_NAMES
+    spec: str = SPEC, expected: frozenset[str] = READ_DEPTH_QUERY_NAMES
 ) -> dict[str, dict[str, tuple[str, ...] | None]]:
     """The spec delta's own domain literals, parsed from its normative list.
 
@@ -260,10 +261,12 @@ def spec_parameter_domains(
 # --- 3.1 Registry shape ----------------------------------------------------
 
 
-def test_the_enum_is_exactly_the_six_measuring_queries():
+def test_the_enum_is_exactly_the_eight_measuring_queries():
+    # Six from read-depth, plus triage-quality D5's `memory_movers` and
+    # `host_service_state` (task 4.1, *The host-coverage queries are enumerated*).
     assert set(QUERY_NAMES) == EXPECTED_QUERY_NAMES
     assert set(QUERY_REGISTRY) == EXPECTED_QUERY_NAMES
-    assert len(QUERY_NAMES) == 6
+    assert len(QUERY_NAMES) == 8
     # QUERY_NAMES is what the schema advertises; it must be derived from the
     # registry rather than typed beside it.
     assert tuple(QUERY_NAMES) == tuple(sorted(QUERY_REGISTRY))
@@ -302,14 +305,25 @@ def test_each_entry_names_the_backend_it_actually_talks_to():
         "freshness_check",
         "container_state",
         "dns_performance",
+        "memory_movers",
+        "host_service_state",
     ):
         assert QUERY_REGISTRY[name].backend is QueryBackend.PROMETHEUS
 
 
 def test_only_the_range_queries_declare_range_semantics():
-    # "Range queries return bounded summaries" names exactly these two.
+    # "Range queries return bounded summaries" names the two trend queries; D5's
+    # two host-coverage queries each issue one bounded range role beside their
+    # instant roles (`movers_series`, `bad_states`).
     ranged = {name for name, e in QUERY_REGISTRY.items() if e.range_query}
-    assert ranged == {"node_resource_trend", "dns_performance"}
+    assert ranged == {
+        "node_resource_trend",
+        "dns_performance",
+        "memory_movers",
+        "host_service_state",
+    }
+    assert QUERY_REGISTRY["memory_movers"].range_roles == frozenset({"movers_series"})
+    assert QUERY_REGISTRY["host_service_state"].range_roles == frozenset({"bad_states"})
 
 
 # --- 3.2 Publication safety: templates ------------------------------------
@@ -444,14 +458,19 @@ def test_the_address_bearing_label_set_covers_everything_the_record_names():
 
 def test_every_declared_domain_matches_the_spec_literal():
     # The binding list is triage-quality's: it rewrote container_state's domain
-    # (rp2 is in domain and not derivable). Queries it names that are not yet
-    # registered belong to a later task group and are only parsed here.
+    # (rp2 is in domain and not derivable) and added D5's two host-coverage
+    # queries, which are registered since task group 4, so every query it names
+    # is compared.
     domains = spec_parameter_domains(TRIAGE_SPEC, TRIAGE_QUERY_NAMES)
     assert domains["container_state"] == {"node": ("rp5", "vps", "rp2")}
     assert domains["endpoint_history"]["endpoint"] is None
+    assert domains["memory_movers"] == {
+        "node": ("rp5", "vps", "rp2"),
+        "window": ("15m", "1h", "6h", "24h"),
+    }
+    assert domains["host_service_state"] == domains["memory_movers"]
+    assert set(domains) == set(QUERY_REGISTRY)
     for query, params in domains.items():
-        if query not in QUERY_REGISTRY:
-            continue
         entry = QUERY_REGISTRY[query]
         assert {p.name for p in entry.parameters} == set(params), (
             f"{query}'s parameter names differ from the spec"
