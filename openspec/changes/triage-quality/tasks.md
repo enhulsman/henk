@@ -476,17 +476,17 @@ The capture is persisted only on rp5's audit volume.
 
 ## 11. Replay (triage-replay, secure-deployment)
 
-- [ ] 11.1 Tests first:
+- [x] 11.1 Tests first:
   - *A recorded call is served its recorded result*;
   - *An unrecorded call is answered honestly*;
   - *A handoff in replay is captured, not published*.
-- [ ] 11.2 Tests first, *A replay that tries everything reaches nothing*:
+- [x] 11.2 Tests first, *A replay that tries everything reaches nothing*:
   - a refusing transport records zero tool-originated requests;
   - `Store` is patched to fail the test if constructed;
   - no audit line and no send.
 
   Also *The hook still blocks built-ins*.
-- [ ] 11.3 Tests first:
+- [x] 11.3 Tests first:
   - *A replay runs a recording on another model*;
   - *Drift is reported, not hidden*;
   - *An invalid effort spends nothing*;
@@ -494,7 +494,7 @@ The capture is persisted only on rp5's audit volume.
   - *A wrong compose project is refused*: an absent audit log means exit before any model
     call;
   - the replay module imports no channel, intake or ntfy module.
-- [ ] 11.4 Tests first:
+- [x] 11.4 Tests first:
   - *A reconstructed case says what it is*;
   - *Any in-domain query is answerable from the capture*, for Prometheus-backed queries
     only;
@@ -505,7 +505,7 @@ The capture is persisted only on rp5's audit volume.
   - *Uncaptured tools are unavailable, not guessed*, including `homelab_docs`;
   - *The case cannot leak the answer through memory or history*;
   - *Original arguments are not invented*.
-- [ ] 11.5 Implement `henk/replay/`:
+- [x] 11.5 Implement `henk/replay/`:
   - the registry and stubs;
   - the refusing transport;
   - the null channel;

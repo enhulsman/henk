@@ -898,3 +898,120 @@ killed, and 1 equivalent.
 - `live-denied.json` was read: both the gate-denied and the hook-blocked call are recorded
   with `is_error` true.
 - The suite was re-run: 3213 passed, 3 skipped.
+
+## Group 11: replay
+
+New modules:
+- `henk/replay/harness.py`: the refusing transport, null channel, refusing stores, replay
+  server, stubs and registry builders;
+- `henk/replay/case.py`: the case layout, `CaptureIndex`, `capture_drift` and
+  `ReconstructedQueries`;
+- `henk/replay/run.py`: the validators, the audit-log guard, `run_replay` and the run
+  writer;
+- `henk/replay/__main__.py`: `list` and `run` only.
+
+`query_renderers.render_scrape_targets` gained a keyword-only `targets_unavailable` seam,
+off by default. The README has the owner invocation. The suite moved from 3213 to 3298
+passed, with 3 skipped, all SDK-gated. (The brief's D numbers were shifted: the replay is
+D14, `design.md:674`, and grading plus the first case is D15, `:730`.)
+
+**Decisions.**
+- **The same factory and hook as production.** `run_replay` builds a real
+  `SdkSessionFactory`: `create()` is the production path, `allowed_tools` is empty, and
+  the hook comes from `_build_pretooluse_hook`.
+- **Stubs copy the definitions only**: name, description, parameters, class,
+  authorization and turn scope. They hold no reference to the real tool, so
+  `tool_definitions_hash` matches the live registry.
+  - The definitions come from `build_production_registry` over the refusing transport
+    and a truthy `RefusingStores`, so no store is ever built.
+- **Gate framing.** The replay turn is an event turn, non-announceable and tainted, so
+  scope denial comes first. If a prompt were sent, `NullChannel` raises, and the gate
+  fails closed.
+- **Recorded errors are re-served byte for byte**, because `_adapt_tool` sends `ERROR:
+  <error>`. `publish_handoff` and `notify` are captured into the run output, never sent.
+- **The case layout is defined here** (see the `case.py` docstring):
+
+  ```
+  case.json = {schema: "henk.triage-case.v1", case_id,
+               recording: <whole v1 recording>,
+               capture: {directory, T, interval}, drift?}
+  ```
+
+  - The capture `directory` is relative and must resolve inside `triage-cases/`.
+  - The recording is wrapped, not extended, because of `additionalProperties: false`.
+  - **12b's `rebuild` must write this shape.**
+- **Serving a reconstructed case mirrors `HomelabQueryTool._run`.**
+  - It plans through `plan_query`, and takes the window from `with_range_end(plan, T,
+    current max_points)`.
+  - It looks records up by (query, role, sorted arguments).
+  - It checks the expression, `kind`, T and, for range answers, max_points and step. Any
+    mismatch is drift, and is not served. Duplicate keys are not served either.
+  - `named_container` follow-ups are skipped, because no tool call can ask for one.
+- **What a reconstructed case refuses.**
+  - `endpoint_history`, uncaptured tools (`homelab_health`, `homelab_docs`, `todo_read`)
+    and unknown arguments are unavailable, as error results.
+  - A reconstructed case carrying recall, a digest or prior handoff ids is refused before
+    any session.
+  - A reconstructed recording found in `triage-recordings/` is refused, and replays only
+    as a case.
+- **Pre-spend validation happens before the config is even loaded.**
+  - Model ids are checked with `re.fullmatch`; effort and thinking are validated.
+  - `run` refuses without `CLAUDE_CONFIG_DIR`. This is an addition.
+  - The audit-log guard uses `is_file()`, for both `list` and `run`.
+  - `--thinking`, when omitted, is unset, not inherited from the recording.
+- **Run files** go to `triage-replays/<id>/<run_id>.json`, written atomically, mode 600 in
+  a 700 directory. A recording's runs are pruned with it. A case's runs are never pruned.
+- **Import graph.**
+  - Allowed: `henk.channel`, `henk.channel.base` and `henk.channel.allowlist`, which hold
+    types only.
+  - Forbidden: `henk.channel.signal`, `henk.events.{intake,coordinator,pipeline,checkpoint}`,
+    `henk.audit`, `henk.reminders.scheduler`, `henk.runtime`, `henk.app` and
+    `henk.__main__`.
+
+**Deviation:** 12b's `targets_unavailable` renderer seam (task 12.5) is implemented here,
+because 11.4's scenario needs it. **12b should drop that item.**
+
+**Not verified locally:** the real `SdkSessionFactory.create()` over stubs, because the SDK
+is only in the image. The first owner `replay run` exercises it, and group 13's container
+checks should cover it (13.3).
+
+**Seams.**
+- 12a: `RUN_SCHEMA` run files, `ReplayOutcome`, the `create_session` seam for judge
+  sessions, and the `__main__` subparsers.
+- 12b: `case.CASE_SCHEMA` and `load_case`'s layout, `capture_drift(index, t, max_points)`,
+  `CaptureIndex.load`, `ReconstructedQueries`, `recorder.add_case`/`list_cases`, and
+  `iso`.
+
+**Mutation table.** 81 mutants were run with `python -B`, each file md5-restored. All 81
+were killed.
+- Three first survived, and all three are closed:
+  - U3 was a real gap: an `unknown` argument entry in a malformed live recording
+    canonicalised to `{}`. A test and a guard were added.
+  - U2 was dead code, and was removed.
+  - R3 is now killed by asserting on the refusal message.
+- The families covered:
+  - isolation, meaning transport, store, audit, gate framing, channel, imports and hook
+    (I1-I11);
+  - recorded serving (S1-S9, T1-T2);
+  - handoff and notify capture (H1-H3, N1);
+  - drift (D1-D12);
+  - pre-spend validation (V1-V8);
+  - the audit guard (G1-G3);
+  - the capture key, scrape_targets and Gatus (K1-K4, ST1-ST4, E1-E2);
+  - uncaptured tools, leaks, arguments, the run write, case resolution and the profile
+    (U, L, C, A, W, R, P).
+
+**Tests modified:** none.
+
+**Review gate (orchestrator).**
+- The suite was re-run: 3298 passed.
+- `ReplayStub` was read (`harness.py:318-360`): it holds no reference to the real tool,
+  and `_run` goes only to `server.serve`.
+- The replay's `henk.*` module set was listed independently. There is no signal adapter,
+  intake, pipeline, audit or runtime module. `henk.store` is imported through the tool
+  definitions but never constructed, and the sealed isolation test enforces that.
+- The owner command was checked against the compose file. The credential is
+  `CLAUDE_CODE_OAUTH_TOKEN` from `env_file`, so an empty `CLAUDE_CONFIG_DIR` loses no auth.
+  The run container shares tailscale's network namespace, so the refusing transport and
+  the stubs are the whole isolation layer. 13.3's `docker inspect` checks what else the
+  run container holds.

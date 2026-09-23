@@ -464,8 +464,27 @@ def _errors_by_job(payload: Any) -> dict[str, list[str]]:
     return errors
 
 
-def render_scrape_targets(plan: "QueryPlan", payloads: Mapping[str, Any]) -> str:
-    """Every target with its `up` value, plus `lastError` for the down ones."""
+#: A down target's error part when the targets payload cannot exist: a rebuilt or
+#: replayed case has no historical targets API (triage-quality D15).
+TARGETS_UNAVAILABLE_IN_RECONSTRUCTION = (
+    "unavailable in reconstruction: the targets API has no historical form"
+)
+
+
+def render_scrape_targets(
+    plan: "QueryPlan",
+    payloads: Mapping[str, Any],
+    *,
+    targets_unavailable: bool = False,
+) -> str:
+    """Every target with its `up` value, plus `lastError` for the down ones.
+
+    ``targets_unavailable`` is the reconstruction seam (triage-quality D15): a
+    missing targets payload would otherwise read as "no scrape error recorded by
+    the backend", which is false for a case rebuilt from a capture. With it set,
+    each down target's error part says the targets API is unavailable instead.
+    Live dispatch never sets it, so live output is unchanged.
+    """
     found = _result(payloads.get("up"))
     if not found:
         return _not_derivable(
@@ -497,7 +516,12 @@ def render_scrape_targets(plan: "QueryPlan", payloads: Mapping[str, Any]) -> str
             continue
         down += 1
         rows.append(f"  DOWN {target} — up=0")
-        for message in errors.get(job, []) or ["no scrape error recorded by the backend"]:
+        messages = (
+            [TARGETS_UNAVAILABLE_IN_RECONSTRUCTION]
+            if targets_unavailable
+            else errors.get(job, []) or ["no scrape error recorded by the backend"]
+        )
+        for message in messages:
             rows.append(f"         last scrape error: {message}")
         if ever_up.get(job, 0.0) >= 1:
             rows.append(

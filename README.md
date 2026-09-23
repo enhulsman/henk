@@ -192,6 +192,7 @@ existing `henk_audit` volume (already in the rp5 backup allowlist).
 | `henk/store/` | One SQLite file on the audit volume: capped memory repository, capture inbox behind the swappable `InboxStore` seam, reminders repository + the explicit transaction boundary |
 | `henk/reminders/` | Time resolution (DST-correct, zone-explicit), the polling delivery scheduler, and the delivered-reminder note |
 | `henk/tools/` | `homelab_health`, `homelab_query` (+ its reviewable `query_registry`, renderers, and the address projection), `homelab_docs` (corpus sectioniser, allowlisted index, stamp reader), `sessions_read` (two-stage topic poll, label gate, shape-constrained render; `backend_failure` holds the shared backend-failure sentences), `todo_read`, `notify`, `publish_handoff`, `store_memory`, `capture`, `inbox_read`, `remind`, `cancel_reminder`, `reminders_read` (+ deferred `taiga_read`) and the production registry |
+| `henk/replay/` | Triage recording (bounded, beside the audit log), the first-case capture script, and the owner-run replay entry point (`python -m henk.replay`: stub registry, refusing transport, null channel, reconstructed-case serving, run writer) |
 | `henk/app.py`, `henk/runtime.py`, `henk/__main__.py` | Composition, production wiring, entrypoint |
 | `deploy/session-publisher/` | The **workstation** session publisher (stdlib-only Python 3.11+, systemd user timer, example config, README) — committed here, tested by this suite, deliberately **not** in the image |
 | `config.yaml` | Non-secret settings | `.env` | Secrets (git-ignored) |
@@ -383,6 +384,54 @@ henk-pickup --json     # raw ntfy JSON
 Credential: a read-only `henk-handoffs` token from `$HENK_PICKUP_TOKEN` or
 `~/.config/henk/pickup-token`. Pull-based, no daemon. Handoffs are working notes
 (retention-bounded); the `henk_audit` log is the durable record.
+
+### Replaying a triage — `python -m henk.replay`
+
+Every event triage leaves a bounded recording on the audit volume
+(`triage-recordings/`, beside the audit log). The owner can re-run one against another
+model, effort and thinking mode, with every tool stubbed: recorded calls get their
+recorded answers, anything else gets an explicit "not recorded in this replay", a
+handoff or notification is captured into the run file rather than published, and
+mutating tools are denied by the same gate as live. No tool can make a network
+request, and nothing reaches Signal, ntfy, the audit log or the store. The model call
+is the only request a replay makes, and it spends real tokens, so only the owner runs
+it.
+
+Run it on rp5 as a one-shot container of the henk service, **from the henk checkout
+directory**:
+
+```bash
+cd /home/pi/Coding/henk
+docker compose run --rm --no-deps -e CLAUDE_CONFIG_DIR=/tmp/henk-replay henk python -m henk.replay list
+docker compose run --rm --no-deps -e CLAUDE_CONFIG_DIR=/tmp/henk-replay henk python -m henk.replay run <recording-or-case-id> --model claude-opus-5-5 --effort high
+```
+
+- `list` prints each recording's id, time, incident identities, ending, and whether
+  it is complete.
+- `run <id> --model M --effort E [--thinking T]` replays one recording, or one
+  reference case in `triage-cases/`. `M` must look like `claude-<name>` (optionally
+  ending `[1m]`), `E` is one of `low`, `medium`, `high`, `xhigh`, `max`, and `T` is
+  `adaptive` or `disabled` (left unset when omitted). All three are checked before
+  anything else, so a typo spends nothing.
+- The run file lands in `triage-replays/<id>/<run-id>.json` on the audit volume. It
+  holds the reply, every tool call and how it was answered, captured handoffs, the
+  gate's decisions, the unrecorded-call count, token usage and drift. Drift, a system
+  prompt or tool definitions that changed since the recording was made, is also
+  printed to the terminal.
+
+Why this exact invocation:
+
+- **`run --rm`, never `exec`.** The replay gets its own container, cgroup and 768m
+  limit. Run by `exec`, its memory would count against the live container's limit
+  and could get live Henk OOM-killed.
+- **`--no-deps`** starts nothing else. The run shares the running tailscale network
+  namespace and publishes no port.
+- **`-e CLAUDE_CONFIG_DIR=/tmp/henk-replay`** keeps the bundled CLI's state apart
+  from the live process's. `run` refuses to start without it.
+- **It must run from the checkout directory.** Compose names the project after the
+  directory, so from a copy such as `henk.old` the project becomes `henkold`, with
+  brand-new empty volumes. As a guard, the entry point refuses to run when the audit
+  log does not exist, naming the path and this cause.
 
 ## Local development
 
