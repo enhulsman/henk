@@ -548,3 +548,33 @@ still unknown**. Bundled CLI versions, read from each release's
 **1.3 verdict: blocked on the SDK pin.** Re-run the probe after the SDK is bumped to
 >= 0.2.151. Group 12a's judge default (D15) cannot run until then. Group 12a stops at the
 judge and records this blocker (task 12.3a) unless the bump lands first.
+
+## SDK bump to 0.2.157: 1.2 re-read (2026-09-23)
+
+The owner decided that the SDK bump is its own change, landing before group 9, so that the
+ending classifier and the recording are built on the SDK that will run. The pin is now
+`claude-agent-sdk==0.2.157` (released 2026-09-18), which bundles Claude Code CLI 2.1.277,
+at or above the 2.1.251 that Fable requires. 0.2.158 was released the same day as this
+note and was passed over for that reason.
+
+**Surface diff, 0.2.123 → 0.2.157, over what Henk uses**, by introspecting both installed
+packages:
+- unchanged: the `AssistantMessage` fields, `AssistantMessageError`, `EffortLevel`,
+  `HookMatcher`, `PermissionResultAllow`/`Deny`, `SystemMessage`, `TextBlock`,
+  `ToolUseBlock`, `ToolResultBlock`, the public `ClaudeSDKClient` methods, the
+  `create_sdk_mcp_server` signature, the hook events and the thinking types;
+- `tool()`: the same signature; only the internal module path of `ToolAnnotations` moved;
+- additive only: `ClaudeAgentOptions` gains `forward_subagent_text`, `resume_drops_turn`
+  and `resume_session_at`; `ResultMessage` gains `origin` and `terminal_reason`;
+  `UserMessage` gains `origin`.
+
+**For group 9 (D12).** `ResultMessage.terminal_reason` (`types.py:1363` in 0.2.157) is new:
+"why the query loop terminated", e.g. `completed`, `max_turns`, `aborted_streaming`,
+`aborted_tools`, or `None` from older CLIs. The SDK itself documents that
+`api_error_status` is set "when `is_error` is True and `subtype` is "success""
+(`types.py:1358-1361`), which is the shape observed live under 1.3. `stop_details` is
+still not parsed by `_internal/message_parser.py`.
+
+**Tests.** With 0.2.157 importable, the full suite passed 2494 with 0 skipped. The
+previously skipped SDK field-name test (`tests/test_config_reasoning.py:88`) runs and
+passes. The live `create()` path is `pragma: no cover` and is verified at deploy.
