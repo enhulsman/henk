@@ -91,7 +91,9 @@ async def test_an_unregistered_query_name_is_refused_before_any_request():
 @pytest.mark.parametrize(
     "arguments",
     [
-        {"query_name": "container_state", "node": "rp2"},
+        # rp2 is in container_state's domain since triage-quality D3 (not
+        # derivable, not refused); a node outside every domain still refuses.
+        {"query_name": "container_state", "node": "nas"},
         {"query_name": "node_resource_trend", "node": "nas", "resource": "cpu", "window": "1h"},
         {"query_name": "node_resource_trend", "node": "rp5", "resource": "gpu", "window": "1h"},
         {"query_name": "node_resource_trend", "node": "rp5", "resource": "cpu", "window": "5m"},
@@ -152,14 +154,19 @@ async def test_a_parameter_from_another_query_is_refused():
 # --- 3.4 Per-query domains ------------------------------------------------
 
 
-async def test_container_state_rejects_rp2_with_an_error_not_an_empty_list():
+async def test_container_state_on_rp2_is_not_derivable_not_an_error_or_an_empty_list():
+    # triage-quality D3 inverts read-depth's refusal: a refusal reads as the
+    # model's mistake, while not-derivable is the evidence statement the triage
+    # must repeat. The transport still fails the test on any request.
     result = await _tool().run(query_name="container_state", node="rp2")
-    assert result.ok is False
-    assert "rp2" in result.error
-    assert "container_state" in result.error
+    assert result.ok is True, "not derivable is a result stating the condition"
+    assert "rp2" in result.content
+    assert "container_state" in result.content
     # The distinction the message must carry: not measured here, rather than
     # measured and empty. rp2 runs no cadvisor.
-    assert "rp5" in result.error and "vps" in result.error
+    assert "rp2 runs no cadvisor" in result.content
+    assert "outside" not in result.content, "this is not an out-of-domain refusal"
+    assert "containers currently reporting" not in result.content
 
 
 async def test_node_resource_trend_accepts_rp2_and_queries_its_own_job():
@@ -193,15 +200,24 @@ async def test_the_three_outcomes_are_distinguishable():
     answered = await _tool(recorder).run(
         query_name="node_resource_trend", node="rp5", resource="temperature", window="1h"
     )
-    refused = await _tool().run(query_name="container_state", node="rp2")
+    # The rewritten scenario's refusal (triage-quality): a node outside
+    # node_resource_trend's domain. container_state(rp2) is no longer refused.
+    refused = await _tool().run(
+        query_name="node_resource_trend", node="nas", resource="cpu", window="1h"
+    )
     # In domain (the spec declares `node` uniform for every resource) but not
     # derivable: neither temperature metric exists on the vps (record 1.4).
     underivable = await _tool().run(
         query_name="node_resource_trend", node="vps", resource="temperature", window="1h"
     )
+    # And container_state on rp2 lands on the same third outcome, not the first.
+    no_cadvisor = await _tool().run(query_name="container_state", node="rp2")
 
     assert recorder.requests, "the available case must actually query"
     assert refused.ok is False
+    assert "outside this query's domain" in refused.error
+    assert no_cadvisor.ok is True and "outside" not in no_cadvisor.content
+    assert "cannot be derived" in no_cadvisor.content
     assert underivable.ok is True, (
         "an in-domain value whose data cannot be obtained is a RESULT stating "
         "that condition, not a refusal and not an empty measurement"
@@ -238,9 +254,11 @@ async def test_container_state_on_rp5_still_answers_but_carries_its_caveat():
 
 def test_out_of_domain_raises_a_refusal_carrying_its_own_outcome():
     with pytest.raises(QueryRefused) as exc:
-        plan_query("container_state", {"node": "rp2"})
+        plan_query("container_state", {"node": "nas"})
     assert exc.value.outcome is QueryOutcome.OUT_OF_DOMAIN
     assert plan_query("container_state", {"node": "rp5"}).outcome is QueryOutcome.ANSWERED
+    # rp2 is in domain and not derivable (triage-quality D3), not refused.
+    assert plan_query("container_state", {"node": "rp2"}).outcome is QueryOutcome.NOT_DERIVABLE
     assert plan_query(
         "node_resource_trend", {"node": "vps", "resource": "temperature", "window": "1h"}
     ).outcome is QueryOutcome.NOT_DERIVABLE

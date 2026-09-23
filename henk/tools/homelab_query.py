@@ -38,10 +38,10 @@ from henk.tools.query_registry import (
     QueryOutcome,
     QueryPlan,
     QueryRefused,
-    WINDOW_SECONDS,
     plan_query,
-    range_step_seconds,
+    range_window,
     resolve_endpoint_key,
+    with_range_end,
 )
 
 #: Where the Gatus endpoint key set is discovered from. The bulk statuses route
@@ -168,6 +168,10 @@ class HomelabQueryTool(Tool):
             return ToolResult.failure(str(refusal))
         if plan.outcome is QueryOutcome.NOT_DERIVABLE:
             return ToolResult.success(plan.message)
+        # The clock is read ONCE per invocation, here. That one end goes into
+        # every range request and into what the renderer states as the window's
+        # end, so the two cannot disagree (triage-quality D1).
+        plan = with_range_end(plan, self._clock(), self._max_points)
         payloads, error = await self._fetch(plan)
         if error is not None:
             return ToolResult.failure(error)
@@ -295,15 +299,22 @@ class HomelabQueryTool(Tool):
         is_range = plan.range_query and (roles is None or role in roles)
         if not is_range or plan.window is None:
             return f"{self._prometheus_url}/api/v1/query", {"query": expression}
-        step = range_step_seconds(plan.window, self._max_points)
-        end = self._clock()
         # The step is derived from the window and the configured maximum so that
         # `span / step + 1` — Prometheus's own point count, fencepost included —
-        # stays within the budget at every supported window.
-        span = WINDOW_SECONDS[plan.window]
+        # stays within the budget at every supported window. A plan that has not
+        # been through `with_range_end` (a direct call, as the capture's parity
+        # test makes) gets its window from the clock here instead.
+        window = plan.range_window or range_window(
+            plan.window, self._clock(), self._max_points
+        )
         return (
             f"{self._prometheus_url}/api/v1/query_range",
-            {"query": expression, "start": end - span, "end": end, "step": step},
+            {
+                "query": expression,
+                "start": window.start,
+                "end": window.end,
+                "step": window.step,
+            },
         )
 
     async def _get(

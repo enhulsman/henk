@@ -54,6 +54,21 @@ CHANGE = REPO_ROOT / "openspec" / "changes" / "archive" / "2026-09-02-read-depth
 NOTES = (CHANGE / "notes" / "backend-probe.md").read_text()
 SPEC = (CHANGE / "specs" / "homelab-tools" / "spec.md").read_text()
 
+
+def _triage_quality_file(relative: str) -> Path:
+    """A `triage-quality` file, before or after archive moves its folder."""
+    changes = REPO_ROOT / "openspec" / "changes"
+    candidates = [changes / "triage-quality" / relative]
+    candidates += sorted((changes / "archive").glob(f"*-triage-quality/{relative}"))
+    found = [path for path in candidates if path.is_file()]
+    assert len(found) == 1, f"expected exactly one copy of {relative}, found {found}"
+    return found[0]
+
+
+#: The binding domains since `triage-quality`: container_state gains rp2 as a
+#: not-derivable node, and two host-coverage queries join the enum.
+TRIAGE_SPEC = _triage_quality_file("specs/homelab-tools/spec.md").read_text()
+
 #: The six names, from the proposal's table and the spec's closed enum.
 EXPECTED_QUERY_NAMES = frozenset(
     {
@@ -65,6 +80,11 @@ EXPECTED_QUERY_NAMES = frozenset(
         "dns_performance",
     }
 )
+
+#: The triage-quality delta's domain list names these too; a later task group
+#: registers the two new ones. Until then they are parsed (proving the parser
+#: covers the whole list) but not compared.
+TRIAGE_QUERY_NAMES = EXPECTED_QUERY_NAMES | {"memory_movers", "host_service_state"}
 
 
 # --- Reading the pinned record --------------------------------------------
@@ -144,6 +164,35 @@ def pinned_dns_headroom() -> dict[str, tuple[float, float, float, float]]:
     return out
 
 
+def pinned_rule_for_windows() -> dict[str, str]:
+    """Each rule's `for`, by rule name, from the three places the record pins it.
+
+    - the six henk-folder rules' table (`HenkSwapPressure` and `HenkDiskPressure`
+      at 15m, backend-probe.md:497-498);
+    - the seven DNS rules' table (backend-probe.md:341-347);
+    - the `High memory usage` rule's own section (5m, backend-probe.md:525).
+    """
+    fors: dict[str, str] = {}
+    for row in _table_rows(NOTES, "| rule | `for` | severity |"):
+        fors[_backticked(row[0])[0]] = row[1]
+    for row in _table_rows(NOTES, "key metric(s)"):
+        names = _backticked(row[1])
+        if names and "DNSProcessingTime" in names[0]:
+            fors[names[0]] = row[5]
+    start = NOTES.index("### `APPLY-RESOLVED:memory-bar`")
+    section = NOTES[start : NOTES.index("\n### ", start + 1)]
+    title = re.search(r"\*\*title:\*\* `([^`]+)`", section)
+    for_window = re.search(r"\*\*`for`:\*\* `(\w+)`", section)
+    assert title and for_window, "the memory rule's section no longer pins a `for`"
+    fors[title.group(1)] = for_window.group(1)
+    for value in fors.values():
+        assert re.fullmatch(r"\d+[smh]", value), f"unparsed `for` {value!r}"
+    # Coverage: every rule the registry compares against is somewhere above.
+    assert {"HenkSwapPressure", "HenkDiskPressure", "High memory usage"} <= set(fors)
+    assert sum(1 for name in fors if "DNSProcessingTime" in name) == 7
+    return fors
+
+
 def pinned_freshness_metrics() -> tuple[str, ...]:
     """The eight timestamp gauges, from the record's 1.2 fenced list."""
     marker = NOTES.index("**8 timestamp gauges**")
@@ -172,16 +221,19 @@ def pinned_marker(slug: str) -> str:
 # --- Reading the binding spec ---------------------------------------------
 
 
-def spec_parameter_domains() -> dict[str, dict[str, tuple[str, ...] | None]]:
+def spec_parameter_domains(
+    spec: str = SPEC, expected: frozenset[str] = EXPECTED_QUERY_NAMES
+) -> dict[str, dict[str, tuple[str, ...] | None]]:
     """The spec delta's own domain literals, parsed from its normative list.
 
     A domain of ``None`` means the spec declares it discovered rather than
-    enumerated. An `APPLY-RESOLVED:` marker is resolved through the record's
-    marker table, exactly as task 9.7 will resolve it in the spec text itself —
-    so this test binds both before and after that replacement.
+    enumerated (spelled "— discovered" in read-depth, "is discovered" in
+    triage-quality). An `APPLY-RESOLVED:` marker is resolved through the
+    record's marker table, exactly as task 9.7 will resolve it in the spec text
+    itself — so this test binds both before and after that replacement.
     """
-    start = SPEC.index("### Requirement: Query parameter domains")
-    section = SPEC[start : SPEC.index("####", start)]
+    start = spec.index("### Requirement: Query parameter domains")
+    section = spec[start : spec.index("####", start)]
     domains: dict[str, dict[str, tuple[str, ...] | None]] = {}
     for bullet in section.split("\n- ")[1:]:
         text = " ".join(bullet.split())
@@ -194,12 +246,12 @@ def spec_parameter_domains() -> dict[str, dict[str, tuple[str, ...] | None]]:
         for param, marker in re.findall(r"`(\w+)` ∈ `(APPLY-RESOLVED:[\w-]+)`", text):
             resolved = pinned_marker(marker.split(":", 1)[1])
             entry[param] = tuple(_backticked(resolved)[0].strip("{} ").split(", "))
-        for param in re.findall(r"`(\w+)` — discovered", text):
+        for param in re.findall(r"`(\w+)` (?:—|is) discovered", text):
             entry[param] = None
         for query in queries:
             domains[query] = dict(entry)
-    assert set(domains) == EXPECTED_QUERY_NAMES, (
-        "the spec's domain list must name all six queries; a parser that misses "
+    assert set(domains) == expected, (
+        "the spec's domain list must name every query; a parser that misses "
         "one turns this whole comparison into a no-op"
     )
     return domains
@@ -391,7 +443,15 @@ def test_the_address_bearing_label_set_covers_everything_the_record_names():
 
 
 def test_every_declared_domain_matches_the_spec_literal():
-    for query, params in spec_parameter_domains().items():
+    # The binding list is triage-quality's: it rewrote container_state's domain
+    # (rp2 is in domain and not derivable). Queries it names that are not yet
+    # registered belong to a later task group and are only parsed here.
+    domains = spec_parameter_domains(TRIAGE_SPEC, TRIAGE_QUERY_NAMES)
+    assert domains["container_state"] == {"node": ("rp5", "vps", "rp2")}
+    assert domains["endpoint_history"]["endpoint"] is None
+    for query, params in domains.items():
+        if query not in QUERY_REGISTRY:
+            continue
         entry = QUERY_REGISTRY[query]
         assert {p.name for p in entry.parameters} == set(params), (
             f"{query}'s parameter names differ from the spec"
@@ -419,11 +479,17 @@ def test_scrape_targets_lookback_is_the_literal_the_spec_names():
     )
 
 
-def test_container_state_excludes_rp2_and_node_resource_trend_includes_it():
-    assert set(domain_for("container_state", "node")) == {"rp5", "vps"}
+def test_container_state_includes_rp2_as_its_own_domain_not_the_job_map():
+    # triage-quality D3 inverts the read-depth rule: rp2 is now INSIDE
+    # container_state's domain, as a registered whole-query `Unavailable` (not
+    # derivable), so it is neither an out-of-domain refusal nor an empty list.
+    # The domain is its own tuple, never the cadvisor job map serving it.
+    assert set(domain_for("container_state", "node")) == {"rp5", "vps", "rp2"}
+    assert set(domain_for("container_state", "node")) != set(CADVISOR_JOBS)
+    assert "rp2" not in CADVISOR_JOBS
     assert "rp2" in domain_for("node_resource_trend", "node")
-    # The domains are per-query because the fleet is not uniform; a shared global
-    # node enum is what would make `container_state(rp2)` an empty list.
+    # Per-query objects even where the values coincide: editing one fleet's
+    # domain must not silently edit the other's.
     assert domain_for("container_state", "node") is not domain_for(
         "node_resource_trend", "node"
     )
@@ -457,16 +523,29 @@ def test_dns_performance_names_its_node_parameter_node():
 # --- 3.8 Thresholds against the pinned record ------------------------------
 
 
-def registry_thresholds() -> dict[tuple[str, str], tuple[float, str]]:
+def registry_thresholds() -> dict[tuple[str, str], tuple[float, str, str | None]]:
     return {
-        (name, key): (t.value, t.source)
+        (name, key): (t.value, t.source, t.for_window)
         for name, entry in QUERY_REGISTRY.items()
         for key, t in entry.thresholds.items()
     }
 
 
-def expected_thresholds() -> dict[tuple[str, str], tuple[float, str]]:
-    """Everything the record pins, and nothing else."""
+def expected_thresholds() -> dict[tuple[str, str], tuple[float, str, str | None]]:
+    """Everything the record pins, and nothing else — bar, rule and `for`.
+
+    A rule whose `for` the record does not pin expects ``None``, so a registry
+    `for` window that is absent from the record fails exactly as an invented
+    bar does.
+    """
+    fors = pinned_rule_for_windows()
+    return {
+        key: (value, source, fors.get(source))
+        for key, (value, source) in _expected_bars().items()
+    }
+
+
+def _expected_bars() -> dict[tuple[str, str], tuple[float, str]]:
     expected: dict[tuple[str, str], tuple[float, str]] = {}
     for resource, bar in pinned_resource_bars().items():
         if bar is not None:
@@ -522,16 +601,22 @@ def test_disk_is_percent_free_below_its_bar_not_percent_used():
     assert "avail" in template
 
 
-def test_swap_io_is_the_trigger_and_swap_used_is_labelled_not_the_trigger():
+def test_the_two_swap_bars_are_the_rules_two_branches_neither_ranked():
+    # triage-quality D2 inverts read-depth's `is_trigger`: `HenkSwapPressure` is
+    # the OR of both terms and either alone fires it. On 2026-09-23 the fullness
+    # branch fired while the pressure branch was also true, so neither may be
+    # labelled the rule's real trigger. The neutral names are the whole contract.
     thresholds = QUERY_REGISTRY["node_resource_trend"].thresholds
     assert thresholds["swap_io"].value == 50.0
-    assert thresholds["swap_io"].is_trigger is True
+    assert thresholds["swap_io"].branch == "pressure"
     assert thresholds["swap_used"].value == 95.0
-    assert thresholds["swap_used"].is_trigger is False
-    # The note is what stops "84% — approaching the 95% bar" being rendered as an
-    # approaching incident: fullness and pressure are anti-correlated on this
-    # fleet (the vps sits chronically at 64-90% while a Pi at 6% hit 128 pages/s).
-    assert thresholds["swap_used"].note
+    assert thresholds["swap_used"].branch == "fullness"
+    assert thresholds["swap_io"].source == thresholds["swap_used"].source == "HenkSwapPressure"
+    # Every other bar belongs to a single-term rule and names no branch.
+    for resource in ("disk", "memory"):
+        assert thresholds[resource].branch is None
+    for bar in thresholds.values():
+        assert not hasattr(bar, "is_trigger")
 
 
 @pytest.mark.parametrize("resource", ["cpu", "load", "temperature"])

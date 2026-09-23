@@ -27,12 +27,13 @@ either. Results are **projected** through :func:`project_labels` for the same
 reason.
 
 **Domains are per-query, and they are the same object the schema advertises.**
-The fleet is not uniform — ``node_resource_trend`` accepts ``rp2`` and
-``container_state`` does not, because rp2 runs no cadvisor. A single global node
-enum would accept ``container_state(node=rp2)`` and return an empty list, which
-reads as "no containers" rather than "not measured here". :func:`domain_for`
-returns the tuple the validator itself checks against, so a domain cannot be
-advertised that is not enforced.
+The fleet is not uniform — rp2 runs no cadvisor, so ``container_state`` for rp2
+is a registered whole-query :class:`Unavailable` (not derivable), never the job
+map's absence surfacing as a refusal or an empty list, which would read as the
+model's mistake or as "no containers". Each query's node domain is its own
+tuple (:data:`CONTAINER_NODES`), never the job map that happens to serve it.
+:func:`domain_for` returns the tuple the validator itself checks against, so a
+domain cannot be advertised that is not enforced.
 
 There is deliberately **no free-text path**: no parameter accepts a PromQL
 expression, a metric name, a label selector, a URL or a filesystem path, and no
@@ -43,7 +44,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Callable, Iterable, Mapping
 from urllib.parse import quote
@@ -99,6 +100,20 @@ WINDOW_SECONDS: Mapping[str, int] = {
 #: `scrape_targets`' lookback. A literal, not a parameter: the question is "is
 #: anything down and since when", and one window answers it.
 SCRAPE_TARGETS_LOOKBACK = "24h"
+
+#: `container_state`'s node domain: its OWN tuple, not ``tuple(CADVISOR_JOBS)``.
+#: rp2 is inside it and has no cadvisor, so it is a registered whole-query
+#: `Unavailable` below (triage-quality D3); ``CADVISOR_JOBS`` stays the job map.
+CONTAINER_NODES: tuple[str, ...] = ("rp5", "vps", "rp2")
+
+#: cadvisor jobs whose restart signal was verified against a known restart: the
+#: `restart-signal <job>: verified` lines of triage-quality
+#: `notes/evidence-probe.md` (1.6 `cadvisor-pi5`, 1.7 `cadvisor-vps`). On each,
+#: a `docker restart` moved `resets()` to 1 within one ~30 s scrape while
+#: `container_start_time_seconds` stayed flat. A job absent here gets a
+#: `restarts` aspect hole (:func:`restart_aspect_holes`), so a future node can
+#: never inherit the aspect unmeasured.
+RESTART_VERIFIED_JOBS: frozenset[str] = frozenset({"cadvisor-pi5", "cadvisor-vps"})
 
 #: The metric all fourteen live DNS rules evaluate (7 native + 7 Grafana), so it
 #: is the one that satisfies "measure the rule's input". NOT
@@ -195,7 +210,13 @@ class QueryOutcome(str, Enum):
 
 
 class QueryRefused(ValueError):
-    """An argument that never becomes a request. Carries its own outcome."""
+    """An argument that never becomes a request. Carries its own outcome.
+
+    Raised with ``outcome=NOT_DERIVABLE`` by :func:`named_container_expression`
+    for a node that is in domain but has nothing to read (rp2), so a caller that
+    only needs "no expression" catches one type, and a caller that must tell the
+    two apart reads ``outcome``.
+    """
 
     def __init__(self, message: str, outcome: QueryOutcome = QueryOutcome.OUT_OF_DOMAIN):
         super().__init__(message)
@@ -206,19 +227,24 @@ class QueryRefused(ValueError):
 class Threshold:
     """One bar, traceable to the live rule expression that defines it.
 
-    ``is_trigger`` false means the bar exists but is **not** what the rule fires
-    on — `swap_used` is the case that earns the flag, because swap fullness and
-    swap pressure are anti-correlated on this fleet and presenting a fullness
-    figure as "approaching the bar" would be an alarm about a documented
-    non-condition.
+    ``for_window`` is the rule's `for`: how long the condition must hold before
+    the rule fires, pinned from the same record as the bar. ``None`` means the
+    record pins none, and the result says so rather than inventing one.
+
+    ``branch`` names which OR'd term of a multi-term rule this bar is, in
+    neutral words (``"fullness"`` / ``"pressure"`` for `HenkSwapPressure`).
+    Neither branch is ranked as the rule's real trigger: either alone fires it,
+    and on 2026-09-23 the fullness branch fired while pressure was also true
+    (triage-quality D2).
     """
 
     value: float
     unit: str
     direction: str  # "above" | "below" — the rule's own form
     source: str  # the live rule whose expression pins this number
-    is_trigger: bool = True
     note: str = ""
+    for_window: str | None = None
+    branch: str | None = None
 
     def crossed_by(self, reading: float) -> bool:
         """Whether one reading sits on the wrong side of this bar.
@@ -345,6 +371,18 @@ class QueryPlan:
     caveats: tuple[str, ...] = ()
     message: str = ""
     window: str | None = None
+    #: Aspect -> reason, for every registered aspect-level `Unavailable` that
+    #: matches this invocation. Renderers READ this and print the reason in the
+    #: aspect's own column, so a hole never renders as an empty or zero column
+    #: (triage-quality D3).
+    unavailable_aspects: Mapping[str, str] = field(default_factory=dict)
+    #: The span a range request covers — exactly the `start`/`end`/`step` sent
+    #: to Prometheus. Set once per invocation by :func:`with_range_end` before
+    #: the fetch, and read by the range renderers for the window's end, so that
+    #: the end a result states is the end that was requested, never the
+    #: series' last sample and never a second clock read (triage-quality D1).
+    #: ``None`` until then; a renderer given ``None`` states no end at all.
+    range_window: "RangeWindow | None" = None
 
     @property
     def range_query(self) -> bool:
@@ -371,10 +409,10 @@ _NODE_RESOURCE_EXPRESSIONS: Mapping[str, str] = {
     # used", and not across all filesystems.
     "disk": '100 * node_filesystem_avail_bytes{job="<job>",mountpoint="/"} / node_filesystem_size_bytes{job="<job>",mountpoint="/"}',
     "load": 'node_load1{job="<job>"}',
-    # Percent full — `HenkSwapPressure`'s first term, which is NOT what it
-    # practically fires on.
+    # Percent full — `HenkSwapPressure`'s first term, the fullness branch.
     "swap_used": '100 * (1 - node_memory_SwapFree_bytes{job="<job>"} / node_memory_SwapTotal_bytes{job="<job>"})',
-    # Pages/s — `HenkSwapPressure`'s second term, the primary swap signal.
+    # Pages/s — `HenkSwapPressure`'s second term, the pressure branch. Either
+    # branch alone fires the rule; neither is ranked (triage-quality D2).
     "swap_io": 'rate(node_vmstat_pswpin{job="<job>"}[5m]) + rate(node_vmstat_pswpout{job="<job>"}[5m])',
     # One sensor, named. `node_hwmon_temp_celsius` spans several chips including
     # an NVMe sensor on rp5, so a bare "temperature" over it would report a disk
@@ -390,7 +428,39 @@ _CONTAINER_EXPRESSIONS: Mapping[str, str] = {
     # a `docker restart` or a crash loop, which is why `HenkContainerRestarting`
     # is deployed and structurally cannot fire.
     "created": 'container_start_time_seconds{job="<job>",name!=""}',
+    # D3: per-container memory, in MiB with no bar. The four templates below are
+    # the D5 canonical table byte for byte — the contract with the capture
+    # (`henk/replay/capture.py`) and the rebuild's drift check.
+    "memory_working_set": 'container_memory_working_set_bytes{job="<job>",name!=""}',
+    "swap": 'container_memory_swap{job="<job>",name!=""}',
+    # D4: restarts as resets of the CPU counter, over two literal lookbacks.
+    # `max by (name)` collapses per-CPU series so one restart counts once; 1.1
+    # measured a single `cpu="total"` series per container, so today it is a
+    # no-op collapse, kept frozen as D5 captured it.
+    "restarts_15m": 'max by (name) (resets(container_cpu_usage_seconds_total{job="<job>",name!=""}[15m]))',
+    "restarts_24h": 'max by (name) (resets(container_cpu_usage_seconds_total{job="<job>",name!=""}[24h]))',
 }
+
+
+def restart_aspect_holes(verified: frozenset[str]) -> tuple[Unavailable, ...]:
+    """A `restarts` aspect hole for every cadvisor node whose job is unverified.
+
+    The restart aspect exists only where a known restart was seen to move the
+    count (triage-quality spec, "The restart aspect is traceable to a
+    measurement"). Both jobs are verified today, so this returns nothing; a new
+    cadvisor job added to ``CADVISOR_JOBS`` without a measurement gets a hole
+    that its column renders in place.
+    """
+    return tuple(
+        Unavailable(
+            parameters={"node": node},
+            aspect="restarts",
+            reason=f"the restart signal on {job} is not verified against a known "
+            "restart in the probe record, so no restart count is reported here.",
+        )
+        for node, job in CADVISOR_JOBS.items()
+        if job not in verified
+    )
 
 _REGISTRY: dict[str, QueryEntry] = {
     "node_resource_trend": QueryEntry(
@@ -404,6 +474,11 @@ _REGISTRY: dict[str, QueryEntry] = {
             QueryParameter("window", PROMETHEUS_WINDOWS, _WINDOW_PROM_DESCRIPTION),
         ),
         renderer=renderers.render_node_resource_trend,
+        # Bars and `for` windows from the read-depth record
+        # (openspec/changes/archive/2026-09-02-read-depth/notes/backend-probe.md):
+        # the henk-folder rule table pins 15m for `HenkDiskPressure` (:497) and
+        # `HenkSwapPressure` (:498); the `High memory usage` section pins 5m
+        # (:525). A test parses all three and compares both directions.
         thresholds={
             "disk": Threshold(
                 15.0,
@@ -413,26 +488,25 @@ _REGISTRY: dict[str, QueryEntry] = {
                 note="scoped to mountpoint=/ and reported as percent free, the "
                 "rule's own form — not percent used, and not across all "
                 "filesystems.",
+                for_window="15m",
+            ),
+            # The two `HenkSwapPressure` branches, in the rule's own term order
+            # (fullness first); the results name them in this order.
+            "swap_used": Threshold(
+                95.0,
+                "percent full",
+                "above",
+                "HenkSwapPressure",
+                for_window="15m",
+                branch="fullness",
             ),
             "swap_io": Threshold(
                 50.0,
                 "pages/s",
                 "above",
                 "HenkSwapPressure",
-                note="the primary swap signal: this is what the rule actually "
-                "fires on.",
-            ),
-            "swap_used": Threshold(
-                95.0,
-                "percent full",
-                "above",
-                "HenkSwapPressure",
-                is_trigger=False,
-                note="NOT the rule's trigger. Fullness and pressure are "
-                "anti-correlated on this fleet — the vps sits chronically at "
-                "64-90% full while a Pi at 6% fullness hit 128 pages/s — so a "
-                "fullness figure below this bar is normal here rather than an "
-                "incident in the making.",
+                for_window="15m",
+                branch="pressure",
             ),
             "memory": Threshold(
                 75.0,
@@ -442,6 +516,7 @@ _REGISTRY: dict[str, QueryEntry] = {
                 note="delivers to Discord, not to henk-events. The "
                 "Prometheus-native rule over the same expression reads 90 and "
                 "delivers nowhere, so 75 is the bar that actually alerts.",
+                for_window="5m",
             ),
         },
         range_query=True,
@@ -536,39 +611,59 @@ _REGISTRY: dict[str, QueryEntry] = {
     "container_state": QueryEntry(
         name="container_state",
         backend=QueryBackend.PROMETHEUS,
-        summary="Per-container last-seen, health, OOM events and creation time.",
+        summary="Per-container last-seen, health, OOM events, creation time, "
+        "working-set memory, swap and restart counts.",
         expressions=_CONTAINER_EXPRESSIONS,
         parameters=(
             QueryParameter(
                 "node",
-                tuple(CADVISOR_JOBS),
+                CONTAINER_NODES,
                 _NODE_PARAM_DESCRIPTION,
-                note="rp2 runs no cadvisor, so it is outside this query's "
-                "domain rather than an empty container list",
+                note="rp2 runs no cadvisor: it is in domain and answers as not "
+                "derivable, never as an empty container list",
             ),
         ),
         renderer=renderers.render_container_state,
         job_map=CADVISOR_JOBS,
         named_container_template='max(container_last_seen{job="<job>",name="<container>"}) or vector(0)',
         caveats=(
+            # D4's restart caveat, replacing read-depth's "in-place restart loops
+            # are not observable" (measured false on both nodes, 2026-09-23).
+            "Restarts are counted as resets of the container's CPU counter. A "
+            "`docker restart` or a restart-policy crash loop keeps the "
+            "container's series and resets its counter. This was measured on "
+            "rp5 and on the vps on 2026-09-23: the count moved within one ~30 s "
+            "scrape.",
+            "A recreate (`compose up`, a new image) starts a new series and shows "
+            "up only as a new creation time. Several restarts inside one scrape "
+            "interval count as one.",
             "container_start_time_seconds is the container's CREATION time, not "
-            "its last start: it does not move across a restart or a crash loop, "
-            "so in-place restart loops are not observable from these metrics.",
+            "its last start. It does not move on a restart.",
+            "Working set and swap are reported in MiB and carry no bar: no alert "
+            "rule defines one.",
             "A container absent from this list may be stopped or removed rather "
             "than absent from the host — the exporter drops a container's series "
             "entirely when it stops.",
+            "Host systemd units are not containers and are not listed here; "
+            "`memory_movers` covers them.",
         ),
         unavailable=(
+            Unavailable(
+                parameters={"node": "rp2"},
+                aspect=None,
+                reason="rp2 runs no cadvisor, so no container metrics exist for "
+                "it: there is no container-metrics job to query on this node.",
+            ),
+            # Shortened from read-depth's wording because the renderer now prints
+            # it in the health column of every row (triage-quality D3).
             Unavailable(
                 parameters={"node": "rp5"},
                 aspect="health_state",
                 reason="container_health_state has no series on cadvisor-pi5 "
-                "(measured, backend probe 1.4). Last-seen, OOM events and "
-                "creation time are unaffected; the health column is unavailable "
-                "on this node rather than empty, and an omitted health column "
-                "would read as 'no container is unhealthy'.",
+                "(measured, backend probe 1.4).",
             ),
-        ),
+        )
+        + restart_aspect_holes(RESTART_VERIFIED_JOBS),
     ),
     "dns_performance": QueryEntry(
         name="dns_performance",
@@ -588,19 +683,22 @@ _REGISTRY: dict[str, QueryEntry] = {
             QueryParameter("window", PROMETHEUS_WINDOWS, _WINDOW_PROM_DESCRIPTION),
         ),
         renderer=renderers.render_dns_performance,
+        # `for` windows from the record's DNS rule table
+        # (read-depth backend-probe.md:341-347).
         thresholds={
-            "rp5_warning": Threshold(60.0, "ms", "above", "Pi5HighDNSProcessingTime"),
-            "rp5_critical": Threshold(150.0, "ms", "above", "Pi5CriticalDNSProcessingTime"),
-            "vps_warning": Threshold(80.0, "ms", "above", "VPSHighDNSProcessingTime"),
-            "vps_critical": Threshold(200.0, "ms", "above", "VPSCriticalDNSProcessingTime"),
-            "rp2_warning": Threshold(200.0, "ms", "above", "Pi2HighDNSProcessingTime"),
-            "rp2_critical": Threshold(500.0, "ms", "above", "Pi2CriticalDNSProcessingTime"),
+            "rp5_warning": Threshold(60.0, "ms", "above", "Pi5HighDNSProcessingTime", for_window="5m"),
+            "rp5_critical": Threshold(150.0, "ms", "above", "Pi5CriticalDNSProcessingTime", for_window="2m"),
+            "vps_warning": Threshold(80.0, "ms", "above", "VPSHighDNSProcessingTime", for_window="5m"),
+            "vps_critical": Threshold(200.0, "ms", "above", "VPSCriticalDNSProcessingTime", for_window="2m"),
+            "rp2_warning": Threshold(200.0, "ms", "above", "Pi2HighDNSProcessingTime", for_window="5m"),
+            "rp2_critical": Threshold(500.0, "ms", "above", "Pi2CriticalDNSProcessingTime", for_window="2m"),
             "fleet_critical": Threshold(
                 300.0,
                 "ms",
                 "above",
                 "DNSProcessingTimeCritical",
                 note="fleet-wide rule, unselected: it applies to every device.",
+                for_window="10m",
             ),
         },
         # 24h averages in milliseconds, measured 2026-09-01. The documented
@@ -644,6 +742,48 @@ def range_step_seconds(window: str, max_points: int) -> int:
         raise ValueError("a range summary needs at least two points")
     span = WINDOW_SECONDS[window]
     return max(1, math.ceil(span / (max_points - 1)))
+
+
+@dataclass(frozen=True)
+class RangeWindow:
+    """What one range request covers: the `start`, `end` and `step` it sends.
+
+    ``end`` is the window's end, the time a result states it ends at. It is not
+    always an evaluation time: Prometheus evaluates at ``start + k*step`` while
+    that is ``<= end``, and the step rarely divides the span (with 60 points a
+    24h window's step is 1465 s, so the last point falls 1430 s before `end`).
+    :attr:`last_point` is that last evaluation time, which is where a series
+    that is still reporting has its last sample.
+    """
+
+    start: float
+    end: float
+    step: int
+
+    @property
+    def last_point(self) -> float:
+        return self.start + ((self.end - self.start) // self.step) * self.step
+
+
+def range_window(window: str, end: float, max_points: int) -> RangeWindow:
+    """The window a range request ending at ``end`` covers, at the budgeted step."""
+    return RangeWindow(
+        start=end - WINDOW_SECONDS[window],
+        end=end,
+        step=range_step_seconds(window, max_points),
+    )
+
+
+def with_range_end(plan: QueryPlan, end: float, max_points: int) -> QueryPlan:
+    """``plan`` with the range window ending at ``end``; unchanged if not a range plan.
+
+    The one place a range plan gets its end. The live tool passes its clock,
+    read once per invocation; a replay or rebuild passes the evaluation time T
+    the same way, so a rendered window end is reproducible from its inputs.
+    """
+    if not plan.range_query or plan.window is None:
+        return plan
+    return replace(plan, range_window=range_window(plan.window, end, max_points))
 
 
 def expected_point_count(window: str, max_points: int) -> int:
@@ -732,6 +872,7 @@ def plan_query(
         values[parameter.name] = supplied
 
     caveats = list(entry.caveats)
+    aspects: dict[str, str] = {}
     for hole in entry.unavailable:
         if not all(values.get(k) == v for k, v in hole.parameters.items()):
             continue
@@ -750,6 +891,9 @@ def plan_query(
                 caveats=tuple(caveats),
                 window=values.get("window"),
             )
+        # The caveat alone is not enough: the renderer reads `aspects` and
+        # prints the reason in the aspect's own column (triage-quality D3).
+        aspects[hole.aspect] = hole.reason
         caveats.append(f"{hole.aspect} is unavailable here: {hole.reason}")
 
     job = entry.job_map.get(values["node"]) if entry.job_map else None
@@ -775,6 +919,7 @@ def plan_query(
         },
         caveats=tuple(caveats),
         window=values.get("window"),
+        unavailable_aspects=aspects,
     )
 
 
@@ -792,14 +937,17 @@ def named_container_expression(
     when it stops, so a bare selector answers "no series" for the exact container
     the owner is asking about. This is the fleet's own idiom — `MollySocketLiveness`
     and `DawarichDumpStale` both use it.
+
+    The node resolves exactly as the query itself does, through
+    :func:`plan_query`: outside the domain is an out-of-domain refusal, and rp2
+    (in domain, no cadvisor) raises :class:`QueryRefused` carrying
+    ``NOT_DERIVABLE`` and the query's own not-derivable statement — never an
+    out-of-domain refusal (triage-quality D3).
     """
-    job = CADVISOR_JOBS.get(node)
-    if job is None:
-        raise QueryRefused(
-            f"container_state does not accept node={node!r}: it is outside this "
-            f"query's domain, which is {', '.join(CADVISOR_JOBS)}. No request "
-            "was issued."
-        )
+    plan = plan_query("container_state", {"node": node})
+    if plan.outcome is QueryOutcome.NOT_DERIVABLE:
+        raise QueryRefused(plan.message, QueryOutcome.NOT_DERIVABLE)
+    job = CADVISOR_JOBS[node]
     if container not in tuple(known):
         raise QueryRefused(
             f"{container!r} is not one of the containers this query reported, so "

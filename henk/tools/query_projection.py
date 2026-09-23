@@ -34,7 +34,8 @@ NODE_EXPORTER_JOBS: Mapping[str, str] = {
 }
 
 #: Node enum value -> cadvisor job label. **rp2 is absent on purpose**: it runs
-#: no cadvisor, which is why `container_state`'s node domain is narrower.
+#: no cadvisor. This is the job map only, never a domain: `container_state`'s
+#: node domain is its own tuple and includes rp2 as a not-derivable node.
 CADVISOR_JOBS: Mapping[str, str] = {
     "rp5": "cadvisor-pi5",
     "vps": "cadvisor-vps",

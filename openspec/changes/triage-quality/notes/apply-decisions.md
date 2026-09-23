@@ -189,3 +189,143 @@ Out of scope, and already stale before this change: `README.md:169` still says
 
 The review-gate fix is pinned by three new parametrized cases, which fail against the
 pre-fix code.
+
+## Group 3: container and trend evidence
+
+**Decisions.**
+- **`for` values and their sources.** `HenkSwapPressure` 15m and `HenkDiskPressure` 15m
+  come from the henk-folder rules table,
+  `openspec/changes/archive/2026-09-02-read-depth/notes/backend-probe.md:498` and `:497`.
+  The memory rule (`High memory usage`) is 5m, from its own section at `:525`.
+- **DNS `for` values are pinned beyond D2's table**, from the DNS rules table at
+  `backend-probe.md:341-347`: 5m warning and 2m critical per node, and 10m for the
+  fleet-wide `DNSProcessingTimeCritical`. Without them, the test "none absent from the
+  record" (`pinned_rule_for_windows`, `tests/test_query_registry.py:167`) would be
+  vacuous for DNS.
+- **rp2 sits in `container_state`'s own domain tuple, as not-derivable**
+  (`CONTAINER_NODES`), and not in `tuple(CADVISOR_JOBS)`. The rp2 named-container
+  follow-up raises `QueryRefused(..., NOT_DERIVABLE)`, which the capture skips.
+- **`QueryPlan.unavailable_aspects`** carries each matching aspect hole's reason. The
+  renderer reads it and prints the reason in the aspect's own column (3.7).
+- **The rp5 `health_state` reason is shortened**, because it now prints in every row.
+- **`restart_aspect_holes` is derived from `RESTART_VERIFIED_JOBS`**
+  (`henk/tools/query_registry.py:116`, `:445`). The test parses that set from the
+  evidence-probe verdict lines (3.8).
+- **`homelab_health.py`'s `is_trigger` guard is dropped.** It only ever covered memory,
+  disk and load, none of which is a swap branch, so behaviour is unchanged.
+- **The auto-name regex is `[a-z]+_[a-z]+\d?`** (`henk/tools/query_renderers.py:651`).
+  The annotation is hedged ("looks auto-generated"), because a hand-chosen
+  `snake_case` name matches the same shape.
+- **`container_state` points at `memory_movers`, which dangles until group 4.** This is
+  accepted, because deploy is all-at-once in group 13. **Group 4's gate must add a test
+  that every backticked query name in any caveat is registered.**
+- **The four `container_state` rows are retired from `capture.WRITTEN_OUT_TEMPLATES`**
+  (5 remain for group 4: three `memory_movers` rows and two `host_service_state` rows).
+  They are pinned byte-equal in the registry. The total is still 155 static requests
+  per `T`.
+- **The window's end is the request's end (review-gate finding 1).** The first
+  implementation set `_Summary.window_end = last_at`. A series that stopped 20 minutes
+  early therefore rendered "Window ends at" its last sample, and read as current to the
+  window's end. The fix:
+  - `HomelabQueryTool._run` reads the clock **once** per invocation and attaches it via
+    `with_range_end(plan, end, max_points)` (`henk/tools/query_registry.py`). This sets
+    `QueryPlan.range_window`, a `RangeWindow(start, end, step)` holding exactly the
+    parameters sent.
+  - `_prometheus_request` uses `plan.range_window` when it is set. It falls back to the
+    clock only for a plan that never went through `with_range_end`, which is how the
+    capture's parity test calls it. That test is unmodified and green, with byte-identical
+    params.
+  - The renderers read the end from the plan, never from a clock. A group 12b rebuild
+    passes `T` through the same `with_range_end`.
+  - **A deliberate deviation from the brief's `range_end` field.** The plan carries
+    start, end and step, not the end alone, because D1's "last point's evaluation time"
+    is not `end`. Prometheus evaluates at `start + k*step <= end`, and with 60 points the
+    step divides no supported window: the last point falls 4 s short of the end at
+    15m/1h, 314 s at 6h, 1430 s at 24h, about 2.8 h at 7d and about 12.2 h at 30d. A gap
+    judged against `end` would therefore flag every healthy 24h series as 24 minutes
+    silent.
+  - The rendered result says "Window ends at `<end>`". A series whose last sample falls
+    more than half a step short of the last range point gets "No sample for the last N
+    minutes of the window", with N measured from the last sample to `end`.
+  - A series that is current to the last point, where that point lies a minute or more
+    before `end`, gets "The last range point is at …" instead.
+  - A plan with no window says it has no end time. It never falls back to the last
+    sample.
+
+**Inverted tests** (standing rule 6; the review found none weakened). Line numbers were
+re-grepped in the staged files on 2026-09-23.
+- **Rule 6's four:**
+  - `tests/test_query_dispatch.py:157` (was :155), now
+    `test_container_state_on_rp2_is_not_derivable_not_an_error_or_an_empty_list`;
+  - `tests/test_query_dispatch.py:203-220` (was :196). The three-outcome test's refusal
+    is now a `node_resource_trend` on `nas`, and `container_state(rp2)` lands on
+    not-derivable at `:214`;
+  - `tests/test_query_registry.py:604-617` (was :528-530). `is_trigger` became `branch`
+    (`fullness` / `pressure`);
+  - `tests/test_query_renderers.py:925-930` (was :918). "not observable" became the
+    reset caveat.
+- **Beyond rule 6's list:**
+  - `tests/test_query_dispatch.py:96` and `:257`/`:261`: the out-of-domain example rp2
+    became `nas`, and rp2 now asserts `NOT_DERIVABLE`;
+  - `tests/test_query_registry.py:482`: the domain is {rp5, vps, rp2}, as its own tuple;
+  - `tests/test_query_registry.py:445`: the domain test now parses the triage delta
+    (`:449`), because the read-depth spec still says {rp5, vps};
+  - `tests/test_query_renderers.py:371`: "primary" became "pressure branch";
+  - `tests/test_query_renderers.py:386`: "not the rule's trigger" and "normal" are now
+    absent, and the clear-bar line is present (`:396-398`);
+  - `tests/test_query_renderers.py:976-978`: the rp2 follow-up is `NOT_DERIVABLE`;
+  - `tests/test_replay_capture.py`: the instant count went from 23 to 31 (`:281`), and
+    the expression count rose by 8 (`:333`). D5 byte-equality is split into 4 registry
+    rows and 5 script rows (`RETIRED_TO_REGISTRY` `:344`, test `:354`). `source` is
+    "registry" for the retired rows (`:452`).
+
+**Mutation table:** 25 mutants from the implementer, all killed after one fix (M19's).
+- M1–M3: the summary times (first occurrence, last occurrence, window end);
+- M4–M5: a `for` dropped, or mistranscribed;
+- M6, M20: rp2 back to out-of-domain, or its `Unavailable` removed;
+- M7: `max by (name)` removed. The per-CPU evaluator test kills it;
+- M8: the auto-name annotation unhedged;
+- M9: `holes = {}`, the 3.7 demonstration;
+- M10: the plan drops the aspect reasons;
+- M11–M12: the verified set or the hole predicate diverging from the verdict lines;
+- M13: the rp2 follow-up raised as `OUT_OF_DOMAIN`;
+- M14–M15, M24: the swap branch lines;
+- M16: the auto-name regex loosened;
+- M17: the top-3 ordering reversed;
+- M18: MiB computed as 10^6;
+- M19: the 15m and 24h restart columns swapped. It first survived, because every fixture
+  restart fell inside both windows. A container that restarted 2h ago was added
+  (`test_a_restart_is_counted`), and that kills it;
+- M21: a container row not retired from the capture;
+- M22: the DNS `for` dropped;
+- M23: an invented DNS `for`;
+- M25: a missing health reading rendered as zero.
+
+The implementer's first mutation run gave false results from stale `.pyc` files. It was
+re-run with `python -B` / `PYTHONDONTWRITEBYTECODE=1`, and the results above come from
+that run.
+
+**The review-gate fix for finding 1 adds 8 more mutants**, each applied alone and run
+with `python -B` against the triage-evidence, dispatch, renderer and capture tests. All
+8 were killed:
+- W1: the summary line renders `last_at` as the window end;
+- W2: a plan without a window falls back to `last_at`;
+- W3: the "no sample for the last N minutes" line is dropped;
+- W4: the gap minutes are measured to the last range point, not to `end`;
+- W5: the gap is judged against `end`, not the last range point;
+- W6: the request ignores the plan's window and reads the clock again;
+- W7: the tool never attaches the window to the plan;
+- W8: the uneven-step note is dropped.
+
+The fix also added a clear-bar `swap_io` case (`[3.0, 4.0]`) to the forbidden-wording
+sweep (review finding 3).
+
+**Contradictions with the design.**
+- Rule 6's inversion list was incomplete. The additional inversions are listed above.
+- The design's path for `backend-probe.md` has moved: the file is now under
+  `openspec/changes/archive/2026-09-02-read-depth/notes/`.
+- D1's window end was first implemented as the last sample. The review gate found it, and
+  it is fixed as described above. D1's "the last point's evaluation time" is also not the
+  request's `end` whenever the step does not divide the window, which at 60 points is
+  every window. The result states `end` as the window's end, and uses the last range
+  point only to decide whether a series has gone silent.

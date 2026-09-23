@@ -13,14 +13,16 @@ current renderers.
 the tests pin that they cover the registry's whole argument space and that every
 range request is the one the tool would have sent with its clock at `T`.
 
-**Written-out templates.** Groups 3 and 4 add nine expression roles the registry
-does not have yet: D3's container memory, D4's restarts, and D5's two new queries.
-Their text is the D5 canonical table, byte for byte, and it appears here because
-Prometheus retention (the 24h windows ending in the triage interval fall out on
-2026-10-07 06:30Z) will not wait for those groups. A written-out template is used
-only for a role the registry lacks, so once groups 3 and 4 land the capture reads
-every template from the registry and the request count does not change. Tasks
-3.9 and 4.4 then retire the copies below.
+**Written-out templates.** The D5 canonical table added nine expression roles
+the registry did not have when this script had to run: D3's container memory,
+D4's restarts, and D5's two new queries. Their text is the D5 table, byte for
+byte, and it was written out here because Prometheus retention (the 24h windows
+ending in the triage interval fall out on 2026-10-07 06:30Z) would not wait. A
+written-out template is used only for a role the registry lacks, so the request
+count does not change as the registry catches up. Task 3.9 retired D3/D4's four
+`container_state` rows once the registry's copies were pinned byte-equal to the
+D5 literals; the capture reads them from the registry now. Task 4.4 retires the
+remaining five.
 
 **What is never captured.** `endpoint_history` is Gatus-backed, and
 `scrape_targets`' `/api/v1/targets` route takes no time parameter, so neither has
@@ -101,21 +103,12 @@ class WrittenDomain:
 
 _UNITS = r'container_memory_working_set_bytes{job="<job>",id=~"/system\\.slice/.+\\.service"}'
 _NAMED = 'container_memory_working_set_bytes{job="<job>",name!=""}'
-_RESETS = 'max by (name) (resets(container_cpu_usage_seconds_total{job="<job>",name!=""}[<lookback>]))'
 
-#: The D5 canonical table. Retired by tasks 3.9 and 4.4 once the registry's
-#: expressions are pinned byte-equal to these.
+#: The D5 canonical table's rows the registry does not have yet. Task 3.9
+#: retired the four `container_state` rows (the registry's `memory_working_set`,
+#: `swap`, `restarts_15m` and `restarts_24h` are pinned byte-equal to the D5
+#: literals in the tests); task 4.4 retires these five.
 WRITTEN_OUT_TEMPLATES: tuple[WrittenTemplate, ...] = (
-    WrittenTemplate("container_state", "memory_working_set", "instant", _NAMED),
-    WrittenTemplate(
-        "container_state", "swap", "instant", 'container_memory_swap{job="<job>",name!=""}'
-    ),
-    WrittenTemplate(
-        "container_state", "restarts_15m", "instant", _RESETS.replace("<lookback>", "15m")
-    ),
-    WrittenTemplate(
-        "container_state", "restarts_24h", "instant", _RESETS.replace("<lookback>", "24h")
-    ),
     WrittenTemplate(
         "memory_movers",
         "movers_max",

@@ -210,15 +210,15 @@ The capture is persisted only on rp5's audit volume.
 
 ## 3. Container and trend evidence (homelab-tools)
 
-- [ ] 3.1 Tests first, for `node_resource_trend` and `dns_performance`:
+- [x] 3.1 Tests first, for `node_resource_trend` and `dns_performance`:
   - *Extremes carry their times*;
   - *A repeated extreme reports first and last occurrence*;
   - *DNS summaries carry the same times*.
-- [ ] 3.2 Tests first:
+- [x] 3.2 Tests first:
   - *A comparison states the rule's for window* (15m swap, 5m memory);
   - the extended *Registry thresholds match the pinned record*;
   - the "not in the pinned record" sentence for a threshold with no recorded `for`.
-- [ ] 3.3 Tests first, the swap wording:
+- [x] 3.3 Tests first, the swap wording:
   - *Swap fullness below its bar …*;
   - *Swap fullness above its bar …*;
   - *Swap results say both branches need checking*.
@@ -227,32 +227,32 @@ The capture is persisted only on rp5's audit volume.
   that "practically fires on pressure", "anti-correlated", "primary" and "secondary"
   appear in no rendered swap result, and that "not the rule's
   trigger" appears in no rendered result.
-- [ ] 3.4 Tests first:
+- [x] 3.4 Tests first:
   - *Memory and swap are reported per container*;
   - *Container memory carries no bar*;
   - *An auto-generated name is annotated* (it is hedged);
   - *Host units are pointed elsewhere, not silently missing*.
-- [ ] 3.5 Tests first:
+- [x] 3.5 Tests first:
   - *rp2 container state is not available, and says so*;
   - *A named-container follow-up on rp2 is not derivable*;
   - the rewritten *An out-of-domain value is rejected, not answered emptily*.
 
   Invert `test_query_dispatch.py:155` and `:196`. Add a test that `container_state`'s node
   domain is its own tuple, not `tuple(CADVISOR_JOBS)`.
-- [ ] 3.6 Tests first:
+- [x] 3.6 Tests first:
   - *A restart is counted*, on both nodes;
   - *Per-CPU series count one restart once*, from a fixture with several per-CPU series
     each resetting once;
   - *The restart caveat describes the measured behaviour*.
 
   Invert `test_query_renderers.py:918`.
-- [ ] 3.7 Tests first, *An unavailable aspect is rendered in its place*. rp5's
+- [x] 3.7 Tests first, *An unavailable aspect is rendered in its place*. rp5's
   `health_state` hole renders its reason in the column via the plan, and a mutation that
   removes the renderer's read of the plan fails the test.
-- [ ] 3.8 Tests first, *The restart aspect is traceable to a measurement*. Parse
+- [x] 3.8 Tests first, *The restart aspect is traceable to a measurement*. Parse
   `notes/evidence-probe.md`'s verdict lines and assert the aspect exists for exactly the
   verified jobs.
-- [ ] 3.9 Implement:
+- [x] 3.9 Implement:
   - `_Summary` times (`henk/tools/query_renderers.py:137-173`);
   - `Threshold.for_window` and `branch`, with the swap line;
   - the container expressions, columns and annotation;

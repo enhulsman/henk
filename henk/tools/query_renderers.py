@@ -19,8 +19,9 @@ almost always quotes the scrape URL, so a renderer that only filtered labels
 would publish an address in the one field the owner most wants to read.
 
 **A summary, never the series.** The two range queries report first / last / min
-/ max and a direction. The samples between them never reach the result at any
-window.
+/ max and a direction, each figure with the UTC time it refers to, plus the
+window's end — the request's end, carried on the plan, never the last sample.
+The samples between them never reach the result at any window.
 
 **Three outcomes stay three.** A response that comes back empty for an in-domain
 request renders as *not derivable*, not as a measurement of nothing — the same
@@ -42,6 +43,7 @@ grows across invocations instead of standing still.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
@@ -59,7 +61,7 @@ from henk.tools.query_projection import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from henk.tools.query_registry import QueryPlan
+    from henk.tools.query_registry import QueryPlan, RangeWindow
 
 _PENDING = (
     "its renderer is not implemented yet. The query was validated and "
@@ -136,11 +138,27 @@ def _points(series: Mapping[str, Any]) -> list[tuple[float, float]]:
 
 @dataclass(frozen=True)
 class _Summary:
+    """first / last / min / max, each with the evaluation time it refers to.
+
+    ``min_at``/``max_at`` are when the extreme was FIRST reached, and
+    ``min_last_at``/``max_last_at`` when it was last reached. Both are kept
+    because either alone hides something: earliest-only hides that a figure is
+    *still* at its extreme, latest-only hides when it got there (D1). The
+    window's end is NOT a property of the series: it is the request's end, and
+    arrives on the plan (see :func:`_window_lines`).
+    """
+
     first: float
     last: float
     minimum: float
     maximum: float
     count: int
+    first_at: float
+    last_at: float
+    min_at: float
+    min_last_at: float
+    max_at: float
+    max_last_at: float
 
     @property
     def direction(self) -> str:
@@ -151,13 +169,23 @@ class _Summary:
 
 
 def _summarise(points: Sequence[tuple[float, float]], *, scale: float = 1.0) -> _Summary:
-    values = [value * scale for _ts, value in points]
+    scaled = [(ts, value * scale) for ts, value in points]
+    values = [value for _ts, value in scaled]
+    minimum, maximum = min(values), max(values)
+    at_min = [ts for ts, value in scaled if value == minimum]
+    at_max = [ts for ts, value in scaled if value == maximum]
     return _Summary(
         first=values[0],
         last=values[-1],
-        minimum=min(values),
-        maximum=max(values),
+        minimum=minimum,
+        maximum=maximum,
         count=len(values),
+        first_at=scaled[0][0],
+        last_at=scaled[-1][0],
+        min_at=at_min[0],
+        min_last_at=at_min[-1],
+        max_at=at_max[0],
+        max_last_at=at_max[-1],
     )
 
 
@@ -165,12 +193,72 @@ def _number(value: float) -> str:
     return f"{value:.2f}"
 
 
-def _summary_line(summary: _Summary, unit: str) -> str:
+def _extreme(value: float, first_at: float, last_at: float) -> str:
+    if first_at == last_at:
+        return f"{_number(value)} at {_stamp(first_at)}"
     return (
-        f"Summary: first {_number(summary.first)}, last {_number(summary.last)}, "
-        f"min {_number(summary.minimum)}, max {_number(summary.maximum)} {unit} "
-        f"over {summary.count} points — {summary.direction}."
+        f"{_number(value)}, first reached at {_stamp(first_at)} and last reached "
+        f"at {_stamp(last_at)}"
     )
+
+
+def _summary_line(summary: _Summary, unit: str, window: "RangeWindow | None") -> str:
+    """The one summary line both range queries share, every figure with its time.
+
+    The window's end is the request's end, carried on the plan. It is never the
+    series' last sample: a series that stopped reporting 20 minutes early would
+    then read as current to the end of the window, which is exactly the node
+    going down mid-incident that a triage reader must not miss.
+    """
+    end = (
+        f"Window ends at {_stamp(window.end)}."
+        if window is not None
+        else "The window's end time was not supplied with this plan, so no end is stated."
+    )
+    return (
+        f"Summary: {unit}, UTC times — "
+        f"first {_number(summary.first)} at {_stamp(summary.first_at)}; "
+        f"last {_number(summary.last)} at {_stamp(summary.last_at)}; "
+        f"min {_extreme(summary.minimum, summary.min_at, summary.min_last_at)}; "
+        f"max {_extreme(summary.maximum, summary.max_at, summary.max_last_at)}. "
+        f"{summary.count} points, {summary.direction}. "
+        f"{end}"
+    )
+
+
+def _duration(seconds: float) -> str:
+    minutes = max(1, round(seconds / 60.0))
+    if minutes < 120:
+        return f"{minutes} minute{'s' if minutes != 1 else ''}"
+    return f"{seconds / 3600.0:.1f} hours"
+
+
+def _window_lines(summary: _Summary, window: "RangeWindow | None") -> list[str]:
+    """What the window's end says about the series, beyond the summary line.
+
+    A series whose last sample falls short of the last range point stopped
+    reporting: say for how long, measured to the window's end. Half a step of
+    tolerance absorbs Prometheus's millisecond timestamps. A series current to
+    the last range point is not silent, but when the step does not divide the
+    window that point can lie well before the end (1430 s for 24h at 60
+    points), and when the difference is a minute or more the line says so.
+    """
+    if window is None:
+        return []
+    if summary.last_at < window.last_point - window.step / 2:
+        return [
+            f"No sample for the last {_duration(window.end - summary.last_at)} of the "
+            f"window: the series' last sample is at {_stamp(summary.last_at)} and the "
+            f"window ends at {_stamp(window.end)}. The figures above describe the "
+            "series up to its last sample, not the state at the window's end."
+        ]
+    if window.end - window.last_point >= 60.0:
+        return [
+            f"The last range point is at {_stamp(window.last_point)}: the "
+            f"{window.step}s step does not divide the window evenly, so nothing "
+            "after that time was evaluated."
+        ]
+    return []
 
 
 def _stamp(epoch: float) -> str:
@@ -221,30 +309,77 @@ def _caveats(plan: "QueryPlan") -> list[str]:
     return ["Caveats:"] + [f"- {caveat}" for caveat in plan.caveats]
 
 
-def _threshold_line(plan: "QueryPlan", key: str, summary: _Summary) -> str | None:
-    """The per-resource comparison, or None where no rule defines a bar.
+#: Said where the record pins no `for` for a rule. Never replaced by a guess.
+FOR_NOT_PINNED = "the rule's `for` is not in the pinned record"
+
+
+def _for_clause(bar: Any) -> str:
+    """The rule's `for` window, or the statement that the record has none."""
+    if bar.for_window:
+        return f"which fires once the condition holds for {bar.for_window}"
+    return FOR_NOT_PINNED
+
+
+def _threshold_line(plan: "QueryPlan", key: str, summary: _Summary) -> list[str]:
+    """The per-resource comparison, or [] where no rule defines a bar.
 
     Per-resource because the fleet's rules do not share a shape: a generic
     "crossed its alert threshold" would report disk backwards (the rule is
-    percent *free* below a bar) and would present swap fullness — which is not
-    what the rule fires on — as an approaching incident.
+    percent *free* below a bar).
+
+    A bar that is one ``branch`` of an OR'd rule (`HenkSwapPressure`) names its
+    branch, says what it alone can or cannot do, and adds the fixed line that
+    the rule fires on either branch. Neither branch is ranked as the real
+    trigger: the ground truth of 2026-09-23 contradicts any ranking (D2). A
+    sub-bar figure is still never presented as an approaching incident — the
+    clear-bar sentence carries that.
     """
     bar = plan.entry.thresholds.get(key)
     if bar is None:
-        return None
+        return []
     reading = summary.maximum if bar.direction == "above" else summary.minimum
     crossed = bar.crossed_by(reading)
     verdict = (
         f"the {'highest' if bar.direction == 'above' else 'lowest'} reading "
         f"{_number(reading)} {'crossed' if crossed else 'stayed clear of'} it"
     )
+    rule = (
+        f"the {bar.branch} branch of the live rule `{bar.source}`"
+        if bar.branch
+        else f"pinned from the live rule `{bar.source}`"
+    )
     line = (
         f"Compared against {_number(bar.value)} {bar.unit} ({bar.direction} the "
-        f"bar), pinned from the live rule `{bar.source}`: {verdict}."
+        f"bar), {rule}, {_for_clause(bar)}: {verdict}"
     )
+    if bar.branch:
+        sustained = f"once sustained for {bar.for_window}" if bar.for_window else (
+            f"once sustained ({FOR_NOT_PINNED})"
+        )
+        line += (
+            f" — this branch alone can fire `{bar.source}` {sustained}."
+            if crossed
+            else " — below this branch's bar; on its own this branch would not "
+            "fire the rule."
+        )
+    else:
+        line += "."
     if bar.note:
         line += f" {bar.note}"
-    return line
+    lines = [line]
+    if bar.branch:
+        siblings = [
+            name
+            for name, other in plan.entry.thresholds.items()
+            if other.source == bar.source and other.branch
+        ]
+        lines.append(
+            f"`{bar.source}` fires on either branch, and the alert's value does not "
+            "say which fired; check both "
+            + " and ".join(f"`{name}`" for name in siblings)
+            + "."
+        )
+    return lines
 
 
 # --- node_resource_trend ---------------------------------------------------
@@ -275,22 +410,17 @@ def render_node_resource_trend(plan: "QueryPlan", payloads: Mapping[str, Any]) -
     lines = [
         f"node_resource_trend — {node} {resource} over {window}: "
         f"{describe_target(job, _labels(found[0]))}",
-        _summary_line(summary, unit),
+        _summary_line(summary, unit, plan.range_window),
+        *_window_lines(summary, plan.range_window),
     ]
     comparison = _threshold_line(plan, resource, summary)
-    if comparison is None:
+    if not comparison:
         lines.append(
             f"No bar: no alert rule in either alerting system defines a threshold "
             f"for {resource}, so this is the figure and its direction, nothing more."
         )
     else:
-        lines.append(comparison)
-        if not plan.entry.thresholds[resource].is_trigger:
-            lines.append(
-                "Read this as normal for this fleet unless something else says "
-                "otherwise: swap pressure is what the rule triggers on, and "
-                "pressure is measured by swap_io (pages/s), not by fullness."
-            )
+        lines.extend(comparison)
     lines.extend(_caveats(plan))
     return "\n".join(lines)
 
@@ -516,15 +646,67 @@ def _by_container(payload: Any) -> dict[str, tuple[float, float]]:
     return readings
 
 
+#: Docker's generated container names: `<adjective>_<surname>`, lowercase, with
+#: one retry digit appended on a collision (moby `pkg/namesgenerator`).
+_AUTO_NAME = re.compile(r"[a-z]+_[a-z]+\d?")
+
+_MIB = 1024.0 * 1024.0
+
+
+def auto_name_annotation(name: str) -> str | None:
+    """The hedged note for a name in Docker's auto-generated shape, else None.
+
+    Hedged on purpose: a hand-chosen `my_app` has the same shape, so the note
+    says what the name *probably* means and that the shape is not proof. Shared
+    with any renderer that names containers (D3, D5).
+    """
+    if not _AUTO_NAME.fullmatch(name):
+        return None
+    return (
+        "name looks auto-generated (Docker's adjective_surname form): probably an "
+        "ephemeral `docker run` container, such as the nightly backup's "
+        "`docker run --rm`; a hand-chosen name can share this form"
+    )
+
+
+def _clause(reason: str) -> str:
+    """A hole's reason as a clause inside a `;`-separated row."""
+    return reason.strip().rstrip(".")
+
+
+def _mib(value: float) -> str:
+    return f"{value / _MIB:.1f} MiB"
+
+
+def _top(readings: Mapping[str, tuple[float, float]], count: int = 3) -> str:
+    ranked = sorted(readings.items(), key=lambda item: (-item[1][1], item[0]))[:count]
+    if not ranked:
+        return "no series returned"
+    return ", ".join(f"{scrub_addresses(name)} ({_mib(value)})" for name, (_ts, value) in ranked)
+
+
 def render_container_state(plan: "QueryPlan", payloads: Mapping[str, Any]) -> str:
-    """Per-container last-seen, health, OOM events and creation time."""
+    """Per-container last-seen, health, OOM events, memory, swap, restarts, creation.
+
+    Every aspect-level hole is **read from the plan** and printed in that
+    aspect's own column, with its reason, in every row. A missing reading where
+    no hole is registered says so in its own words; neither ever renders as an
+    empty or zero column (D3).
+    """
     node = plan.arguments["node"]
+    holes = plan.unavailable_aspects
     last_seen = _by_container(payloads.get("last_seen"))
     created = _by_container(payloads.get("created"))
     oom = _by_container(payloads.get("oom_events"))
     health = _by_container(payloads.get("health_state"))
+    working_set = _by_container(payloads.get("memory_working_set"))
+    swap = _by_container(payloads.get("swap"))
+    restarts_15m = _by_container(payloads.get("restarts_15m"))
+    restarts_24h = _by_container(payloads.get("restarts_24h"))
 
-    names = sorted(set(last_seen) | set(created) | set(oom) | set(health))
+    names = sorted(
+        set(last_seen) | set(created) | set(oom) | set(health) | set(working_set) | set(swap)
+    )
     if not names:
         return _not_derivable(
             plan,
@@ -538,24 +720,49 @@ def render_container_state(plan: "QueryPlan", payloads: Mapping[str, Any]) -> st
         if name in last_seen:
             evaluated_at, value = last_seen[name]
             parts.append(f"last seen {max(0.0, evaluated_at - value):.0f} s ago")
-        if name in health:
+        if "health_state" in holes:
+            parts.append(f"health state unavailable: {_clause(holes['health_state'])}")
+        elif name in health:
             parts.append(f"health state {health[name][1]:.0f} (the exporter's own encoding)")
         else:
-            parts.append("health state unavailable")
+            parts.append("health state: no series for this container")
         if name in oom:
             parts.append(f"OOM events {oom[name][1]:.0f}")
+        parts.append(
+            f"working set {_mib(working_set[name][1])}"
+            if name in working_set
+            else "working set: no series"
+        )
+        parts.append(f"swap {_mib(swap[name][1])}" if name in swap else "swap: no series")
+        if "restarts" in holes:
+            parts.append(f"restarts unavailable: {_clause(holes['restarts'])}")
+        elif name in restarts_15m or name in restarts_24h:
+            counts = [
+                f"{window[name][1]:.0f} in {label}" if name in window else f"no series in {label}"
+                for label, window in (("15m", restarts_15m), ("24h", restarts_24h))
+            ]
+            parts.append("restarts " + ", ".join(counts))
+        else:
+            parts.append("restarts: no series")
         if name in created:
             parts.append(
                 f"created {_stamp(created[name][1])} — creation time, not its last start"
             )
-        rows.append(f"  {scrub_addresses(name)}: " + "; ".join(parts))
+        row = f"  {scrub_addresses(name)}: " + "; ".join(parts)
+        annotation = auto_name_annotation(name)
+        if annotation:
+            row += f" — {annotation}"
+        rows.append(row)
 
     job = plan.entry.job_map.get(node, "") if plan.entry.job_map else ""
-    header = (
+    header = [
         f"container_state — {describe_target(job, {})}: {len(names)} containers "
-        "currently reporting."
-    )
-    return "\n".join([header, *rows, *_caveats(plan)])
+        "currently reporting.",
+        f"Highest working set: {_top(working_set)}. Highest swap: {_top(swap)}. "
+        "Working set includes active page cache, which is what memory pressure "
+        "tracks.",
+    ]
+    return "\n".join([*header, *rows, *_caveats(plan)])
 
 
 def render_named_container_reading(node: str, container: str, payload: Any) -> str:
@@ -664,7 +871,8 @@ def render_dns_performance(plan: "QueryPlan", payloads: Mapping[str, Any]) -> st
         f"dns_performance — {node} over {window}. The node-to-series mapping is "
         "derived at query time from job-labelled series; no address is stored in "
         "the repository or in configuration, and none appears below.",
-        _summary_line(summary, "ms"),
+        _summary_line(summary, "ms", plan.range_window),
+        *_window_lines(summary, plan.range_window),
     ]
     if baseline is not None:
         drift = summary.last - baseline
@@ -674,7 +882,9 @@ def render_dns_performance(plan: "QueryPlan", payloads: Mapping[str, Any]) -> st
             f"{'above' if drift >= 0 else 'below'} it."
         )
     bars = [
-        f"{label} {_number(bar.value)} {bar.unit} (`{bar.source}`)"
+        f"{label} {_number(bar.value)} {bar.unit} (`{bar.source}`, "
+        + (f"for {bar.for_window}" if bar.for_window else FOR_NOT_PINNED)
+        + ")"
         for label, bar in (("warning", warning), ("critical", critical), ("fleet-wide critical", fleet))
         if bar is not None
     ]

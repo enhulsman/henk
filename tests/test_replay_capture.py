@@ -117,7 +117,7 @@ NAMES_BY_JOB = {
 #:                        temperature (not derivable) at 4 windows     = 80
 #:   scrape_targets       up, up_over_window                            =  2
 #:   freshness_check      timestamps                                    =  1
-#:   container_state      2 nodes x (4 registry + 4 written-out roles)  = 16
+#:   container_state      2 nodes (rp2 not derivable) x 8 roles         = 16
 #:   dns_performance      3 nodes x 4 windows x 2 roles                 = 24
 #:   memory_movers        2 nodes (rp2 unavailable) x 4 windows x 3     = 24
 #:   host_service_state   vps only x 4 windows x 2 roles                =  8
@@ -275,8 +275,10 @@ def test_every_registry_request_matches_what_the_live_tool_would_send(out_dir):
                 )
                 assert key in sent, (name, arguments, role)
                 checked[kind] += 1
-    # 80 trends + 12 dns series are ranges; 2 + 1 + 8 + 12 are instant.
-    assert checked == {"range": 92, "instant": 23}
+    # 80 trends + 12 dns series are ranges; 2 + 1 + 16 + 12 are instant. The
+    # container count is 16 since task 3.9 moved D3/D4's four roles into the
+    # registry (it was 8 while the script wrote them out).
+    assert checked == {"range": 92, "instant": 31}
 
 
 def test_only_the_two_prometheus_query_routes_are_requested(out_dir):
@@ -328,7 +330,7 @@ def test_every_registry_prometheus_expression_is_captured_in_every_combination(o
     # of that query that has a historical form.
     roles = {(q, r) for q, r, _, _ in captured}
     assert {("scrape_targets", "up"), ("scrape_targets", "up_over_window")} <= roles
-    assert expected == 80 + 2 + 1 + 8 + 24
+    assert expected == 80 + 2 + 1 + 16 + 24
 
 
 def test_gatus_and_the_targets_api_are_never_captured(out_dir):
@@ -338,11 +340,36 @@ def test_gatus_and_the_targets_api_are_never_captured(out_dir):
     assert all("targets" not in r["request"]["path"] for r in _records(out_dir, T_START))
 
 
+#: The D5 rows task 3.9 moved into the registry and retired from the script.
+RETIRED_TO_REGISTRY = frozenset(
+    {
+        ("container_state", "memory_working_set"),
+        ("container_state", "swap"),
+        ("container_state", "restarts_15m"),
+        ("container_state", "restarts_24h"),
+    }
+)
+
+
 def test_the_written_out_templates_are_byte_equal_to_the_D5_table():
+    """Every D5 row lives in exactly one place, byte-equal to the literal.
+
+    Task 3.9 retired the four `container_state` rows: they are pinned in the
+    REGISTRY now, and the script writes out only the rows the registry lacks.
+    """
     table = {
         (t.query, t.role): (t.kind, t.template) for t in capture.WRITTEN_OUT_TEMPLATES
     }
-    assert table == D5_TEMPLATES
+    assert table == {k: v for k, v in D5_TEMPLATES.items() if k not in RETIRED_TO_REGISTRY}
+    for query, role in RETIRED_TO_REGISTRY:
+        kind, literal = D5_TEMPLATES[(query, role)]
+        entry = QUERY_REGISTRY[query]
+        assert entry.expressions[role] == literal, (query, role)
+        assert kind == "instant" and not entry.range_query
+    # Retired means retired: no D5 row is in both places.
+    for query, role in table:
+        entry = QUERY_REGISTRY.get(query)
+        assert entry is None or role not in entry.expressions, (query, role)
     host_unit = r'"/system\\.slice/.+\\.service"'
     for kind, template in D5_TEMPLATES.values():
         if "id=~" in template:
@@ -421,7 +448,8 @@ def test_the_written_out_expressions_are_filled_per_node_and_window(out_dir):
     assert len(got) == 8 + 24 + 8
     for record in records:
         if (record["query"], record["role"]) in D5_TEMPLATES:
-            assert record["source"] == "written-out"
+            retired = (record["query"], record["role"]) in RETIRED_TO_REGISTRY
+            assert record["source"] == ("registry" if retired else "written-out")
             want_kind = D5_TEMPLATES[(record["query"], record["role"])][0]
             assert record["kind"] == want_kind
             assert record["request"]["path"] == (

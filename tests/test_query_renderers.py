@@ -34,6 +34,7 @@ from henk.events.types import Event
 from henk.tools.homelab_query import HomelabQueryTool
 from henk.tools.query_registry import (
     QUERY_REGISTRY,
+    QueryOutcome,
     QueryRefused,
     compose_gatus_key,
     named_container_expression,
@@ -367,30 +368,36 @@ def test_disk_measures_the_root_filesystem_only():
     assert 'mountpoint="/"' in plan.expressions["disk"]
 
 
-def test_swap_io_is_presented_as_the_primary_swap_signal():
+def test_swap_io_is_presented_as_the_pressure_branch_not_the_primary_signal():
+    # triage-quality D2 inverts read-depth's "primary swap signal": either
+    # branch alone fires `HenkSwapPressure`, so neither is ranked.
     out = render(
         "node_resource_trend",
         {"node": "vps", "resource": "swap_io", "window": "24h"},
         swap_io=matrix(series(node_metric("vps", "node-exporter-vps"), [12.0, 83.42])),
     )
     assert "Compared against" in out and "50" in out and "pages/s" in out
-    assert "primary" in out.lower()
+    assert "pressure branch" in out
+    assert "primary" not in out.lower()
     assert "crossed" in out.lower()
+    assert "swap_used" in out, "the result must point at the other branch too"
 
 
-def test_swap_used_within_the_chronic_range_reads_as_normal_not_as_an_incident():
+def test_swap_used_within_the_chronic_range_is_clear_of_its_branch_not_an_incident():
     # 84% full on the vps: below the 95% bar and inside the measured 64-90%
-    # chronic range. The spec forbids presenting this as an approaching incident.
+    # chronic range. The spec forbids presenting this as an approaching incident
+    # — and (triage-quality D2, inverting read-depth) also forbids calling
+    # fullness "not the rule's trigger": the clear-bar line carries the guard.
     out = render(
         "node_resource_trend",
         {"node": "vps", "resource": "swap_used", "window": "24h"},
         swap_used=matrix(series(node_metric("vps", "node-exporter-vps"), [77.0, 84.0])),
     )
-    assert "not the rule's trigger" in out.lower()
-    assert "pressure" in out.lower() and "fullness" in out.lower()
-    assert "normal" in out.lower()
+    assert "not the rule's trigger" not in out.lower()
+    assert "fullness branch" in out
+    assert "on its own this branch would not fire the rule" in out
     assert "approaching" not in out.lower()
-    assert "swap_io" in out, "the result must point at the signal that does trigger"
+    assert "swap_io" in out, "the result must point at the other branch"
 
 
 def test_memory_uses_the_pinned_75_bar_and_says_where_it_delivers():
@@ -915,7 +922,12 @@ def test_container_state_labels_start_time_as_creation_and_disclaims_restarts():
     )
     assert_no_addresses(out)
     assert "created" in out.lower()
-    assert "restart" in out.lower() and "not observable" in out.lower()
+    # triage-quality D4 inverts read-depth's "in-place restart loops are not
+    # observable": both cadvisor nodes were measured to count a `docker
+    # restart` as a reset of the CPU counter within one scrape.
+    assert "not observable" not in out.lower()
+    assert "resets of the container's cpu counter" in out.lower()
+    assert "does not move on a restart" in out.lower()
     assert "last start" in out.lower()
     assert "gatus" in out and "henk" in out
 
@@ -956,10 +968,15 @@ def test_a_named_container_absent_from_the_backend_returns_a_reading():
 
 
 def test_a_named_container_is_fillable_only_from_a_discovered_name():
-    with pytest.raises(QueryRefused):
+    with pytest.raises(QueryRefused) as free_text:
         named_container_expression("vps", "anything-the-model-typed", known=("gatus",))
-    with pytest.raises(QueryRefused):
+    assert free_text.value.outcome is QueryOutcome.OUT_OF_DOMAIN
+    # triage-quality D3 inverts read-depth's rp2 refusal: rp2 is in domain and
+    # has no cadvisor, so the follow-up is not derivable, like the query itself.
+    with pytest.raises(QueryRefused) as rp2:
         named_container_expression("rp2", "gatus", known=("gatus",))
+    assert rp2.value.outcome is QueryOutcome.NOT_DERIVABLE
+    assert "outside" not in str(rp2.value)
 
 
 def test_container_state_reports_an_empty_response_as_not_derivable():

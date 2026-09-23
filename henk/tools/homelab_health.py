@@ -225,15 +225,15 @@ class HomelabHealthTool(Tool):
 
         ``Threshold.crossed_by`` is the shared predicate — the same call
         ``node_resource_trend``'s renderer makes — so the two tools cannot reach
-        opposite verdicts on one reading. A bar flagged ``is_trigger=False`` is
-        reported by the query but never raises DEGRADED here: it exists and is
-        documented not to be what the rule fires on.
+        opposite verdicts on one reading. No swap resource is reported here, so
+        the two `HenkSwapPressure` branches (triage-quality D2) never reach this
+        predicate; every bar that does reach it is a single-term rule's.
         """
         crossings = []
         for resource in HEALTH_RESOURCES:
             value = metrics.get(resource)
             bar = THRESHOLDS.get(resource)
-            if value is None or bar is None or not bar.is_trigger:
+            if value is None or bar is None:
                 continue
             if bar.crossed_by(value):
                 crossings.append(
