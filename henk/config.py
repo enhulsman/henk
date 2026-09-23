@@ -245,7 +245,7 @@ def build_system_prompt(
     )
 
 
-#: The SDK's effort levels (``claude_agent_sdk.types.EffortLevel``, pinned 0.2.123).
+#: The SDK's effort levels (``claude_agent_sdk.types.EffortLevel``, pinned 0.2.157).
 EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 #: Thinking modes offered in config. ``enabled`` is not among them: it needs a
 #: token budget, which current models reject.

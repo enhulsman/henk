@@ -224,7 +224,7 @@ class SdkSessionFactory:
         from claude_agent_sdk import tool as sdk_tool
 
         # VERIFY AT DEPLOY (task 1.4): confirm @tool accepts a JSON-schema dict for
-        # input_schema in 0.2.123 (the docs also show a {name: type} shorthand).
+        # input_schema in 0.2.157 (the docs also show a {name: type} shorthand).
         @sdk_tool(henk_tool.name, henk_tool.description, henk_tool.parameters)
         async def _handler(args):
             result = await henk_tool.run(**(args or {}))
@@ -243,7 +243,7 @@ class SdkSessionFactory:
         """Build a real Claude Agent SDK session with the closed toolset + gate.
 
         VERIFY AT DEPLOY (task 1.4/5.3): confirm the ClaudeSDKClient method names
-        and ClaudeAgentOptions field names against installed 0.2.123, and smoke-test
+        and ClaudeAgentOptions field names against installed 0.2.157, and smoke-test
         that a built-in (e.g. Bash) is genuinely uncallable.
         """
         from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
