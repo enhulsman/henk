@@ -492,3 +492,59 @@ PY
 
 **Spend:** it uses the same OAuth token as live Henk, so one short turn is billed to the
 owner's subscription. That is standing rule 5, which is why this is an owner step.
+
+## 1.4: result (owner, 2026-09-23)
+
+`session` records with trigger `event`, grouped by UTC day of `at`, over the whole audit
+log: 17 over 62 days (2026-07-24 to 2026-09-23), with a maximum of 8 on one day and a mean
+of 0.27 a day. 16 of the 17 carry a `handoff_message_id`. There are no malformed lines and
+no records without an `at`.
+- Worst 90-day window: 17 against D8's bound of 500 archived handoffs. **Fits.**
+- Worst 30-day window: 16 against D13's bound of 200 recordings. **Fits.**
+
+The constants stand; groups 6 and 10 need no correction.
+
+## 1.3: result (owner, 2026-09-23): not available as probed
+
+The command above ran once in a `compose run --rm --no-deps` container on rp5, with the
+deployed credential and SDK 0.2.123, against `claude-fable-5-1`:
+- `AssistantMessage`: `model=<synthetic>`, `error=unknown`, `stop_reason=stop_sequence`,
+  172 characters of text (not printed);
+- `ResultMessage`: `subtype=success`, `is_error=True`, `stop_reason=stop_sequence`,
+  `api_error_status=400`, empty `errors`;
+- then the stream raised a plain `Exception`.
+
+**Verdict: no. Error class: HTTP 400**, cause not yet known. The synthetic message's text
+was deliberately not printed. A paired follow-up (the same probe on the deployed chat
+model, printing the synthetic text) separates "this credential cannot use the model" from
+"the probe or the bundled CLI is at fault". Group 12a's judge default depends on it.
+
+**A live confirmation for D12.** A failed turn reports `subtype=success` together with
+`is_error=True`, and then the stream raises a bare `Exception`. The ending classifier must
+therefore never read `subtype` as success. It must key on `is_error`/`api_error_status`,
+recorded from the stream before the exception, as noted under 1.2.
+
+**Paired follow-up (owner, 2026-09-23): the cause is the bundled CLI, not the
+credential.** The same probe ran on the deployed chat model and then on Fable, in one
+`compose run` container:
+- `claude-sonnet-5`: a real assistant message, `is_error=False`, no exception;
+- `claude-fable-5-1`: a synthetic message, HTTP 400, "Claude Code 2.1.215 does not support
+  this model; version 2.1.251 or newer is required".
+
+SDK 0.2.123, pinned in `pyproject.toml:25`, bundles CLI 2.1.215. The API refuses on the
+CLI version before any model-access check, so **whether the credential has Fable is
+still unknown**. Bundled CLI versions, read from each release's
+`src/claude_agent_sdk/_cli_version.py` sdist on 2026-09-23:
+
+| SDK | bundled CLI |
+|---|---|
+| 0.2.123 (pinned) | 2.1.215 |
+| 0.2.145 | 2.1.247 (too old) |
+| 0.2.151 | 2.1.258 |
+| 0.2.153 | 2.1.273 |
+| 0.2.155 | 2.1.275 |
+| 0.2.158 (latest) | 2.1.280 |
+
+**1.3 verdict: blocked on the SDK pin.** Re-run the probe after the SDK is bumped to
+>= 0.2.151. Group 12a's judge default (D15) cannot run until then. Group 12a stops at the
+judge and records this blocker (task 12.3a) unless the bump lands first.

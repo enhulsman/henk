@@ -75,7 +75,7 @@
 - [ ] 1.3 **Owner:** in a `compose run` container on rp5, run one zero-tool session
   confirming that `claude-fable-5-1` is available to the credential. Record yes/no and the
   error class.
-- [ ] 1.4 From rp5's audit log, count event-triage records per day (counts only). Confirm
+- [x] 1.4 From rp5's audit log, count event-triage records per day (counts only). Confirm
   that 90 days fits in 500 archived handoffs and that 30 days fits in 200 recordings.
   If not, record the corrected constants for groups 6 and 10.
 - [x] 1.5 Confirm that the label set of a fired `HenkSwapPressure` payload matches the
