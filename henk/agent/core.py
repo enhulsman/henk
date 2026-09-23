@@ -12,6 +12,9 @@ Responsibilities (v1.2):
 - an event-started session publishes its incidents to the shared incident
   context for its lifetime, so ``publish_handoff`` retains that session's
   handoffs with them (triage-quality D8);
+- an event turn carries the digest of related retained handoffs inside its
+  untrusted block, and its record lists the ids shown (triage-quality D9). Only
+  the event path reads the archive: owner turns never do;
 - when reminders are enabled, **every** owner turn additionally carries a one-line
   current-time header, composed per TURN rather than per session — a relative time
   has to resolve against the moment of the turn, not against whenever the
@@ -39,6 +42,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Iterable
 
+from henk.agent.digest import read_digest
 from henk.agent.session import (
     HANDOFF_TOOL_NAME,
     AgentSession,
@@ -128,6 +132,10 @@ class _SessionAudit:
     approvals: list[dict] = field(default_factory=list)
     #: Hash of the recall block this session received, as injected (null if none).
     memory_hash: str | None = None
+    #: Archive row ids the event turn's digest showed (triage-quality D9): a list,
+    #: possibly empty, on an event-triage acc; None on every other acc, owner
+    #: continuations included (audit-log v5).
+    prior_handoff_ids: list[int] | None = None
     #: Cumulative session stats at this acc's start; when set, the acc's record
     #: reports only stats accrued SINCE it (delta), so an owner interrogation
     #: continuing an event session is audited without double-counting the triage.
@@ -155,6 +163,7 @@ class AgentCore:
         deliveries: Any | None = None,
         incident_context: Any | None = None,
         tool_names: Iterable[str] | None = None,
+        handoff_archive: Any | None = None,
     ) -> None:
         self._factory = factory
         self._channel = channel
@@ -218,6 +227,10 @@ class AgentCore:
         # this session has (triage-quality D6). None means "not known", and then the
         # framing names no optional tool.
         self._tool_names = frozenset(tool_names) if tool_names is not None else None
+        # The handoff archive `publish_handoff` writes (triage-quality D8/D9). Read
+        # ONLY by the event path, for the related-handoff digest; no owner-turn path
+        # touches it. None renders no digest.
+        self._handoff_archive = handoff_archive
         # Whether THIS session has already received its recall block. Keyed on the
         # first TURN that read it rather than session creation: an event turn that
         # injected it marks the session (triage-quality D7), and one that could not
@@ -368,10 +381,16 @@ class AgentCore:
         # Recall first (D7): the event turn is its session's first turn. Read here,
         # after the acc exists, so the event record carries the block's hash.
         recall = self._take_recall()
+        # The related-handoff digest (D9). read_digest never raises: a read failure
+        # is logged there and the turn proceeds with no digest, recorded as [].
+        digest = read_digest(self._handoff_archive, turn)
+        if self._acc is not None:
+            self._acc.prior_handoff_ids = list(digest.shown_ids)
         content = compose_event_turn_content(
             turn,
             recall=recall.text if recall is not None else None,
             tool_names=self._tool_names,
+            digest=digest,
         )
         try:
             with self._framed_turn(TurnType.EVENT, announceable=turn.announceable):
@@ -705,6 +724,7 @@ class AgentCore:
             ),
             approvals=acc.approvals,
             memory_hash=acc.memory_hash,
+            prior_handoff_ids=acc.prior_handoff_ids,
             outcome=acc.outcome,
             announceable=acc.announceable,
             turn_count=acc.turn_count,

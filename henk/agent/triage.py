@@ -15,7 +15,9 @@ payload says — the framing is defence-in-depth, not the defence.
 
 Composition order (triage-quality D7): the recall block the core read for this
 turn, then the untrusted block (each incident with its notification and receive
-times), then the method framing (D6), then the recurrence note.
+times, then the related-handoff digest, D9), then the method framing (D6), then
+the recurrence note. The note points at the digest's recurrence reference by id
+and never carries handoff text.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
+from henk.agent.digest import Digest, RecurrenceRef, RefState, unresolved_refs
 from henk.agent.markers import (
     PRIOR_HANDOFFS_HEADER,
     UNTRUSTED_BEGIN,
@@ -170,15 +173,21 @@ def _incident_lines(index: int, item: EventTurnItem) -> list[str]:
     return lines
 
 
-def _untrusted_block(turn: EventTurn) -> str:
-    """The delimited block: one section per incident.
+def _untrusted_block(turn: EventTurn, digest: Digest | None) -> str:
+    """The delimited block: one section per incident, then the digest (D9).
 
-    Group 8's related-handoff digest belongs after the incidents and before the end
-    marker, under :data:`PRIOR_HANDOFFS_HEADER`, with each entry neutralised.
+    The digest sits after the incidents and before the end marker, under
+    :data:`PRIOR_HANDOFFS_HEADER`. Its renderer (:mod:`henk.agent.digest`) has
+    already neutralised every string it took from a retained handoff, and placed
+    the header itself; it is inserted as given, because neutralising it here would
+    destroy that header.
     """
     lines: list[str] = [UNTRUSTED_BEGIN]
     for i, item in enumerate(turn.items, 1):
         lines.extend(_incident_lines(i, item))
+        lines.append("")
+    if digest is not None and digest.text:
+        lines.append(digest.text)
         lines.append("")
     lines.append(UNTRUSTED_END)
     return "\n".join(lines)
@@ -200,23 +209,61 @@ def _framing(*, has_recall: bool, tool_names: Collection[str] | None) -> str:
     return f"{_PREAMBLE}\n{numbered}"
 
 
-def _recurrence_note(turn: EventTurn) -> str | None:
-    recurrences = [it for it in turn.items if it.recurrence]
-    if not recurrences:
+def _ref_sentence(ref: RecurrenceRef) -> str:
+    """What the note says about one prior handoff: where it is, never what it says."""
+    handoff = f"The prior handoff {neutralise_markers(ref.message_id)}"
+    if ref.state is RefState.REFERENCE:
+        return (
+            f"{handoff} is the recurrence reference: the first entry of the "
+            "prior-handoffs digest in the block above."
+        )
+    if ref.state is RefState.SHOWN:
+        return f"{handoff} is shown in the prior-handoffs digest in the block above."
+    if ref.state is RefState.OMITTED:
+        return (
+            f"{handoff} is retained, but the digest's bounds left it out, so its "
+            "content is not available in this turn."
+        )
+    if ref.state is RefState.UNREADABLE:
+        return (
+            f"{handoff} could not be read from the local handoff archive, so its "
+            "content is not available."
+        )
+    return f"{handoff} is not retained locally, so its content is not available."
+
+
+_BUILD_ON = (
+    "Build on that handoff instead of re-running full evidence gathering: check what "
+    "has changed since it was written."
+)
+_NO_CONTENT = (
+    "Do not assume what the earlier triage found; gather the evidence this triage "
+    "needs."
+)
+
+
+def _recurrence_note(turn: EventTurn, digest: Digest | None) -> str | None:
+    """The recurrence note after the framing (incident-triage spec, D9).
+
+    It names each distinct prior-handoff ref and says where its content is. It
+    tells the agent to build on the earlier handoff only when the digest actually
+    rendered one; a ref that did not resolve, or that the bounds left out, is never
+    presented as though its content were known.
+    """
+    if not any(it.recurrence for it in turn.items):
         return None
-    refs = ", ".join(
-        neutralise_markers(it.prior_handoff_ref)
-        for it in recurrences
-        if it.prior_handoff_ref
-    )
-    note = (
-        "\nRecurrence: at least one of these alerts was triaged recently. "
-        "Keep this brief, note it is a recurrence, and reference the earlier "
-        "handoff instead of re-gathering full evidence."
-    )
+    refs = digest.refs if digest is not None else unresolved_refs(turn)
+    sentences = [
+        "\nRecurrence: at least one of these alerts was triaged recently. Note that "
+        "it is a recurrence, and keep this brief."
+    ]
     if refs:
-        note += f" Prior handoff id(s): {refs}."
-    return note
+        sentences += [_ref_sentence(ref) for ref in refs]
+    else:
+        sentences.append("No earlier handoff was recorded for it.")
+    rendered = any(r.state in (RefState.REFERENCE, RefState.SHOWN) for r in refs)
+    sentences.append(_BUILD_ON if rendered else _NO_CONTENT)
+    return " ".join(sentences)
 
 
 def compose_event_turn_content(
@@ -224,13 +271,19 @@ def compose_event_turn_content(
     *,
     recall: str | None = None,
     tool_names: Collection[str] | None = None,
+    digest: Digest | None = None,
 ) -> str:
     """Render an event turn into the text passed to the agent session.
 
     Layout (D7): ``recall`` (the rendered recall block the core read for this
     turn, or None when the store is empty or unreadable), then the delimited
-    untrusted-data block (one section per incident, with its times), then the
-    triage-mode framing, then the recurrence note.
+    untrusted-data block (one section per incident, with its times, then the
+    related-handoff digest), then the triage-mode framing, then the recurrence
+    note.
+
+    ``digest`` is what :func:`henk.agent.digest.read_digest` read for this turn.
+    None means no archive was consulted: no digest is rendered, and the note says
+    of every prior-handoff ref that it is not retained locally.
 
     ``recall`` is placed as given: it is rendered by
     :func:`henk.agent.recall.render_recall_block`, which neutralises each memory
@@ -242,11 +295,11 @@ def compose_event_turn_content(
     if recall:
         parts += [recall, ""]
     parts += [
-        _untrusted_block(turn),
+        _untrusted_block(turn, digest),
         "",
         _framing(has_recall=bool(recall), tool_names=tool_names),
     ]
-    note = _recurrence_note(turn)
+    note = _recurrence_note(turn, digest)
     if note is not None:
         parts.append(note)
     return "\n".join(parts)

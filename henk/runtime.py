@@ -220,6 +220,9 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         # D6): the same registry, built from the same config, that the system
         # prompt enumerates.
         tool_names=registry.names(),
+        # The SAME archive `publish_handoff` writes, read by the event path only
+        # for the related-handoff digest (triage-quality D9).
+        handoff_archive=stores.handoffs,
     )
     dispatcher = Dispatcher(AllowlistFilter(config.owner.id), gate, core)
 

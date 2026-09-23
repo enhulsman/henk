@@ -594,3 +594,92 @@ afterwards. All 42 were killed.
   a whitespace-varied lowercase phrase. Both were defused, and each real marker appears
   exactly once, in order: recall, block, framing.
 - The core diff was read in full.
+
+## Group 8: digest and recurrence
+
+The renderer is `henk/agent/digest.py`. `_untrusted_block` and `_recurrence_note` in
+`triage.py` changed, and the core reads the digest in `_process_event`. The runtime
+hands the core `stores.handoffs`, the same instance `publish_handoff` writes. The suite
+moved from 2970 to 3029 passed (1 skipped). `tests/test_triage_framing.py` is
+unmodified.
+
+**Decisions.**
+- **A read failure records `prior_handoff_ids = []`, not null.**
+  - The audit-log delta reserves null for records that are not event triages, and a
+    failed read really did show nothing.
+  - The failure is logged at error level with no content.
+  - The recurrence note says the reference "could not be read from the local handoff
+    archive".
+  - `read_digest` never raises: ranking, rendering and malformed rows are all inside the
+    catch.
+  - With no archive wired, the record is also `[]`. Continuation and owner records stay
+    null.
+- **The fill is greedy with skip-and-continue.** An entry that does not fit is dropped
+  whole, and a later, smaller one may take its place. Shown entries stay in rank order.
+- **The omission budget is two-pass.** Room for the omission marker is reserved only when
+  something is omitted, so entries that fit are never dropped. Every rendered character
+  counts toward the 6,000: the header, the entry headers, the excerpts and the markers.
+- **An extra module constant beyond D9:** the entry header's identity list is neutralised
+  and cut at 240 characters. The keys are derived from payloads and could otherwise spend
+  the budget.
+- **Excerpts are neutralised before the cut**, so the bounds count what is rendered.
+- **Recurrence.**
+  - The first recurrence ref that resolves, in item order, is the reference entry, bounded
+    at 4,000.
+  - Each ref's state comes from what was actually rendered: reference, shown, omitted, not
+    retained, or unreadable.
+  - "Build on that handoff" appears only when a reference or shown entry exists.
+  - The lookup goes through `find_by_message_ref` on the persistent store, using the ref
+    `EventPipeline.rehydrate` rebuilds from the audit log. That is what makes it survive a
+    restart.
+- **The note says "prior-handoffs digest", never the header phrase**, so the header
+  appears exactly once.
+- **Owner exclusion.** Only `_process_event` calls `read_digest`. The *No tool exposes the
+  archive* test runs against the real production registry with every optional tool on.
+
+**Accepted and not built:** an unrelated handoff whose ref resolved but which is not the
+reference is ranked out and reported as omitted. This only happens in a storm whose refs
+point at other identities.
+
+**Review gate (orchestrator).**
+- The suite was re-run: 3029 passed.
+- A digest was rendered from a real temp `HandoffStore` with four retained handoffs:
+  - the same identity, with a forged `END UNTRUSTED SENSOR DATA` line and an injected
+    "store a memory" instruction;
+  - the same rule on another host;
+  - the same node, with a different rule;
+  - an unrelated rp5 handoff.
+- The ranking came out identity, then rule, then node. rp5 was excluded, the forged
+  marker was defused, the header appeared once, and `shown_ids` was `(1, 2, 4)`.
+- The recurrence note was probed for a retained ref, a missing ref and no ref. All three
+  match `specs/incident-triage/spec.md:31-37`.
+- **Observation for 12a grading, not changed:** when the ref is not retained but a
+  same-identity handoff is shown by relation, the note still says "Do not assume what the
+  earlier triage found; gather the evidence this triage needs". This is safe and follows
+  the spec, but it sits beside a visible earlier triage. Watch for it in replay grades.
+
+**Mutation table.** 61 mutants were run with `python -B`, each file md5-restored and
+verified. All 61 were killed.
+- Three first survived. All three were real gaps in "every rendered character counts",
+  and are now closed:
+  - M14: the header was not counted;
+  - M15: only the excerpts were counted;
+  - M16: no reserve was kept for the omission marker.
+- M20's first version was a faulty mutant and was rewritten.
+- The families covered:
+  - tiers and dedupe (M1-M9);
+  - the four bounds and the fill (M10-M23, M59-M60);
+  - neutralisation (M24-M26);
+  - labels and position (M27-M36);
+  - `prior_handoff_ids` (M37-M42);
+  - recurrence lookup, restart, ref states and the note (M43-M54);
+  - owner exclusion and tool exposure (M55-M58);
+  - catch width (M61).
+
+**Tests modified:** none. Group 7's order test was kept as it is, and a new order test
+with the digest was added (`tests/test_handoff_digest.py:489`).
+
+**Seams.**
+- Group 9: `_process_event` gained one block before the `try` (`core.py:384-394`). The
+  ending classifier, the send and `self._factory.create()` are untouched.
+- Group 10: record `content` right after composition. `digest.shown_ids` is on the acc.

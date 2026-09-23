@@ -385,7 +385,7 @@ The capture is persisted only on rp5's audit volume.
 
 ## 8. Digest and recurrence (triage-handoff, incident-triage)
 
-- [ ] 8.1 Tests first:
+- [x] 8.1 Tests first:
   - *A same-identity handoff is shown without a recurrence*;
   - *Same rule, different subject relates*;
   - *Ranking and bounds hold*;
@@ -393,15 +393,15 @@ The capture is persisted only on rp5's audit volume.
   - *The digest is labelled and delimited as untrusted*;
   - *No related history means no digest*;
   - *The record names what history was shown*.
-- [ ] 8.2 Tests first, *A retained handoff cannot close the block early*.
-- [ ] 8.3 Tests first:
+- [x] 8.2 Tests first, *A retained handoff cannot close the block early*.
+- [x] 8.3 Tests first:
   - *Recurrence of a recently triaged incident*;
   - *Recurrence whose prior handoff is not retained*;
   - *Recurrence framing survives a restart*.
-- [ ] 8.4 Tests first:
+- [x] 8.4 Tests first:
   - *Owner sessions never see handoff history*;
   - *No tool exposes the archive*.
-- [ ] 8.5 Implement the digest renderer (with the constants), the recurrence reference and
+- [x] 8.5 Implement the digest renderer (with the constants), the recurrence reference and
   note, and `prior_handoff_ids` on the record.
 
 ## 9. Triage profile and ending classifier (agent-core, incident-triage)
