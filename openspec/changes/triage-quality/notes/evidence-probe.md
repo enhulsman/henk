@@ -578,3 +578,23 @@ still not parsed by `_internal/message_parser.py`.
 **Tests.** With 0.2.157 importable, the full suite passed 2494 with 0 skipped. The
 previously skipped SDK field-name test (`tests/test_config_reasoning.py:88`) runs and
 passes. The live `create()` path is `pragma: no cover` and is verified at deploy.
+
+## 1.3: closed after the SDK bump (owner, 2026-09-23)
+
+`61b38c7` was deployed to rp5: pulled with the config stash re-applied (the only config
+difference is the two added `effort`/`thinking` lines), then rebuilt and restarted. Henk
+stayed up, the logs show no error, and a Signal smoke question answered with tool data.
+
+The paired probe ran in a `compose run --rm --no-deps` container with the deployed
+credential, printing `sdk 0.2.157 cli 2.1.277`:
+- `claude-sonnet-5`: model `claude-sonnet-5`, `is_error=False`, `terminal_reason=completed`;
+- `claude-fable-5-1`: model `claude-fable-5-1`, `is_error=False`, `terminal_reason=completed`,
+  no exception.
+
+**1.3 verdict: yes.** The deployed credential can use `claude-fable-5-1`, and D15's judge
+default stands. Group 12a is unblocked on the model side.
+
+Also observed in the smoke answer, on the pre-change renderers: load was reported as
+"currently 4.55" beside a 6h trend that "peaked at 4.18". The instant health reading and
+the trend summary come from different moments with no times attached. That is the D1
+defect class, which group 3 fixes once deployed.

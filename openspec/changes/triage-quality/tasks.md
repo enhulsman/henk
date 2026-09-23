@@ -72,7 +72,7 @@
   - the dropped `stop_details` (`_internal/message_parser.py:199,300`).
 
   This is a source read, with no model call.
-- [ ] 1.3 **Owner:** in a `compose run` container on rp5, run one zero-tool session
+- [x] 1.3 **Owner:** in a `compose run` container on rp5, run one zero-tool session
   confirming that `claude-fable-5-1` is available to the credential. Record yes/no and the
   error class.
 - [x] 1.4 From rp5's audit log, count event-triage records per day (counts only). Confirm
