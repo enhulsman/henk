@@ -564,7 +564,7 @@ The capture is persisted only on rp5's audit volume.
   reference comes from an owner-written file.
 
   Treat a mismatch in `max_points` or step against the current configuration as drift.
-- [ ] 12.6 **Owner, on rp5:**
+- [x] 12.6 **Owner, on rp5:**
   - `triage-cases/` and the capture are already owned by `10001:10001` (task 1b.5). `sudo`
     copy `2026-09-23-raw/` to a directory owned by `10001:10001` (the henk uid,
     `Dockerfile:31,46`), mode 700, leaving the root-owned original untouched;
@@ -577,6 +577,24 @@ The capture is persisted only on rp5's audit volume.
     group 12a.
 
   This is the first graded case. It stays on rp5.
+
+  2026-09-25: done. The first `rebuild` refused on the handoff id (fixed in `1336669`, see
+  `notes/apply-decisions.md`). After the redeploy, `rebuild` wrote the three cases with
+  drift 0, and `cases` listed exactly them. Replays on the chat profile (claude-sonnet-5,
+  effort high, thinking adaptive), graded by claude-fable-5-1 at high on rubric v1:
+
+  | Case | Replay | Original |
+  |---|---|---|
+  | T062958Z | 12/15 (evidence 2, branch 3, calibration 3, fix 1, honesty 3) | 5/15 |
+  | T063012Z | 10/15 (2, 2, 2, 1, 3) | 5/15 |
+  | T063026Z | 7/15 (1, 1, 2, 0, 3) | 6/15 |
+
+  The original scored 5, 5 and 6 across three blind grades in randomised order, so the judge
+  is consistent on a fixed candidate. The best replay named `apt-daily-upgrade.service`
+  and the `dmesg.service` spike as the likely trigger. No replay reached the mechanism or
+  the applied fix, because Henk has no journal access. The replays' 12, 10 and 7 spread is as
+  wide as the gain over the original, so this is directional evidence from one incident,
+  not a measurement.
 
 ## 13. Deploy, live checks, close-out
 
@@ -597,7 +615,7 @@ The capture is persisted only on rp5's audit volume.
   rp5 and the vps and reported rp2 unavailable; `memory_movers` queried host
   `system.slice` units and containers; `host_service_state` queried the vps and returned
   the whole-query Unavailable for rp5 and rp2 without a Prometheus call.
-- [ ] 13.3 During one `compose run` replay with live Henk up, `docker inspect` the run
+- [x] 13.3 During one `compose run` replay with live Henk up, `docker inspect` the run
   container:
   - confirm `HostConfig.Memory` is 768m (805306368);
   - confirm `HostConfig.RestartPolicy` is empty or `no`, because compose's handling of
@@ -605,6 +623,11 @@ The capture is persisted only on rp5's audit volume.
   - confirm its `CLAUDE_CONFIG_DIR` differs from the live container's.
 
   Record rp5's host memory peak during the run.
+  2026-09-25, run `20260925T183829Z-4924dcc9` of `2026-09-23-swap-T062958Z` (18:37:14 to
+  18:38:29 UTC): `HostConfig.Memory` 805306368; `RestartPolicy` `{"Name":"no"}`; the run
+  container's `CLAUDE_CONFIG_DIR` is `/tmp/henk-replay`, and live `henk-henk-1` sets none.
+  rp5 host memory in use peaked at 4894 MiB of 7.87 GiB (18:38:30), from 4632 MiB; the run
+  container's working set peaked at 237 MiB. Swap use held at about 3.4 GiB of 40 GiB.
 - [ ] 13.4 On the next real triage, confirm:
   - a recording exists;
   - the audit record is v5, with `profile: event` and the matching `recording_id`;
