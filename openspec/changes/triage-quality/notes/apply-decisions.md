@@ -1191,3 +1191,22 @@ prints `(model, None)`, because the effort is unknown.
 - The rp5 paths in the owner sequence were checked against memory: the checkout is
   `/home/pi/Coding/henk`, and the volume is `henk_henk_audit`.
 - The suite was re-run after integration: 3475 passed.
+
+## 12.6 on rp5: the first real rebuild found a fixture-shape defect (2026-09-25)
+
+The first `rebuild` against the preserved 2026-09-23 material refused with
+`the handoffs cache holds no message handoff published (id: …)`. A real audit record's
+`handoff_message_id` carries the `publish_handoff` tool's whole result string, as
+`henk/store/handoffs.py:43-45` already documents. `rebuild` looked the raw field up, and the
+committed fixture held a bare id, so the suite could not see it.
+
+**Fix.** The fixture's audit record now holds the real form in both `result_id` and
+`handoff_message_id`. `rebuild` parses the field with `parse_handoff_message_id` for the
+lookup, and it stores the bare id in the case's `original_candidate.handoff_message_id`.
+There are two new tests: a bare id is still accepted, and a refusal names the bare id.
+Mutation check: reverting the lookup parse fails 29 tests, and reverting the stored parse
+fails 1. The suite went from 3475 to 3477 passed.
+
+**Lesson.** A fixture written from the schema, not from a real record, has the schema's
+shape and not the data's. Here the v4 schema describes `result_id` as "the tool's returned
+identifier", but the value it actually holds is the result text.

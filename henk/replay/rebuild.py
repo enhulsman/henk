@@ -81,6 +81,7 @@ from henk.replay.recorder import (
     list_cases,
 )
 from henk.replay.run import ReplayRefused
+from henk.store.handoffs import parse_handoff_message_id
 from henk.tools.notify import AI_LABEL
 
 #: What every rebuilt case grades (design D15, "Stated plainly").
@@ -222,7 +223,8 @@ def _original_document(triage: Mapping[str, Any], inputs: RebuildInputs) -> str 
         except (OSError, UnicodeDecodeError) as exc:
             raise RebuildRefused(f"the handoff document {inputs.handoff_document} cannot "
                                  f"be read ({type(exc).__name__})") from None
-    handoff_id = triage.get("handoff_message_id")
+    # The record carries the tool's whole result string, not the bare id.
+    handoff_id = parse_handoff_message_id(triage.get("handoff_message_id"))
     if not handoff_id:
         return None  # the triage published no handoff; there is nothing to find
     if inputs.handoffs is None:
@@ -429,7 +431,7 @@ def plan_rebuild(config: Any, inputs: RebuildInputs, *,
                                          digest=None)
     max_points = config.homelab_query.query_range_max_points
     original = {
-        "handoff_message_id": triage.get("handoff_message_id"),
+        "handoff_message_id": parse_handoff_message_id(triage.get("handoff_message_id")),
         "handoff_document": document,
         "diagnosis": triage.get("diagnosis"),
         "confidence": triage.get("confidence"),

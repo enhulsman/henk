@@ -47,6 +47,7 @@ from henk.replay.case import (
     capture_drift,
     load_case,
 )
+from henk.store.handoffs import format_handoff_result
 from henk.replay.recorder import (
     MAX_REFERENCE_CASES,
     RECORDING_SCHEMA_PATH,
@@ -309,6 +310,9 @@ def test_the_original_calls_are_the_audit_names_with_arguments_unknown(env):
 def test_the_original_candidate_is_the_handoff_plus_the_audit_diagnosis(env):
     _rebuild(env)
     triage = next(r for r in _jsonl(fx.AUDIT_FILE) if r.get("trigger") == "event")
+    # A real record carries the tool's whole result string, not the bare id
+    # (henk/store/handoffs.py:43-45); the 2026-09-23 rebuild on rp5 refused on it.
+    assert triage["handoff_message_id"] == format_handoff_result(fx.HANDOFF_ID)
     frame = next(r for r in _jsonl(fx.HANDOFFS_FILE) if r["id"] == fx.HANDOFF_ID)
     for case_id in fx.CASE_IDS:
         original = _case(env, case_id)["original_candidate"]
@@ -540,6 +544,30 @@ def test_a_rebuild_that_reaches_the_bound_exactly_is_written(env):
     code, _, err = _rebuild(env)
     assert code == 0, err
     assert len(_cases_written(env)) == MAX_REFERENCE_CASES
+
+
+def test_a_bare_handoff_id_in_the_record_is_accepted_too(env):
+    audit = _inputs(env) / fx.AUDIT_FILE.name
+    rows = _jsonl(audit)
+    for row in rows:
+        if row.get("trigger") == "event":
+            row["handoff_message_id"] = fx.HANDOFF_ID
+    _write_jsonl(audit, rows)
+    code, _, err = _rebuild(env)
+    assert code == 0, err
+    original = _case(env, fx.CASE_IDS[0])["original_candidate"]
+    assert original["handoff_message_id"] == fx.HANDOFF_ID
+    assert original["handoff_document"]
+
+
+def test_a_handoff_missing_from_the_cache_is_refused_naming_the_bare_id(env):
+    handoffs = _inputs(env) / fx.HANDOFFS_FILE.name
+    _write_jsonl(handoffs, [r for r in _jsonl(handoffs) if r["id"] != fx.HANDOFF_ID])
+    code, _, err = _rebuild(env)
+    assert code == 2
+    assert f"holds no message {fx.HANDOFF_ID}" in err
+    assert "handoff published" not in err
+    assert _cases_written(env) == []
 
 
 # --- Selecting the triage -----------------------------------------------------------
