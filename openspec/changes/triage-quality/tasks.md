@@ -580,12 +580,23 @@ The capture is persisted only on rp5's audit volume.
 
 ## 13. Deploy, live checks, close-out
 
-- [ ] 13.1 Full suite green. Record the pass count against the pre-change baseline.
-- [ ] 13.2 Deploy to rp5 with no `config.yaml` edit. Confirm:
+- [x] 13.1 Full suite green. Record the pass count against the pre-change baseline.
+  2026-09-25: 3475 passed, 3 skipped at `11c783f`, against 2493 passed, 1 skipped at
+  `61b38c7` (+982). The 3 local skips are SDK-gated and passed inside the deployed
+  image (3 passed, 0 skipped).
+- [x] 13.2 Deploy to rp5 with no `config.yaml` edit. Confirm:
   - the container starts;
   - the `handoffs` table exists;
   - `docker compose run --rm --no-deps … henk python -m henk.replay list` runs from the
     checkout directory.
+  2026-09-25: image `510eadae`, henk `Started`, one start line and no errors;
+  tables `handoffs, inbox, memories, reminders`; `replay list` exits silently with no
+  recordings yet. rp5's `config.yaml` stayed byte-identical to the pre-deploy copy (the
+  stash pop conflicted on structure, not values; all 23 keys it omits have code defaults
+  equal to the repo values). Over Signal: `container_state` queried swap and restarts on
+  rp5 and the vps and reported rp2 unavailable; `memory_movers` queried host
+  `system.slice` units and containers; `host_service_state` queried the vps and returned
+  the whole-query Unavailable for rp5 and rp2 without a Prometheus call.
 - [ ] 13.3 During one `compose run` replay with live Henk up, `docker inspect` the run
   container:
   - confirm `HostConfig.Memory` is 768m (805306368);
