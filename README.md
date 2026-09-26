@@ -208,6 +208,18 @@ existing `henk_audit` volume (already in the rp5 backup allowlist).
   null for the CLI default), `agent.thinking` (`adaptive` or `disabled`),
   `agent.idle_timeout_seconds` (3600),
   `agent.approval_timeout_seconds` (300), `agent.system_prompt`.
+- `agent.event_model` / `agent.event_effort` / `agent.event_thinking` (triage-quality) —
+  the **triage profile** for sessions started by an event turn. Each absent key takes the
+  chat value above, so shipping them absent (the repo default) changes nothing. An
+  explicit null on `event_effort` or `event_thinking` defers to the CLI, which is not
+  the same as absent; a null `event_model` is refused. Opus 5.5 rejects disabled
+  thinking, which is why `event_thinking` exists.
+- `triage_recording.enabled` (true) — the **rollback flag** for triage recording. It is
+  the only key: the directory derives from `audit.path`, and the bounds are code
+  constants. Any other key under it is refused at startup.
+- `replay.judge_model` (`claude-fable-5-1`) / `replay.judge_effort` (`high`) — the replay
+  judge, used only by the owner-run `python -m henk.replay grade`, never by the live
+  process. A null `judge_effort` is refused.
 - `endpoints.{gatus,prometheus,todo,ntfy}` base URLs + timeouts; `ntfy.topic`.
   (`endpoints.taiga` is retained but unused in v1.)
 - `personal_data.todo_note_allowlist` — **default-deny** list of note-path prefixes
@@ -229,7 +241,9 @@ existing `henk_audit` volume (already in the rp5 backup allowlist).
   recreation), `memory_pinned_cap` (50), `memory_agent_cap` (20),
   `fact_length_limit` (500), `recall_render_limit` (8000 chars ≈ 2k tokens — when
   it bites, the oldest facts are left out of the *render* with a count and nothing
-  is deleted), `inbox_page_size` (20).
+  is deleted), `inbox_page_size` (20). The same file holds the **handoff archive**
+  (triage-quality), which feeds the related-handoff digest: at most 500 handoffs, 90 days
+  and 32 KB each, all code constants.
 - `homelab_query.*` (read-depth) — `enabled` (**defaults to true**; the tool rides the
   same `tag:henk` egress as `homelab_health` and needs nothing provisioned) and
   `query_range_max_points` (60). It reuses `endpoints.gatus` / `endpoints.prometheus`
@@ -396,6 +410,14 @@ mutating tools are denied by the same gate as live. No tool can make a network
 request, and nothing reaches Signal, ntfy, the audit log or the store. The model call
 is the only request a replay makes, and it spends real tokens, so only the owner runs
 it.
+
+**Storage and retention.** Recordings are bounded in code at 200 files, 30 days and
+256 KB each. A recording's replay and grade outputs (`triage-replays/<id>/`) are removed
+along with it, while a reference case's outputs stay with the case. Everything lives on
+the `henk_henk_audit` volume and rides its nightly backup, so the effective retention is
+up to about 8 weeks: 30 days live, plus the 4-week snapshot rotation. Recordings hold what
+the model saw, tool results with tailnet addresses and recalled memory included. Treat
+them like the audit log, and never paste one raw.
 
 Run it on rp5 as a one-shot container of the henk service, **from the henk checkout
 directory**:

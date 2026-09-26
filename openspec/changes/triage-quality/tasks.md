@@ -639,7 +639,7 @@ The capture is persisted only on rp5's audit volume.
     available" on rp2;
   - `memory_movers` names host units;
   - `host_service_state` answers on the vps and reports "not available" on rp5 and rp2.
-- [ ] 13.5 Record these homelab follow-ups in `~/.claude-config/docs/tooling-backlog.md`:
+- [x] 13.5 Record these homelab follow-ups in `~/.claude-config/docs/tooling-backlog.md`:
   - `HenkContainerRestarting`, using the measured `resets()` expression;
   - enabling the systemd collector on rp5 and rp2;
   - `--collector.systemd.enable-restarts-metrics` on the vps, plus its node_exporter
@@ -647,12 +647,21 @@ The capture is persisted only on rp5's audit volume.
   - an owner-side purge command for the `handoffs` table (D7 residual 2).
 
   Record the Opus comparison as the owner's next step.
-- [ ] 13.6 Add a row to `operations/backup-recovery.md` via `/docs-update`:
+  2026-09-25: done, in the section "Henk `triage-quality` homelab follow-ups" of
+  `tooling-backlog.md`. It also covers Dawarich alert routing to `henk-events`. The vps
+  `unbound-resolvconf` mask was already recorded in `devices/vps.md`. Henk-side
+  carry-forwards are in `notes/apply-decisions.md`, under "Close-out carry-forwards".
+- [x] 13.6 Add a row to `operations/backup-recovery.md` via `/docs-update`:
   - `triage-recordings/` and `triage-replays/` on `henk_henk_audit`;
   - the archive inside `henk-store.db`;
   - effective retention: 30 days live plus the 4-week snapshot rotation.
 
   Present the doc diff before any commit. Update the README.
+  2026-09-26: done. `backup-recovery.md` gained three Pi5 rows (the handoff archive, the
+  recordings and replays, and the reference cases), and `devices/pi5.md`'s `BACKUP_VOLUMES`
+  note lists the new contents. The owner approved the diff. The README documents the
+  triage profile, `triage_recording` and `replay.*` keys, the handoff archive, and replay
+  storage and retention.
 - [ ] 13.7 Run `openspec validate triage-quality --strict`, then archive. After archiving:
   - update every test that reads this change's `notes/` by path (task 3.8's
     `evidence-probe.md` reader), from `openspec/changes/triage-quality/` to

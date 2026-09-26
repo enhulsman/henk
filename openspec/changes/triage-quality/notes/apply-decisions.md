@@ -1210,3 +1210,25 @@ fails 1. The suite went from 3475 to 3477 passed.
 **Lesson.** A fixture written from the schema, not from a real record, has the schema's
 shape and not the data's. Here the v4 schema describes `result_id` as "the tool's returned
 identifier", but the value it actually holds is the result text.
+
+## Close-out carry-forwards (2026-09-25)
+
+These are Henk-code candidates for later changes. The homelab items are in
+`~/.claude-config/docs/tooling-backlog.md`, in the "Henk `triage-quality` homelab
+follow-ups" section (task 13.5).
+
+- **Victim-versus-culprit framing.** The weakest replay (`2026-09-23-swap-T063026Z`, 7/15)
+  blamed the Taiga stack: its diagnosis read "driven most likely by the taiga docker
+  stack", and its fix was to restart and re-tune `taiga-back-1`/`taiga-async-1`. Taiga's
+  idle pages were the ones swapped *out*, which makes Taiga the victim. Per-container swap
+  shows who holds swapped pages, not who caused the pressure. The 12/15 run looked past
+  this to the `dmesg.service` mover. A candidate renderer or framing hint: swap held by a
+  container marks a victim, and the cause is looked for among the working-set movers in
+  the window before the swap-out. The evidence is one run, so this is a hypothesis for the
+  next graded case to test.
+- **Owner turns are not classified** (group 9). An owner reply can still deliver
+  "API Error" text.
+- **`replay` warns on unreadable siblings in `triage-cases/`.** The root-owned
+  `2026-09-23-raw/` triggers a PermissionError warning on every command. This is harmless,
+  and moving the directory out of `triage-cases/` silences it.
+- **`grade` prints `(model, None)`** for a rebuilt original. This is known and cosmetic.
