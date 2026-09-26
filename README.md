@@ -91,6 +91,11 @@ conversation) → SDK turn. Tool calls pass through the **default-deny permissio
 callback**; reads/notify run, mutations hit the gate. Only the final text reply
 is sent back.
 
+With `signal.acknowledge_owner` on (the default), the owner sees each message marked
+**read** once it passes the allowlist, and "typing" for as long as an agent turn runs;
+typing pauses while Henk waits on an approval, and commands and event triage show none.
+Strangers and group messages get nothing more than before: no receipt, no typing, no reply.
+
 ### Event flow (v1.2)
 
 ```mermaid
@@ -203,7 +208,18 @@ existing `henk_audit` volume (already in the rp5 backup allowlist).
 **`config.yaml`** (non-secret; see the checked-in sample):
 
 - `owner.id` — the owner identity as Signal reports it (see the deploy-verify note below).
-- `signal.bridge_url` / `signal.account` / `signal.safe_length`.
+- `signal.bridge_url` / `signal.account` / `signal.safe_length` /
+  `signal.send_timeout_seconds` (10.0, applied in full to each HTTP transport phase of a
+  bridge request) / `signal.open_timeout_seconds` (30.0, the receive websocket connect).
+- `signal.acknowledge_owner` (owner-acknowledgement; default **true**) — send the owner a
+  read receipt for every message that passes the allowlist, and a "typing" indicator while
+  an owner agent turn runs. `false` is the rollback and sends neither. rp5's locally
+  modified `config.yaml` does not carry this key, so a deploy turns acknowledgement **on**
+  with no edit. Must be an unquoted boolean; `"false"`, `1` or a blank value is refused.
+- `signal.acknowledge_timeout_seconds` (5.0) — a whole-operation bound on each
+  acknowledgement (a receipt, each indicator start or refresh, and the indicator's close),
+  enforced by cancelling it. Not a phase timeout and unrelated to `send_timeout_seconds`.
+  Must be positive and at most 7.0, the indicator's refresh interval.
 - `agent.model` (default `claude-sonnet-5`), `agent.effort` (`high`; `low`–`max`, or
   null for the CLI default), `agent.thinking` (`adaptive` or `disabled`),
   `agent.idle_timeout_seconds` (3600),
@@ -640,6 +656,8 @@ Set `signal.account` in `config.yaml` to `<NUMBER>`.
 - [ ] **Owner identity** — send a DM from the owner and confirm Henk replies. If
   it's silent, `owner.id` doesn't match the field Signal reports (UUID vs number,
   see `signal.py` DEPLOY-VERIFY). Fix `owner.id`; **do not** loosen the match.
+  With owner acknowledgement on, a delivered-but-never-read DM means the allowlist dropped
+  it, or the receipt failed; the log says which.
 - [ ] **Stranger silence** — a non-owner DM gets no reply (log shows the drop).
 - [ ] **Group ignored** — a group message (even containing the owner) is dropped.
 - [ ] **Closed toolset** — confirm a built-in (e.g. asking Henk to "run a shell
@@ -690,6 +708,30 @@ Set `signal.account` in `config.yaml` to `<NUMBER>`.
 - [ ] **No new surface** — checkpoint file is `intake-offset` on the existing
   `henk_audit` volume; ACL/ports/volumes audit shows no change vs v1.2.
 
+### Deploy-verify checklist (owner acknowledgement — deploy day)
+
+Full commands are in `openspec/changes/owner-acknowledgement/tasks.md` group 12
+(archived under `openspec/changes/archive/` once closed).
+
+- [ ] **Effective values before restart** — the loader one-liner against the live
+  `config.yaml` prints `True 5.0 10.0`, and `grep acknowledge` on that file prints nothing.
+- [ ] **No daemon auto-receipts** — the signal-cli daemon's command line has no
+  `--send-read-receipts`, and no container environment variable enables it.
+- [ ] **Bridge version recorded** — the image digest and `/v1/about`.
+- [ ] **Owner client settings** — *Read receipts* and *Typing indicators* are both on in
+  the owner's Signal/Molly client; with either off, nothing below can be read.
+- [ ] **Owner DM** — shows **read** within about a second and "typing" until the reply; a
+  tool-heavy question over 15 s keeps "typing" up throughout; `/memories` shows no typing;
+  the log grep for `acknowledg|typing|receipt` prints nothing.
+- [ ] **Stranger** — a DM from a third account may show *delivered*, never *read* or
+  "typing", and gets no reply; the drop is logged.
+- [ ] **Overlap** — a long multi-chunk reply arrives in order, with no failure banner and
+  no acknowledgement or send-failure line in the log.
+- [ ] **Approval pause** (optional) — "typing" is not shown while an approval prompt waits
+  and resumes after `yes`.
+- [ ] **Shutdown** — a restart mid-turn stops within the grace period (no `Exited 137`); any
+  lingering "typing" clears on the phone within about 15 s.
+
 ## Rollback
 
 ```bash
@@ -704,6 +746,17 @@ docker compose down          # stop the stack
 forward-compatible: reverting to the prior image only over-replays within the
 retention window, which cooldown absorbs, and v1 readers still validate old
 records.
+
+**Owner-acknowledgement rollback:** add `acknowledge_owner: false` under `signal:` in
+rp5's `config.yaml`, using the backup-first recipe in *Redeploying an existing install*.
+**Then check it took** before restarting, because the `signal:` section does not reject
+unknown keys and a misspelt key is silently ignored, leaving acknowledgement on:
+
+```bash
+docker compose -p henk -f /home/pi/Coding/henk/docker-compose.yml run --rm --no-deps henk python -c 'from henk.config import Config; print(Config.load("/app/config.yaml").signal.acknowledge_owner)'
+```
+
+Expect `False`, then `up -d henk`. Nothing is stored, so there is nothing to unwind.
 
 Rolling back leaves no residue beyond the named volumes; the ntfy grants and
 Tailscale node can be removed from their respective admin surfaces.
