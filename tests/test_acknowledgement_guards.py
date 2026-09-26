@@ -43,9 +43,18 @@ from henk.channel.allowlist import AllowlistFilter
 from henk.channel.base import split_message
 from henk.channel.signal import TYPING_REFRESH_SECONDS, SignalAdapter
 from henk.config import StoreConfig
+from henk.events.coordinator import EventCoordinator
+from henk.events.intake import EventIntake
+from henk.events.pipeline import EventPipeline, PipelineConfig
+from henk.events.types import Event
 from henk.gate.approval import ApprovalGate
 from henk.store import build_stores
-from tests.conftest import FakeBridge, FakeSessionFactory
+from tests.conftest import (
+    TRIAGE_REPLY,
+    EventSessionFactory,
+    FakeBridge,
+    FakeSessionFactory,
+)
 from tests.test_app import ACCOUNT, STRANGER, _cancel, _until
 
 OWNER = "+31600000000"
@@ -353,3 +362,99 @@ async def test_acknowledgements_are_not_messages(tmp_path: Path):
     assert disabled.receipts == []
     assert disabled.typing == []
     assert disabled.ack_attempts == []
+
+
+# --- triage-working-indicator 2.1: the alert cap decides the indicator -------
+
+
+class _SequencedBridge(FakeBridge):
+    """A held-open ``FakeBridge`` that also records every completed send and typing
+    request in one ordered list, so "the stop came after the triage's send" is a
+    list-order assertion."""
+
+    def __init__(self) -> None:
+        super().__init__(hold_open=True)
+        self.sequence: list[tuple[str, str]] = []
+
+    async def send(self, recipient: str, text: str) -> None:
+        await super().send(recipient, text)
+        self.sequence.append(("send", recipient))
+
+    async def start_typing(self, recipient: str) -> None:
+        await super().start_typing(recipient)
+        self.sequence.append(("start", recipient))
+
+    async def stop_typing(self, recipient: str) -> None:
+        await super().stop_typing(recipient)
+        self.sequence.append(("stop", recipient))
+
+
+def _alert(event_id: str, title: str) -> Event:
+    return Event(id=event_id, title=title, message="triggered", arrival_time=0.0)
+
+
+def _session_records(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    return [r for r in records if r.get("record_type") == "session"]
+
+
+async def test_the_alert_cap_decides_which_triage_shows_the_indicator(tmp_path: Path):
+    # Scenarios (channel-adapter): A triage the owner will receive shows the
+    # indicator; A triage the owner will not receive shows nothing. The real cap
+    # (cap_per_24h=1) decides, through EventCoordinator.dispatch_batch, and the
+    # real core worker runs both triages over a real SignalAdapter + FakeBridge.
+    bridge = _SequencedBridge()
+    adapter = SignalAdapter(bridge, account=ACCOUNT, owner=OWNER, safe_length=SAFE_LENGTH)
+    audit_path = tmp_path / "audit" / "audit.jsonl"
+    audit = AuditLog(audit_path)
+    gate = ApprovalGate(adapter, timeout_seconds=5)
+    acknowledgement = OwnerAcknowledgement(
+        adapter,
+        timeout=ACK_TIMEOUT,
+        refresh_seconds=TYPING_REFRESH_SECONDS,
+        paused=gate.has_pending,
+    )
+    factory = EventSessionFactory()
+    core = AgentCore(
+        factory, adapter, audit=audit, gate=gate, working_indicator=acknowledgement.working
+    )
+    coordinator = EventCoordinator(
+        EventIntake.__new__(EventIntake),  # intake unused by dispatch_batch
+        EventPipeline(PipelineConfig(cap_per_24h=1)),
+        core,
+        audit=audit,
+    )
+
+    async def drive() -> None:
+        worker = asyncio.create_task(core.run())
+        try:
+            await coordinator.dispatch_batch([_alert("e1", "Gatus: svc/api")], now=0.0)
+            await coordinator.dispatch_batch([_alert("e2", "Gatus: svc/db")], now=60.0)
+            await _until(lambda: len(_session_records(audit_path)) == 2)
+            for _ in range(50):  # a stray request after the second triage would land
+                await asyncio.sleep(0)
+        finally:
+            await _cancel(worker)
+
+    await asyncio.wait_for(drive(), DRIVE_BOUND)
+    await core.aclose()
+
+    first, second = _session_records(audit_path)
+    assert first["announceable"] is True
+    assert second["announceable"] is False  # held back by the cap, still recorded
+    assert len(factory.created) == 2  # both triages ran
+    chunks = split_message(TRIAGE_REPLY, SAFE_LENGTH)
+    assert len(chunks) > 1, "the triage must span several chunks"
+    assert bridge.sends == [(OWNER, c) for c in chunks]  # the first triage alone
+    # Exactly one start...stop span, all owner-addressed.
+    assert bridge.typing == [("start", OWNER), ("stop", OWNER)]
+    assert {recipient for _, recipient in bridge.ack_attempts} == {OWNER}
+    # The span closes after the first triage's last chunk, and nothing follows it:
+    # no send and no typing request for the cap-suppressed triage.
+    kinds = [kind for kind, _ in bridge.sequence]
+    last_send = max(i for i, kind in enumerate(kinds) if kind == "send")
+    assert kinds.index("start") < kinds.index("stop")
+    assert kinds.index("stop") > last_send
+    assert kinds[-1] == "stop"
