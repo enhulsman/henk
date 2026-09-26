@@ -42,7 +42,9 @@ None. This change amends existing capabilities only.
   requirement specifies owner-only acknowledgement of inbound messages; the Signal transport
   gains the receipt and typing endpoints and the opaque channel reference; and the **`Owner-only
   allowlist`** requirement plus the spec `## Purpose` are amended, because both currently state
-  absolutely that a non-owner receives no read receipt.
+  absolutely that a non-owner receives no read receipt. *(Superseded in part, 2026-09-26: only
+  the requirement is amended. The Purpose stays true as written, since only the owner is
+  acknowledged. See design D9.)*
 - `agent-core`: an owner turn is bracketed by the working indicator, started before the turn and
   stopped on every exit path. Command turns and event turns are excluded.
 
@@ -85,12 +87,18 @@ Recorded here so they are not rediscovered. Each was verified against source.
    is the trap (read-depth's §2 tests assert against exactly that). rp5's `config.yaml` is locally modified and will not carry a new key. Pin
    `False` in **both** places and test that a config omitting every new key yields `False`, or the
    staged rollout deploys with acknowledgement already on.
+   *(Superseded in part, 2026-09-26: the owner decided the default is **on**, so pin `True`,
+   not `False`, and there is no staged rollout. The mechanism stands: pin the default in both
+   places, test the absent-keys case through `from_dict`, and add an explicit-`false` test for
+   a builder that never reads the key. See design D8.)*
 3. **`Owner-only allowlist` and the `## Purpose` both state absolutely that a stranger gets no
    read receipt.** Amend both to scope the claim to acknowledgements Henk *originates*. The
    transport-level delivery receipts signal-cli emits in json-rpc mode are a pre-existing accepted
    residual — a registered Signal number reveals a recipient regardless of Henk. Note the receipt
    *types* differ: the residual concerns **delivery** receipts, the baseline enumerates **read**
    receipts, so the contradiction is conditional on the daemon check below.
+   *(Superseded in part, 2026-09-26: the requirement is amended as described, and the Purpose is
+   left as it is, because the daemon check makes it hold. See design D9.)*
 4. **Confirm the signal-cli daemon is not configured to auto-send read receipts.** That would
    acknowledge strangers underneath the application, where no application-level test can observe
    it. `send_read_receipts` is a receive-endpoint query parameter the websocket path does not use —
@@ -100,6 +108,8 @@ Recorded here so they are not rediscovered. Each was verified against source.
    the long tool-using turn the feature exists for, then look dead. Refresh on a cadence below the
    expiry (~8s), cancel the refresh in the same `finally` that sends the stop, and log refresh
    failures **once** per turn rather than per tick.
+   *(Refined, 2026-09-26: the cadence is 7 s, because 2 × 8 s exceeds the 15 s expiry after
+   one lost refresh. One task owns every typing request, including the stop. See design D4.)*
 6. **`_framed_turn` is a *synchronous* `@contextmanager`.** The indicator needs `await` on both
    edges plus a refresh task, so it must be an `@asynccontextmanager`. Cite `_framed_turn` for its
    try/finally *discipline*, not as a shape to copy.
@@ -133,9 +143,12 @@ Recorded here so they are not rediscovered. Each was verified against source.
     whatever form `owner.id` takes (UUID vs E.164) — the adapter already carries a DEPLOY-VERIFY
     note about this for the inbound identity and these endpoints inherit it; a 400 here degrades
     silently into a log line nobody reads. Confirm `sendReceipt` succeeds *at all* against a linked
-    device with the owner as recipient and the owner's own message as target. And **overlap** a
+    device with the owner as recipient and the owner's own message as target.
+    *(Superseded in part, 2026-09-26: Henk runs on a dedicated registered number, not a linked
+    device (README "Signal registration"). The check is against Henk's registered account. See
+    the design's Context.)* And **overlap** a
     multi-chunk send with a typing refresh: this change creates the first concurrent multi-task use
-    of one signal-cli-rest-api instance (receive websocket, send POST, ~8s typing PUT, receipt
+    of one signal-cli-rest-api instance (receive websocket, send POST, ~7s typing PUT, receipt
     POST, all multiplexed over one daemon socket), and per-call verification does not test the only
     mode production runs in.
 13. **`read`, not `viewed`.** `read` is what a chat client sends on seeing a message; `viewed` has
