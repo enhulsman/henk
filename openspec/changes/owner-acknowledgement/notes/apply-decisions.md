@@ -121,3 +121,122 @@ Suite baseline before group 1: 3478 passed, 4 skipped. After groups 1-3: 3550 pa
 
 Each mutant was applied alone to a scratch-backed copy and reverted by copying the backup back.
 A `diff` against the backups confirmed both source files were restored.
+
+## Group 4 — Bounded acknowledgement (`henk/channel/acknowledge.py`)
+
+Suite after group 4: 3574 passed, 4 skipped (3551 + 23 new in `tests/test_acknowledge.py`,
+0.65 s for the file; stable over 15 serial runs and 18 runs six-way parallel).
+
+- **The final stop has no bound of its own; the close's single bound covers it.** D6 lists
+  what is bounded: each start, refresh and pause stop inside the task, and the close as a
+  whole. A second bound on the final stop would add nothing: it starts later than the
+  close's bound, so it can never fire first. It would also create a same-tick race between
+  the two expiries. Each start, refresh, pause stop and resume start is bounded by
+  `asyncio.timeout(timeout)` in `_attempt`.
+- **The log budget is two flags per `working()` entry.** One flag covers the loop line (first
+  start, refreshes, pause stop and resume start share it). The other covers the close line,
+  shared by the task's refused or raising final stop and the close's own expiry or exception.
+  So "at most one more line for the close" is structural, even if both a refused stop and an
+  expiry could happen in one turn.
+- **Paused sets `next_due = math.inf`.** The literal wait formula
+  `max(0, min(PAUSE_POLL_SECONDS, next_due - clock()))` then gives the poll while paused.
+  Without this, a refresh that fell due during the pause would make the wait 0 and the loop
+  would spin. A test asserts every wait during the pause is exactly one poll.
+- **The final stop is sent even when paused.** It is idempotent, and the pause stop may have
+  failed. The pause is read only at wake-ups; the entry start is unconditional (the core queue
+  is serial, so no approval can be pending at entry).
+- **Only `Exception` from the body gets the close (and its stop).** Any other `BaseException`
+  (`CancelledError`, `KeyboardInterrupt`, `SystemExit`) takes the cancellation path: cancel the
+  task, `await asyncio.wait({task})`, send nothing, re-raise. This is the literal reading of
+  "catch `Exception`, never `BaseException`".
+- **A task that dies with an unexpected exception is logged by the close**, which calls
+  `task.exception()` (so there is no "exception never retrieved" warning). The task catches
+  `Exception` around every request, so this is only reachable through a bug, such as a
+  raising `paused` predicate.
+- **`receipt` logs one line for a refused receipt (`False`) too**, not only for an exception or
+  expiry. The line names the reference (D2 allows it) and never any text; the module is never
+  given text. `SignalBridgeError` stops in the adapter and becomes `False`, so a bridge error
+  message (which can carry a URL) never reaches this log.
+- **Log lines are told apart by fixed phrases**: "further start/refresh failures this turn are
+  not logged" (loop), "working indicator close" (close), "owner read receipt" (receipt).
+  Group 8 should know about these phrases.
+- **Test apparatus.** An autouse fixture fails any test that leaves a task running, and
+  cancels the leftovers so one failure cannot cascade. `FakeTime` is one clock plus a sleep
+  that only `step()` releases, so each step is exactly one wake-up of the loop. `sleeping()`
+  marks the moment between wake-ups when a test may change the pause flag or a fault; without
+  it, flipping the flag raced the wake-up it was meant to precede. The one-hung-refresh
+  scenario is modelled by a `ClockedBridge` start that advances the fake clock by T and then
+  blocks until the real 0.05 s bound cancels it. That way the real `asyncio.timeout` does the
+  cutting, and the fake clock records the time the hang consumed.
+- **The "bound exhausted before the stop" test drives a hung refresh plus a hung stop.** The
+  pure case, where an in-flight refresh alone exhausts the close's bound before any stop is
+  issued, is unreachable. The refresh's own bound equals the close's and started earlier, so it
+  always fires first and the stop is issued with a sliver of the bound left. The reachable
+  shape, which the test drives: the refresh times out (the turn's one loop line), the stop
+  hangs, and the close's bound runs out (the one close line). No stop completes, and
+  `__aexit__` returns within the bound.
+- **M19c was applied in-process, not on disk.** A `-p` plugin sets
+  `henk.channel.signal.TYPING_REFRESH_SECONDS = 8.0` before collection, so every importer
+  sees 8.0 exactly as a source edit would. I did not edit `signal.py` because groups 1-3 were
+  being committed concurrently, and a mutant on disk could have been staged.
+
+### asyncio probes (Python 3.12.3, run as code, not read from docs)
+
+| Claim relied on | Result |
+|---|---|
+| `await asyncio.wait({task})` on a cancelled child returns and does not raise the child's `CancelledError` | holds |
+| An outer cancel during `await asyncio.wait({task})` raises `CancelledError` in the awaiting task and does **not** cancel the child | holds (child still running) |
+| `try: await task / except CancelledError: pass` swallows an OUTER cancel, and forwards it into the child | holds, both (this is M17's defect) |
+| Timeout expiry inside `asyncio.timeout`, handler does a second `await asyncio.wait` and re-raises: surfaces as `TimeoutError` at the `async with` | holds |
+| An outer cancel inside `asyncio.timeout` (not expired) propagates as `CancelledError` past `except Exception` | holds |
+| `asyncio.wait` refuses bare coroutines | holds (`TypeError`) |
+| `asyncio.timeout` enter/exit does not yield to the loop (so the entry start is issued in the task's first step) | holds |
+| A task cancelled before its first step is done after `asyncio.wait` | holds |
+
+**A finding the spec should know about (double cancel).** On the cancel path, a **second**
+cancel arriving while the bracket awaits `asyncio.wait({task})` makes the bracket exit
+**before** the cancelled child has finished. `try: await task / except CancelledError: pass`
+followed by the bare `raise` does not have this problem: it waits for the child, and still
+re-raises the original cancellation. That is why M17b (below) survives: it is equivalent under
+every single-cancel test, and it behaves *better* under a double cancel. The spec's "never
+outlives the turn" therefore holds for one cancellation, not for two. The window is the
+child's own cleanup (one loop iteration of `_wake`'s `finally`), so it is harmless at
+shutdown. The implementation follows the task's literal "`asyncio.wait({task})`". If this
+ever matters, the fix is to repeat `asyncio.wait({task})` until `task.done()` and then
+re-raise. Not changed here.
+
+**A second observation (the close's bound and an in-flight refresh).** A refresh issued just
+before the close that runs to its own bound uses up almost all of the close's single bound.
+The stop is then issued with milliseconds left. On a healthy stop it usually lands, but that
+is a race against the close's expiry, and losing it only leaves the indicator to the ~15 s
+client expiry. So the scenario *A start in flight cannot land after the stop* ("both
+complete within one acknowledge timeout") holds for a refresh that returns with room to
+spare, which is what its test drives, and not for one that hangs to its bound. Cosmetic, and
+consistent with D4. I am recording it so the spec's wording is not read as a guarantee for
+that case.
+
+### Mutation results (group 4)
+
+Each mutant was applied alone to `henk/channel/acknowledge.py` from a scratch backup. I ran
+`tests/test_acknowledge.py` under `python -B` and restored the backup after each run. `cmp`
+against the backup and an empty `git diff --stat` confirmed nothing was left behind.
+
+| # | Mutant | Caught by | Result |
+|---|---|---|---|
+| M4 | `paused` ignored | `test_the_indicator_is_suspended_while_paused_and_resumes_at_the_next_poll` | killed (`assert 20.0 == 4.0`: no pause stop) |
+| M5 | stop sent on the cancellation path | `test_a_cancelled_body_sends_no_stop[idle,hung]`, `test_a_cancel_during_entry_leaves_no_indicator_task` | killed (`('stop', OWNER) not in …`) |
+| M6 | `asyncio.timeout` removed from `receipt` | `test_a_hung_receipt_returns_within_the_bound_and_logs_one_line` | killed (2 s fail-fast bound) |
+| M7 | close issues the stop itself from the closing coroutine (task's stop removed) | `test_a_refresh_in_flight_at_exit_completes_before_the_stop` (+ log test) | killed (typing `[start, stop, start]`) |
+| M8 | failure logged every tick | `test_refresh_failures_are_logged_once_per_turn` | killed (`8 == 1`) |
+| M13 | `except BaseException` in all bounded helpers | outer-cancel receipt, cancelled-body[hung], outer-cancel-during-close | killed |
+| M13a | … `receipt` only | `test_an_outer_cancel_during_a_hung_receipt_propagates` | killed ("the cancellation was swallowed") |
+| M13b | … `_attempt` only | `test_a_cancelled_body_sends_no_stop[hung]` | killed (2 s fail-fast bound: the task swallows the cancel and keeps looping) |
+| M13c | … the close only | `test_an_outer_cancel_during_the_close_propagates` | killed ("swallowed by the close") |
+| M15 | loop sleeps out the poll instead of waking on `exit_event` | `test_a_healthy_close_wakes_on_exit_not_on_the_poll` (+ 6 others) | killed (stop missing from `typing`) |
+| M16 | `asyncio.timeout` removed from the close | `test_a_hung_stop_is_bounded`, `test_the_bound_exhausted_…` | killed (2 s fail-fast bound) |
+| M17 (a) | `try: await task / except CancelledError: pass` in the close | outer-cancel-during-close, hung-stop, bound-exhausted | killed (cancel swallowed; the expiry's line vanishes, `0 == 1`) |
+| M17b | the same on the cancel path | none | **survives: equivalent mutant** (see the double-cancel finding above; it re-raises the original cancellation either way) |
+| M18 | entry `sleep(0)` moved above the `try` | `test_a_cancel_during_entry_leaves_no_indicator_task` | killed (orphaned indicator task in the in-test `all_tasks()` check) |
+| M19 | interval measured from a start's return | `test_one_hung_refresh_does_not_let_the_indicator_expire` | killed (starts `[0, 7]`, no start at 14) |
+| M19 | fixed poll wait instead of `min(poll, next_due − clock())` | `test_one_hung_refresh_does_not_let_the_indicator_expire` | killed (`[0, 7, 15] != [0, 7, 14]`) |
+| M19 | `TYPING_REFRESH_SECONDS = 8.0` (in-process) | `test_one_lost_refresh_stays_under_the_client_expiry` (+ 6 cadence tests) | killed (`8.0 * 2 < 15.0`) |

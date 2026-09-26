@@ -13,8 +13,9 @@
 > 2. **Test defaults through `Config.from_dict` with the key absent**, never against a
 >    dataclass attribute. rp5's `config.yaml` carries neither new key.
 > 3. **No real identifiers.** Owner `+31600000000`, Henk's account `+31611111111`, stranger
->    the stranger placeholder the existing tests already use, UUID-shaped values as obvious placeholders
->    (`00000000-0000-4000-8000-000000000000`). The pre-commit hook enforces it.
+>    the UUID placeholder `00000000-0000-4000-8000-000000000000` (the stranger number the
+>    existing tests use is rejected by the pre-commit hook on any new line; corrected at apply,
+>    group 1-3 gate). The pre-commit hook enforces it.
 > 4. **Re-grep before relying on a cited line.** The line numbers in `design.md` were read on
 >    2026-09-26.
 > 5. **`henk/channel/signal.py` must stay clean for its guards.** No new `Lock`, no
@@ -149,7 +150,7 @@
 
 ## 4. Bounded acknowledgement (`henk/channel/acknowledge.py`)
 
-- [ ] 4.1 Tests first, against `OwnerAcknowledgement` over a real `SignalAdapter` + `FakeBridge`
+- [x] 4.1 Tests first, against `OwnerAcknowledgement` over a real `SignalAdapter` + `FakeBridge`
       unless the test is about cadence alone. Use small timeouts (≈0.05 s). Where the test is
       about the poll or refresh interval, inject **both** `sleep` and `clock` (scenarios *An
       acknowledgement failure never fails or delays the turn beyond the bound*, *The indicator
@@ -207,7 +208,7 @@
       - every start and refresh failing across a long body logs **exactly one** failure line;
         the close logs at most one more;
       - no task is left running after any of the above (`asyncio.all_tasks()` check).
-- [ ] 4.2 Implement `OwnerAcknowledgement(adapter, *, timeout, refresh_seconds, paused=None,
+- [x] 4.2 Implement `OwnerAcknowledgement(adapter, *, timeout, refresh_seconds, paused=None,
       sleep=asyncio.sleep, clock=time.monotonic)`, with `async receipt(channel_ref)` and
       `@asynccontextmanager working()`, per design D3-D6. `PAUSE_POLL_SECONDS = 1.0` is a
       module constant.
