@@ -628,7 +628,7 @@ The capture is persisted only on rp5's audit volume.
   container's `CLAUDE_CONFIG_DIR` is `/tmp/henk-replay`, and live `henk-henk-1` sets none.
   rp5 host memory in use peaked at 4894 MiB of 7.87 GiB (18:38:30), from 4632 MiB; the run
   container's working set peaked at 237 MiB. Swap use held at about 3.4 GiB of 40 GiB.
-- [ ] 13.4 On the next real triage, confirm:
+- [x] 13.4 On the next real triage, confirm:
   - a recording exists;
   - the audit record is v5, with `profile: event` and the matching `recording_id`;
   - the handoff is archived.
@@ -639,6 +639,19 @@ The capture is persisted only on rp5's audit volume.
     available" on rp2;
   - `memory_movers` names host units;
   - `host_service_state` answers on the vps and reports "not available" on rp5 and rp2.
+  2026-09-26, staged `HenkInstanceDown` (rp2 `node_exporter` stopped from 09:44:28 to
+  09:53:49 UTC behind an on-host restart guard): the triage ran at 09:49:57 and sent its
+  reply at 09:50:54. Recording `20260926T095054Z-61627484` is `complete`, with
+  `ending.outcome` `completed`. The audit record is v5, `profile: event`, with the matching
+  `recording_id` and `triage_arc_complete`. The handoff is archived as row 1, and the
+  record's `handoff_message_id` matches it. All 10 calls executed with `is_error` None,
+  which the SDK sets on success. The Signal checks passed under 13.2. A related triage came
+  from a second stop at 15:53:41 after the 6 h cooldown: it triaged at 15:58:57, and
+  recording `20260926T155931Z-133aa2ea` has `prior_handoff_ids` [1] on both the record and
+  the recording. The event is marked `recurrence`, and the composed content holds the
+  `PRIOR HANDOFFS` digest header exactly once. It made 4 calls, against 10 without the
+  digest, and the handoff was archived as row 2. No gate-denied call occurred, so the
+  denied-call recording is covered by tests but not observed live.
 - [x] 13.5 Record these homelab follow-ups in `~/.claude-config/docs/tooling-backlog.md`:
   - `HenkContainerRestarting`, using the measured `resets()` expression;
   - enabling the systemd collector on rp5 and rp2;
@@ -662,7 +675,7 @@ The capture is persisted only on rp5's audit volume.
   note lists the new contents. The owner approved the diff. The README documents the
   triage profile, `triage_recording` and `replay.*` keys, the handoff archive, and replay
   storage and retention.
-- [ ] 13.7 Run `openspec validate triage-quality --strict`, then archive. After archiving:
+- [x] 13.7 Run `openspec validate triage-quality --strict`, then archive. After archiving:
   - update every test that reads this change's `notes/` by path (task 3.8's
     `evidence-probe.md` reader), from `openspec/changes/triage-quality/` to
     `openspec/changes/archive/<date>-triage-quality/`, following the hardcoded pattern at
@@ -670,3 +683,11 @@ The capture is persisted only on rp5's audit volume.
   - fill the new `openspec/specs/triage-replay/spec.md` Purpose from `design.md`;
   - confirm that no touched spec's Purpose is a placeholder;
   - re-grep the cited lines in `owner-acknowledgement/proposal.md`.
+  2026-09-26: the change validated strictly and was archived (+23, ~12, →1 requirements;
+  `triage-replay` is new). The three tests that read this change's files by path already
+  resolve both locations (`changes/triage-quality/` and `archive/*-triage-quality/`), so no
+  repoint was needed; the suite passed at 3477 after the archive. The `triage-replay`
+  Purpose is filled, no spec Purpose is a placeholder, and `openspec validate --specs
+  --strict` passes for all 17. In `owner-acknowledgement/proposal.md`, `signal.py:217-222`,
+  `signal.py:224` and `approval.py:297-298` still hold; the `config.py` citations moved from
+  1244 and 694 to 1477 and 801.
