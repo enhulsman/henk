@@ -437,7 +437,7 @@ All commands run as root on rp5. Set once per shell:
 C="docker compose -p henk -f /home/pi/Coding/henk/docker-compose.yml"
 ```
 
-- [ ] 12.1 **Before restart:** pull with the README's *Redeploying an existing install* recipe
+- [x] 12.1 **Before restart:** pull with the README's *Redeploying an existing install* recipe
       (backup first, `git pull` typed interactively), then `$C build henk`. Confirm the
       **effective** values through the new loader against the live file:
       ```bash
@@ -445,7 +445,7 @@ C="docker compose -p henk -f /home/pi/Coding/henk/docker-compose.yml"
       ```
       Expect `True 5.0 10.0`. `grep -n acknowledge /home/pi/Coding/henk/config.yaml` should
       print nothing, which confirms the values come from the loader.
-- [ ] 12.2 **Daemon auto-receipts (finding 4).** Confirm the signal-cli daemon is not sending
+- [x] 12.2 **Daemon auto-receipts (finding 4).** Confirm the signal-cli daemon is not sending
       read receipts on its own:
       ```bash
       $C exec signal-cli-rest-api sh -c 'for p in /proc/[0-9]*; do tr "\0" " " < $p/cmdline 2>/dev/null; echo; done' | grep -i signal-cli
@@ -454,15 +454,15 @@ C="docker compose -p henk -f /home/pi/Coding/henk/docker-compose.yml"
       The daemon command line must not contain `--send-read-receipts`, and no environment
       variable may enable it. Record the daemon's arguments (not the account number) in the
       as-built notes.
-- [ ] 12.3 **Bridge version.** Record what rp5 actually runs:
+- [x] 12.3 **Bridge version.** Record what rp5 actually runs:
       ```bash
       docker inspect "$($C ps -q signal-cli-rest-api)" --format '{{.Image}}'
       $C exec henk python -c 'import httpx; print(httpx.get("http://signal-cli-rest-api:8080/v1/about", timeout=10).json())'
       ```
-- [ ] 12.4 **Owner client settings.** In the owner's Signal/Molly client, confirm *Settings →
+- [x] 12.4 **Owner client settings.** In the owner's Signal/Molly client, confirm *Settings →
       Privacy → Read receipts* and *Typing indicators* are both **on**. They are reciprocal:
       with either off, nothing Henk sends is shown, and the checks below cannot be read.
-- [ ] 12.5 Deploy: `$C up -d --build henk`, applying the README's three "silently did nothing"
+- [x] 12.5 Deploy: `$C up -d --build henk`, applying the README's three "silently did nothing"
       tells. Then, from the owner's phone:
       - send a short DM. It shows **read** within about a second, and "typing" appears until the
         reply lands. This also proves the endpoints accept the owner's **UUID** as recipient
@@ -473,18 +473,18 @@ C="docker compose -p henk -f /home/pi/Coding/henk/docker-compose.yml"
       - `$C logs henk --since 30m | grep -i -E 'acknowledg|typing|receipt'` prints nothing.
         Anything it prints is a failed or timed-out acknowledgement. Record it, with the
         observed latency if any is logged.
-- [ ] 12.6 **Stranger, with acknowledgement enabled.** From the third Signal account, DM Henk's
+- [x] 12.6 **Stranger, with acknowledgement enabled.** From the third Signal account, DM Henk's
       number. On that phone the message may show *delivered* (the accepted transport residual)
       but must **never** show *read* or "typing", and no reply arrives. Confirm the drop:
       `$C logs henk --since 10m | grep 'dropped message from non-owner'`. Wait a minute
       before concluding, in case an auto-receipt is delayed.
-- [ ] 12.7 **Overlap check (design D7, finding 12).** Ask for something whose reply spans
+- [x] 12.7 **Overlap check (design D7, finding 12).** Ask for something whose reply spans
       several chunks and whose turn is long enough for refreshes (for example, "list every tool
       you have and what each one does, in detail"). Confirm every chunk arrives in order with no
       gap or failure banner, "typing" is visible between the question and the first chunk, and
       the log grep from 12.5 plus `grep -E 'not delivered|send failed on chunk'` both print
       nothing.
-- [ ] 12.8 **Approval suspension (optional; owner's call).** This needs a temporary
+- [x] 12.8 **Approval suspension (optional; owner's call).** This needs a temporary
       `gate.demote_standing: true` in rp5's `config.yaml`, made and restored with the
       backup-first recipe, then `$C up -d henk`. Ask Henk to remember something: the approval
       prompt arrives, and within a second or two "typing" is **not** shown while it waits. A
@@ -492,13 +492,75 @@ C="docker compose -p henk -f /home/pi/Coding/henk/docker-compose.yml"
       "typing" resumes within about a second, until the confirmation lands. Restore the file, `cmp` it
       against the backup, and `$C up -d henk`. If skipped, record that suspension is covered by
       6.1's integration test only.
-- [ ] 12.9 **Shutdown.** `$C restart henk` while a long turn is running. The container stops
+- [x] 12.9 **Shutdown.** `$C restart henk` while a long turn is running. The container stops
       within its grace period (no `Exited 137`), and any lingering "typing" on the phone clears
       on its own within about 15 s.
-- [ ] 12.10 Record the results as an *As-built* section in this file, then `/opsx:archive`
+- [x] 12.10 Record the results as an *As-built* section in this file, then `/opsx:archive`
       (`openspec archive owner-acknowledgement --yes`). No post-archive edit to
       `openspec/specs/` is needed: the Purpose stays as it is (design D9).
-- [ ] 12.11 **Rollback, only if it is ever needed.** Add `acknowledge_owner: false` under
+- [x] 12.11 **Rollback, only if it is ever needed.** Add `acknowledge_owner: false` under
       `signal:` with the backup-first recipe. Then re-run 12.1's loader one-liner and **expect
       `False`** before `$C up -d henk`: a misspelt key is silently ignored (design D8). After
       restart, a DM shows no read ticks and no "typing".
+
+## As-built (deployed to rp5 2026-09-26)
+
+Deployed commit `8877f6e`, image `6d02a190af6f`, by the owner from a root shell. The previous
+image is tagged `henk-henk:rollback-cdb13ef`. Account numbers and the stranger's identity are
+redacted here; the log lines named them.
+
+- **12.1** The pull landed: `CONFIG-UNCHANGED`, HEAD `8877f6e`. `COPY henk ./henk` rebuilt (not
+  `CACHED`) and a new image sha was written. The loader printed `True 5.0 10.0`, and
+  `grep -n acknowledge` on the live `config.yaml` printed nothing: the values come from the
+  loader's fallbacks, as designed. The same check confirmed the triage profile: chat and event
+  model are both `claude-opus-5-5`, event effort `high`, thinking `adaptive`. The live file sets
+  `agent.model` to Opus, so the event keys inherit it; there is no `event_*` line.
+- **12.2** The daemon runs as `signal-cli --output=json --config /home/.local/share/signal-cli/
+  daemon --tcp 127.0.0.1:6001`, under `signal-cli-rest-api -signal-cli-config=…`. There is no
+  `--send-read-receipts`. The container environment holds only `SIGNAL_CLI_*` path, uid and
+  chown settings; no variable mentions receipts. The Purpose's "only the owner is
+  acknowledged" holds on the instance (design D9).
+- **12.3** Bridge image `sha256:fe92c017e93c`; `/v1/about` reports version `0.100`, build 2,
+  mode `json-rpc`, API versions v1 and v2. signal-cli 0.14.5.
+- **12.4** The owner uses Molly with typing indicators on. Molly offers no read-receipt
+  setting, but read receipts from Henk were shown on the owner's phone anyway, so the
+  never-read diagnostic works for this client.
+- **12.5** `$C up -d henk` printed `Started`. On the phone the short DM showed read, then
+  "typing" until the reply. The tool-heavy question kept "typing" up throughout, and
+  `/memories` was answered with no typing flash. **The task's log grep was wrong:** httpx logs
+  every bridge request at INFO, so `acknowledg|typing|receipt` matches the successful requests
+  (the README checklist now greps Henk's failure phrases instead). Those INFO lines are the
+  evidence. Every receipt `POST /v1/receipts/…` and every typing `PUT`/`DELETE
+  /v1/typing-indicator/…` returned `204 No Content`, which proves the endpoints accept the
+  owner's **UUID** as recipient (finding 12). No `henk.channel.acknowledge` warning was logged.
+  Observed timings:
+  - the receipt went out about 0.2 s before the first start;
+  - on the tool-heavy turn, refreshes were issued at 6.9-7.0 s intervals (20:53:44.8, :51.7,
+    :58.7), with the stop at 20:54:05.7 after a 21 s turn;
+  - `/memories` (20:54:15) produced a receipt and no typing request.
+- **12.6** The stranger DM from the third account was dropped:
+  `dropped message from non-owner sender=<uuid>` at 20:56:51, with no receipt, typing or send
+  request after it. Nothing on the third phone showed read or typing, and no reply arrived.
+- **12.7** "List every tool you have and what each one does, in detail" produced a multi-chunk
+  reply that arrived in order with no banner. Refreshes ran during the turn (20:54:24, :31,
+  :38; stop at :44), and neither `not delivered` nor `send failed on chunk` was logged.
+- **12.8** Skipped by owner decision (recommended at hand-off). Suspension during an approval
+  is covered by 6.1's integration test (`test_agent_core_acknowledgement.py`, real
+  `ApprovalGate` with `demote_standing=True`) and by the core-level M4 mutant only.
+- **12.9** `$C restart henk` during the tool-heavy question finished in about 6 s, inside the
+  10 s grace period, so the container was not killed; it came back `Up`. "Typing" on the
+  phone cleared on its own, as designed (no stop is sent on the cancellation path).
+- **12.10** This section, then `openspec archive owner-acknowledgement --yes`.
+- **12.11** The rollback was not needed and not exercised. The procedure is in the README's
+  Rollback section.
+
+**Observed during verification, outside this change:** asked for its tools, Henk said *"the
+software I run on also shows me some general-purpose tools, like scheduling, multi-agent
+workflows and project syncing. They aren't part of Henk's setup and I don't use them here."*
+The model therefore sees built-in tool definitions from the bundled CLI (2.1.283) that
+`disallowed_tools` does not list. Checked in source: `BUILTIN_HOST_TOOLS`
+(`henk/agent/sdk_session.py:71-95`) was last widened on 2026-07-20, and it names none of the
+newer built-ins that match that description (the agent, workflow and cron/scheduling tools). The `PreToolUse` hook still default-denies every
+non-`mcp__henk__*` call, so this is not an execution gap. It is a surface drift to
+reconcile: compare the CLI's built-in tool list against `disallowed_tools` after each SDK bump.
+

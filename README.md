@@ -722,7 +722,9 @@ Full commands are in `openspec/changes/owner-acknowledgement/tasks.md` group 12
   the owner's Signal/Molly client; with either off, nothing below can be read.
 - [ ] **Owner DM** — shows **read** within about a second and "typing" until the reply; a
   tool-heavy question over 15 s keeps "typing" up throughout; `/memories` shows no typing;
-  the log grep for `acknowledg|typing|receipt` prints nothing.
+  `grep -E 'owner read receipt|owner working indicator'` on the log prints nothing (httpx's
+  own INFO request lines name the receipt and typing routes, so grep for Henk's failure lines,
+  not the routes).
 - [ ] **Stranger** — a DM from a third account may show *delivered*, never *read* or
   "typing", and gets no reply; the drop is logged.
 - [ ] **Overlap** — a long multi-chunk reply arrives in order, with no failure banner and
