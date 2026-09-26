@@ -92,3 +92,32 @@ def test_reasoning_options_are_valid_claude_agent_options():
     options = sdk.ClaudeAgentOptions(**reasoning_options(cfg))
     assert options.effort == "max"
     assert options.thinking == {"type": "adaptive"}
+
+
+# Opus 5.5 is refused by the bundled CLI before 2.1.280 ("API Error: 400 Claude Code
+# 2.1.277 does not support this model"), measured on rp5 2026-09-26. The pin is what
+# decides the CLI version in the image, so both are guarded: the pin here, where the
+# SDK is not installed, and the bundled CLI itself inside the image.
+_MIN_CLI = (2, 1, 280)
+_MIN_SDK = (0, 2, 158)  # the first release bundling CLI 2.1.280
+
+
+def _version(text):
+    return tuple(int(part) for part in text.split("."))
+
+
+def test_pinned_sdk_bundles_a_cli_that_accepts_opus_5_5():
+    import re
+    from pathlib import Path
+
+    pyproject = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+    pin = re.search(r'"claude-agent-sdk==([0-9.]+)"', pyproject)
+    assert pin is not None, "claude-agent-sdk must stay an exact pin"
+    assert _version(pin.group(1)) >= _MIN_SDK
+
+
+def test_bundled_cli_accepts_opus_5_5():
+    pytest.importorskip("claude_agent_sdk")
+    from claude_agent_sdk._cli_version import __cli_version__
+
+    assert _version(__cli_version__) >= _MIN_CLI
