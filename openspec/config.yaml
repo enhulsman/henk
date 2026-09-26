@@ -18,3 +18,13 @@ schema: spec-driven
 #       - Always include a "Non-goals" section
 #     tasks:
 #       - Break tasks into chunks of max 2 hours
+
+rules:
+  proposal:
+    - "Open with a plain summary for the product owner, before any technical detail: what changes for end users, and which decisions are theirs."
+    - "Name what an end user will see or do differently (screens, messages, errors, timing, data they own), or say plainly that nothing changes for them."
+    - "List each decision that is the owner's (behaviour, scope in or out, changes to stored data, a new dependency or pattern) with the options and your pick."
+    - "Quote any text an outsider will read (UI copy, errors, notifications) verbatim."
+    - "Say what is deliberately left out."
+  tasks:
+    - "Flag any task that departs from what the approved proposal promised: that departure is the owner's call, raised before building it."

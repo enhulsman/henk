@@ -4,6 +4,13 @@ Personal homelab agent ("HOmelab agENt Konsult" if anyone asks; really it's just
 the Dutch neighbor who knows where everything is). Reachable via a chat channel,
 built on the **Claude Agent SDK**, wired to existing homelab tools.
 
+## Who uses this
+
+One person, the owner, over Signal. Henk exists to save the owner's attention
+(`NORTH-STAR.md`, the attention contract): every message must either need them or be
+something they asked for. When Henk sends, what a message says, and which actions need
+inline approval are all end-user behaviour, so they are the owner's decisions.
+
 ## Commit hygiene (repo is publication-bound — history scrubbed 2026-07-22)
 
 This repo is hosted under the owner's public identity (`enhulsman`) and intended to
