@@ -176,10 +176,13 @@ async def test_command_during_pending_approval_fails_the_action_closed_then_runs
 #: (standing rule 3).
 ACCOUNT = "+31611111111"
 STRANGER = "00000000-0000-4000-8000-000000000000"
-#: A small real acknowledge bound, the slack allowed on top, and the fail-fast
-#: bound for anything that could hang.
+#: A small real acknowledge bound, and the fail-fast bound for anything that could
+#: hang. ``ACK_BOUND`` is for the test that measures a bound: large enough that
+#: scheduling noise is small against it, so the elapsed time is held to
+#: [LOWER, UPPER) x ACK_BOUND and a bound applied 2x or more fails.
 ACK_T = 0.05
-MARGIN = 0.5
+ACK_BOUND = 0.2
+LOWER, UPPER = 0.9, 1.5
 FAIL_FAST = 2.0
 REF_1, REF_2 = "1700000000001", "1700000000002"
 ALLOWLIST_LOGGER = "henk.channel.allowlist"
@@ -315,7 +318,7 @@ async def test_an_unrelated_message_during_a_pending_approval_is_acknowledged_on
 
 async def test_a_hung_receipt_does_not_hold_the_message_it_acknowledges(caplog):
     # Scenario: A hung receipt does not hold the message it acknowledges.
-    w = _wire_ack(faults={"receipt": asyncio.Event()})  # never set
+    w = _wire_ack(faults={"receipt": asyncio.Event()}, timeout=ACK_BOUND)  # never set
     started = time.monotonic()
     with caplog.at_level(logging.WARNING, logger="henk.channel.acknowledge"):
         await asyncio.wait_for(
@@ -325,7 +328,8 @@ async def test_a_hung_receipt_does_not_hold_the_message_it_acknowledges(caplog):
     # Already on the core queue when the receipt was issued.
     assert w.order == [("submit", "hello"), ("receipt", int(REF_1))]
     assert w.core._queue.qsize() == 1
-    assert elapsed < ACK_T + MARGIN, elapsed
+    assert elapsed < UPPER * ACK_BOUND, f"{elapsed:.3f}s is more than one bound"
+    assert elapsed >= LOWER * ACK_BOUND, "the hung receipt was not waited out"
     assert w.bridge.receipts == []  # it never completed
     assert len([r for r in caplog.records if "owner read receipt" in r.getMessage()]) == 1
     # The next inbound message is handled once the bound has cut the hang off.

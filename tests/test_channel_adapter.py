@@ -8,6 +8,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+import yaml
 
 from henk.channel.allowlist import AllowlistFilter
 from henk.channel.base import SendOutcome, split_message
@@ -287,7 +288,23 @@ async def test_reply_carries_the_adapters_notice_and_proactive_carries_none():
 # configuration" — so config.py legitimately carries them and is not scanned.
 SIGNAL_MODULE = Path("henk/channel/signal.py")
 CONFIG_MODULE = Path("henk/config.py")
-WIRE_FORMAT_TOKENS = ["dataMessage", "sourceUuid", "groupInfo", "receiptMessage"]
+#: The receipt request's field and the acknowledgement routes (owner-acknowledgement
+#: task 8.3), plus the send and receive routes this comment always claimed and the
+#: list lacked. Not ``typing``: it matches every ``from typing import``.
+WIRE_FORMAT_TOKENS = [
+    "dataMessage",
+    "sourceUuid",
+    "groupInfo",
+    "receiptMessage",
+    "receipt_type",
+    "typing-indicator",
+    "/v1/receipts",
+    "/v2/send",
+    "/v1/receive",
+]
+#: Neutral modules the scan must reach. The acknowledgement layer is the one most
+#: tempted to know the bridge's routes, which is why it is named.
+MUST_SCAN = [Path("henk/channel/acknowledge.py"), Path("henk/app.py")]
 
 
 def test_signal_wire_format_stays_encapsulated():
@@ -295,15 +312,18 @@ def test_signal_wire_format_stays_encapsulated():
     repo_root = Path(__file__).resolve().parent.parent
     henk_dir = repo_root / "henk"
     offenders: list[str] = []
+    scanned: list[Path] = []
     for path in henk_dir.rglob("*.py"):
         rel = path.relative_to(repo_root)
         if rel in (SIGNAL_MODULE, CONFIG_MODULE):
             continue
+        scanned.append(rel)
         text = path.read_text()
         for token in WIRE_FORMAT_TOKENS:
             if token in text:
                 offenders.append(f"{rel}: {token}")
     assert not offenders, f"Signal wire format leaked: {offenders}"
+    assert [rel for rel in MUST_SCAN if rel not in scanned] == [], scanned
 
 
 # --- Long replies delivered intact ---------------------------------------
@@ -954,6 +974,13 @@ async def test_a_failed_acknowledgement_request_is_reported_not_raised(
     assert [r for r in caplog.records if r.name == "henk.channel.signal"] == []
 
 
+#: Three chunks at safe_length 30, each distinct in its first character, which is
+#: what ``HoldingBridge.log`` records, so the order they land in is observable.
+#: (``MESSAGE_A`` below has three identical chunks, which hides the order.)
+ORDERED_CHUNKS = ["1" * 25 + "\n\n", "2" * 25 + "\n\n", "3" * 25]
+MESSAGE_ORDERED = "".join(ORDERED_CHUNKS)
+
+
 class HoldingBridge(FakeBridge):
     """A bridge whose first send chunk is held until the test releases it.
 
@@ -989,7 +1016,8 @@ async def test_an_acknowledgement_does_not_wait_behind_a_send_in_flight():
     adapter = SignalAdapter(
         bridge, account="+31611111111", owner=OWNER, safe_length=30, sleep=_nosleep
     )
-    send = asyncio.create_task(adapter.send(MESSAGE_A))
+    assert split_message(MESSAGE_ORDERED, 30) == ORDERED_CHUNKS
+    send = asyncio.create_task(adapter.send(MESSAGE_ORDERED))
     try:
         await asyncio.wait_for(bridge.holding.wait(), 2.0)
         assert adapter._send_lock.locked()  # the send is mid-sequence
@@ -1003,10 +1031,54 @@ async def test_an_acknowledgement_does_not_wait_behind_a_send_in_flight():
         bridge.release.set()
     assert await asyncio.wait_for(send, 2.0) is SendOutcome.DELIVERED
 
-    assert bridge.log == ["chunk:A", "receipt", "start", "chunk:A", "chunk:A"]
-    # The send's own chunks stay contiguous and in order.
-    assert "".join(text for _, text in bridge.sends) == MESSAGE_A
-    assert all(recipient == OWNER for recipient, _ in bridge.sends)
+    assert bridge.log == ["chunk:1", "receipt", "start", "chunk:2", "chunk:3"]
+    # The send's own chunks stay contiguous and in order, all to the owner.
+    assert bridge.sends == [(OWNER, chunk) for chunk in ORDERED_CHUNKS]
+
+
+# --- The daemon does not acknowledge on Henk's behalf ------------------------
+
+COMPOSE_FILE = Path(__file__).resolve().parent.parent / "docker-compose.yml"
+SIGNAL_SERVICE = "signal-cli-rest-api"
+
+
+def _compose_strings(value) -> list[str]:
+    """A compose ``environment``/``command``/``entrypoint`` value, as strings.
+
+    Both compose shapes: a list (``- KEY=value``, or argv) or a string, and the
+    mapping form of ``environment`` (``KEY: value``), rendered ``KEY=value``.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [f"{key}={'' if val is None else val}" for key, val in value.items()]
+    return [str(item) for item in value]
+
+
+def test_the_signal_daemon_is_not_configured_to_send_read_receipts():
+    # Scenario: The daemon does not acknowledge on Henk's behalf. The repository
+    # guard: the committed compose file's signal-cli-rest-api service carries no
+    # environment variable and no command or entrypoint argument that mentions
+    # receipts (case-insensitive, keys and values), so nothing committed turns on
+    # automatic read receipts and every receipt is one Henk's code chose to send.
+    # This pins the repo only. Task 12.2 still verifies the DEPLOYED daemon on
+    # rp5, whose configuration can drift from this file.
+    service = yaml.safe_load(COMPOSE_FILE.read_text())["services"][SIGNAL_SERVICE]
+    settings = {
+        where: _compose_strings(service.get(where))
+        for where in ("environment", "command", "entrypoint")
+    }
+    # Not vacuous: the service's environment is where it is expected (MODE).
+    assert any(s.startswith("MODE=") for s in settings["environment"]), settings
+    # An env_file would carry settings this guard cannot read.
+    assert "env_file" not in service, "the daemon's settings moved out of sight"
+    offenders = [
+        f"{where}: {s}" for where, items in settings.items()
+        for s in items if "receipt" in s.lower()
+    ]
+    assert offenders == [], offenders
 
 
 # --- Outbound send serialization (reminder-delivery, channel-adapter delta) ---

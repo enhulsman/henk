@@ -8,7 +8,10 @@ tests swap the clock, and even they keep the real adapter.
 Two kinds of time are in play and they are kept apart on purpose:
 
 - the **acknowledge bound** is real time, because the module enforces it with
-  ``asyncio.timeout``. Bound tests use a small real timeout (``T``).
+  ``asyncio.timeout``. Tests that only need a bound to exist use a small real
+  timeout (``T``); tests that measure one use ``BOUND`` and hold the elapsed
+  time to ``[LOWER, UPPER) x BOUND``, so a bound multiplied by 2 or more fails.
+  The structural test pins the exact value handed to ``asyncio.timeout``.
 - the **poll and refresh cadence** runs on ``FakeTime``, injected as both
   ``sleep`` and ``clock``, so a 50-second turn takes no real time and "the
   interval has elapsed" is exact.
@@ -22,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import time
 
 import pytest
@@ -35,9 +39,14 @@ ACCOUNT = "+31611111111"
 REF = "1700000000123"
 LOGGER = "henk.channel.acknowledge"
 
-#: Small real acknowledge timeout for bound tests, and the slack allowed on top.
+#: Small real acknowledge timeout for tests that only need a bound to exist.
 T = 0.05
-MARGIN = 0.5
+#: The bound for tests that measure it, large enough that scheduling noise is small
+#: against it. An elapsed time must fall in [LOWER, UPPER) x BOUND: under UPPER, so
+#: a bound applied 2x (or 3x, 5x) fails; at least LOWER where the test waits the
+#: bound out, so a hang that was never waited on fails too.
+BOUND = 0.2
+LOWER, UPPER = 0.9, 1.5
 #: Fail-fast bound for anything that could hang (standing rule 7).
 FAIL_FAST = 2.0
 #: Signal clients expire a typing indicator about this long after the last start.
@@ -61,6 +70,49 @@ def _records(caplog) -> list[logging.LogRecord]:
 
 def _lines(caplog, marker: str) -> list[str]:
     return [r.getMessage() for r in _records(caplog) if marker in r.getMessage()]
+
+
+def _assert_one_bound(elapsed: float, bound: float = BOUND) -> None:
+    """``elapsed`` is one ``bound``: waited out, and not a multiple of it."""
+    assert elapsed < UPPER * bound, f"{elapsed:.3f}s is more than one {bound}s bound"
+    assert elapsed >= LOWER * bound, f"{elapsed:.3f}s: the bound was not waited out"
+
+
+class _AsyncioSpy:
+    """``asyncio`` as ``henk.channel.acknowledge`` sees it, with two calls recorded.
+
+    Installed as that module's ``asyncio`` global (``ack_asyncio`` below), so only
+    the module's own calls are seen, never the test's or the event loop's.
+    ``timeouts`` is every delay handed to ``asyncio.timeout``; ``tasks`` is every
+    task created, with its coroutine's name taken at creation.
+    """
+
+    def __init__(self) -> None:
+        self.timeouts: list[float | None] = []
+        self.tasks: list[tuple[str, asyncio.Task]] = []
+
+    def __getattr__(self, name: str):
+        return getattr(asyncio, name)
+
+    def timeout(self, delay):
+        self.timeouts.append(delay)
+        return asyncio.timeout(delay)
+
+    def create_task(self, coro, **kwargs) -> asyncio.Task:
+        task = asyncio.create_task(coro, **kwargs)
+        self.tasks.append((coro.__qualname__, task))
+        return task
+
+    def indicator_tasks(self) -> list[asyncio.Task]:
+        return [task for name, task in self.tasks if name.endswith("._indicate")]
+
+
+@pytest.fixture
+def ack_asyncio(monkeypatch) -> _AsyncioSpy:
+    """Spy on ``asyncio`` inside the acknowledgement module; restored after the test."""
+    spy = _AsyncioSpy()
+    monkeypatch.setattr(sys.modules[OwnerAcknowledgement.__module__], "asyncio", spy)
+    return spy
 
 
 async def _until(condition, what: str) -> None:
@@ -128,8 +180,15 @@ class FakeTime:
                 self._registered.clear()
 
     async def sleeping(self) -> None:
-        """Return once a sleeper is registered, i.e. the loop is between wake-ups."""
-        await asyncio.wait_for(self._registered.wait(), FAIL_FAST)
+        """Return once a sleeper is registered, i.e. the loop is between wake-ups.
+
+        Fails the test, rather than raising ``TimeoutError``, when none is: the
+        indicator loop is not running (its task died, or never went back to sleep).
+        """
+        try:
+            await asyncio.wait_for(self._registered.wait(), FAIL_FAST)
+        except TimeoutError:
+            pytest.fail("the indicator loop never went back to sleep (task dead?)")
 
     async def step(self) -> None:
         await self.sleeping()
@@ -216,13 +275,13 @@ async def test_a_hung_receipt_returns_within_the_bound_and_logs_one_line(caplog)
     # the bound — a receipt that never answers.
     bridge = FakeBridge()
     bridge.ack_faults["receipt"] = asyncio.Event()  # never set
+    ack = _real(bridge, timeout=BOUND)
     started = time.monotonic()
     with caplog.at_level(logging.DEBUG, logger=LOGGER):
-        result = await asyncio.wait_for(_real(bridge).receipt(REF), FAIL_FAST)
+        result = await asyncio.wait_for(ack.receipt(REF), FAIL_FAST)
     elapsed = time.monotonic() - started
     assert result is None
-    assert elapsed < T + MARGIN, elapsed
-    assert elapsed >= T * 0.9, "returned before the bound: the hang was not waited on"
+    _assert_one_bound(elapsed)
     assert bridge.ack_attempts == [("receipt", OWNER)]
     assert bridge.receipts == []
     assert len(_records(caplog)) == 1
@@ -482,14 +541,14 @@ async def test_a_hung_stop_is_bounded(caplog):
 
     async def turn():
         nonlocal closed_in
-        async with _real(bridge).working():
+        async with _real(bridge, timeout=BOUND).working():
             await _until(lambda: bridge.typing, "the entry start")
             closing = time.monotonic()
         closed_in = time.monotonic() - closing
 
     with caplog.at_level(logging.DEBUG, logger=LOGGER):
         await asyncio.wait_for(turn(), FAIL_FAST)
-    assert closed_in < T + MARGIN, closed_in
+    _assert_one_bound(closed_in)  # the close waited out its ONE bound on the stop
     assert bridge.ack_attempts[-1] == ("stop", OWNER)
     assert bridge.typing == [("start", OWNER)]  # the stop never completed
     assert len(_records(caplog)) == 1
@@ -504,7 +563,7 @@ async def test_the_bound_exhausted_before_the_stop_leaves_the_indicator_to_expir
     # stop completes, so the task is cancelled and the indicator left to expire.
     fake = FakeTime()
     bridge = ClockedBridge(fake)
-    bound = 0.1
+    bound = BOUND
     closed_in = None
 
     async def turn():
@@ -523,7 +582,9 @@ async def test_the_bound_exhausted_before_the_stop_leaves_the_indicator_to_expir
 
     with caplog.at_level(logging.DEBUG, logger=LOGGER):
         await asyncio.wait_for(turn(), FAIL_FAST)
-    assert closed_in < bound + MARGIN, closed_in
+    # One bound from the close's start: the refresh's own bound ran out inside it,
+    # and the close's bound (not a multiple of it) cut the stop off.
+    _assert_one_bound(closed_in, bound)
     assert ("stop", OWNER) not in bridge.typing
     # One close line; the hung refresh is the turn's one loop line.
     assert len(_lines(caplog, CLOSE_LINE)) == 1
@@ -618,12 +679,20 @@ async def test_an_outer_cancel_during_the_close_propagates():
 # --- Logging ---------------------------------------------------------------
 
 
-async def test_refresh_failures_are_logged_once_per_turn(caplog):
+@pytest.mark.parametrize(
+    "fault",
+    [SignalBridgeError("refused"), RuntimeError("adapter bug")],
+    ids=["refused", "raising"],
+)
+async def test_refresh_failures_are_logged_once_per_turn(fault, caplog):
     # Scenario: Refresh failures are logged once per turn — and the refresh keeps
-    # being attempted. The close gets at most one line of its own.
+    # being attempted. The close gets at most one line of its own. "raising" is an
+    # adapter that lets an exception through instead of reporting `False` (the
+    # Signal adapter does for anything but SignalBridgeError; a second adapter
+    # might for anything): the loop must absorb it and go on.
     fake = FakeTime()
     bridge = ClockedBridge(fake)
-    bridge.ack_faults["start"] = SignalBridgeError("refused")
+    bridge.ack_faults["start"] = fault
     ack = _timed(bridge, fake)
 
     async def turn(until: float):
@@ -631,20 +700,119 @@ async def test_refresh_failures_are_logged_once_per_turn(caplog):
             await fake.run_until(until)
             await fake.sleeping()
 
+    # Outer bound above FakeTime's own, so a dead loop fails on its message.
     with caplog.at_level(logging.DEBUG, logger=LOGGER):
-        await asyncio.wait_for(turn(50.0), FAIL_FAST)
+        await asyncio.wait_for(turn(50.0), 2 * FAIL_FAST)
     assert len(bridge.issue_times("start")) == 8  # 0, 7, ..., 49: still attempted
     assert len(_records(caplog)) == 1
     assert len(_lines(caplog, LOOP_LINE)) == 1
 
     # A second turn has its own budget, and a failing stop adds exactly one line.
     caplog.clear()
-    bridge.ack_faults["stop"] = SignalBridgeError("refused")
+    bridge.ack_faults["stop"] = fault
     with caplog.at_level(logging.DEBUG, logger=LOGGER):
-        await asyncio.wait_for(turn(100.0), FAIL_FAST)
+        await asyncio.wait_for(turn(100.0), 2 * FAIL_FAST)
+    assert len(bridge.issue_times("start")) == 16  # and 50, 57, ..., 99
     assert len(_lines(caplog, LOOP_LINE)) == 1
     assert len(_lines(caplog, CLOSE_LINE)) == 1
     assert len(_records(caplog)) == 2
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [SignalBridgeError("refused"), RuntimeError("adapter bug")],
+    ids=["refused", "raising"],
+)
+async def test_a_failing_stop_logs_one_close_line_and_the_close_returns(
+    fault, caplog, ack_asyncio
+):
+    # The close fails without a hang: refused (`False`), or raised through by the
+    # adapter. One close line, the close returns, nothing reaches the turn.
+    bridge = FakeBridge()
+    bridge.ack_faults["stop"] = fault
+
+    async def turn():
+        async with _real(bridge).working():
+            await _until(lambda: bridge.typing, "the entry start")
+
+    with caplog.at_level(logging.DEBUG, logger=LOGGER):
+        await asyncio.wait_for(turn(), FAIL_FAST)
+    assert bridge.ack_attempts == [("start", OWNER), ("stop", OWNER)]
+    lines = _lines(caplog, CLOSE_LINE)
+    assert len(lines) == 1 and len(_records(caplog)) == 1
+    expected = "not accepted" if isinstance(fault, SignalBridgeError) else repr(fault)
+    assert expected in lines[0], lines
+    # Absorbed where the stop is issued: the indicator task ends normally. The
+    # close's dead-task line (next test) is a backstop, not this path; with both
+    # gone a raising stop would go unlogged, so each is pinned on its own.
+    (indicator,) = ack_asyncio.indicator_tasks()
+    assert indicator.done() and not indicator.cancelled()
+    assert indicator.exception() is None, indicator.exception()
+
+
+async def test_an_indicator_task_that_dies_is_logged_once_by_the_close(caplog):
+    # A fault outside every per-request handler (here the pause predicate raising,
+    # as a buggy gate might) ends the indicator task with an exception. The close
+    # still returns, logs exactly one line naming it, and leaves no task behind
+    # (the autouse fixture).
+    fake = FakeTime()
+    bridge = ClockedBridge(fake)
+    raised = asyncio.Event()
+
+    def paused() -> bool:
+        raised.set()
+        raise RuntimeError("gate bug")
+
+    async def turn():
+        async with _timed(bridge, fake, paused=paused).working():
+            await fake.step()  # the first wake-up reads the predicate
+            await asyncio.wait_for(raised.wait(), FAIL_FAST)
+
+    with caplog.at_level(logging.DEBUG, logger=LOGGER):
+        await asyncio.wait_for(turn(), FAIL_FAST)
+    assert bridge.typing == [("start", OWNER)]  # the task died before its stop
+    lines = _lines(caplog, CLOSE_LINE)
+    assert len(lines) == 1, lines
+    assert "RuntimeError('gate bug')" in lines[0], lines
+    assert len(_records(caplog)) == 1
+
+
+# --- The configured bound, structurally -------------------------------------
+
+
+async def test_every_bounded_operation_gets_exactly_the_configured_timeout(
+    ack_asyncio,
+):
+    # Elapsed-time checks carry slack, so on their own they cannot tell the
+    # configured bound from a small multiple of it. This pins the value itself:
+    # a receipt, a turn's start, refreshes, a pause stop, a resume start and the
+    # close each open ONE `asyncio.timeout`, with exactly the configured value.
+    configured = 0.321  # distinctive, and no real wait: nothing here hangs
+    fake = FakeTime()
+    bridge = ClockedBridge(fake)
+    state = {"paused": False}
+    ack = _timed(bridge, fake, timeout=configured, paused=lambda: state["paused"])
+
+    await asyncio.wait_for(ack.receipt(REF), FAIL_FAST)
+    assert ack_asyncio.timeouts == [configured], "the receipt"
+
+    async def turn():
+        async with ack.working():
+            await fake.run_until(8.0)  # the refresh at 7
+            await fake.sleeping()
+            state["paused"] = True  # the pause stop at 9
+            await fake.run_until(12.0)
+            await fake.sleeping()
+            state["paused"] = False  # the resume start at 13, a refresh at 20
+            await fake.run_until(20.0)
+            await fake.sleeping()
+
+    await asyncio.wait_for(turn(), FAIL_FAST)
+    assert bridge.issue_times("start") == [0.0, 7.0, 13.0, 20.0]
+    assert bridge.issue_times("stop") == [9.0, 20.0]
+    # receipt, start, refresh, pause stop, resume start, refresh, close: seven
+    # bounds. The final stop runs inside the close's bound and opens none.
+    assert ack_asyncio.timeouts == [configured] * 7, ack_asyncio.timeouts
 
 
 def test_the_pause_poll_is_one_second():

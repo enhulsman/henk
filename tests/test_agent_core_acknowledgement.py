@@ -29,7 +29,12 @@ from henk.channel.signal import TYPING_REFRESH_SECONDS, SignalAdapter
 from henk.gate.approval import ApprovalGate, Classification
 from henk.reminders.timeparse import TimeResolver
 from henk.tools.base import ToolRegistry
-from tests.conftest import EventSessionFactory, FakeBridge, FakeChannel, FakeSessionFactory
+from tests.conftest import (
+    EventSessionFactory,
+    FakeBridge,
+    FakeChannel,
+    FakeSessionFactory,
+)
 from tests.test_acknowledge import FakeTime
 from tests.test_agent_core_reminders import AMS, NOW, _header_for
 from tests.test_agent_core_turn_scope import _turn as make_event_turn
@@ -37,10 +42,13 @@ from tests.test_gate_authorization import StandingTool
 
 OWNER = "+31600000000"
 ACCOUNT = "+31611111111"
-#: A small real acknowledge bound, the slack allowed on top, and the fail-fast
-#: bound for anything that could hang.
+#: A small real acknowledge bound, and the fail-fast bound for anything that could
+#: hang. ``BOUND`` is for the test that measures a bound: large enough that
+#: scheduling noise is small against it, so the gap is held to
+#: [LOWER, UPPER) x BOUND and a bound applied 2x or more fails.
 T = 0.05
-MARGIN = 0.5
+BOUND = 0.2
+LOWER, UPPER = 0.9, 1.5
 FAIL_FAST = 2.0
 ACK_LOGGER = "henk.channel.acknowledge"
 CLOSE_LINE = "working indicator close"
@@ -426,7 +434,7 @@ class _TimedSession:
 async def test_a_hung_stop_does_not_hold_the_next_turn_beyond_the_bound(caplog):
     # Scenario: A hung stop does not hold the next turn beyond the bound. The
     # close begins as the first reply's send returns; the queued second turn
-    # starts within T (plus slack) of it, and not before the bound was spent.
+    # starts one bound after it: not before the bound was spent, not a multiple of it.
     bridge = _TimedBridge()
     bridge.ack_faults["stop"] = asyncio.Event()  # never set
     adapter = SignalAdapter(bridge, account=ACCOUNT, owner=OWNER, sleep=_nosleep)
@@ -436,7 +444,9 @@ async def test_a_hung_stop_does_not_hold_the_next_turn_beyond_the_bound(caplog):
         def create(self):
             return _TimedSession(started)
 
-    core = AgentCore(Factory(), adapter, working_indicator=_ack(adapter).working)
+    core = AgentCore(
+        Factory(), adapter, working_indicator=_ack(adapter, timeout=BOUND).working
+    )
     await core.submit("one")
     await core.submit("two")
     worker = asyncio.create_task(core.run())
@@ -455,7 +465,7 @@ async def test_a_hung_stop_does_not_hold_the_next_turn_beyond_the_bound(caplog):
     first_reply_at = bridge.sent_at[0]
     second_turn_at = started[1][1]
     gap = second_turn_at - first_reply_at
-    assert gap < T + MARGIN, gap
-    assert gap >= T * 0.9, "the close did not wait on the hung stop at all"
+    assert gap < UPPER * BOUND, f"{gap:.3f}s is more than one {BOUND}s bound"
+    assert gap >= LOWER * BOUND, "the close did not wait on the hung stop at all"
     assert ("stop", OWNER) not in bridge.typing  # never completed
     assert len(close_lines()) == 2  # one line per turn, nothing raised
