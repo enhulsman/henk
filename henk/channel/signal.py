@@ -31,6 +31,16 @@ logger = logging.getLogger("henk.channel.signal")
 #: the adapter cannot know what was being sent (design D2).
 REPLY_FAILURE_NOTICE = "[⚠ part of this reply could not be delivered]"
 
+#: How often the working indicator's start is re-asserted, in seconds, measured
+#: from each start's ISSUE time (owner-acknowledgement design D4). A property of
+#: Signal's clients, not a Henk policy knob: they expire a typing indicator about
+#: 15 s after the last start. At 7 s, one lost refresh leaves at most 2 × 7 = 14 s
+#: between the last successful start and the next one issued, still under the
+#: expiry; at 8 s the same loss would leave 16 s and the indicator would drop.
+#: The config loader caps `signal.acknowledge_timeout_seconds` at this value,
+#: which is what keeps that arithmetic true when a refresh hangs.
+TYPING_REFRESH_SECONDS = 7.0
+
 
 class SignalBridgeError(Exception):
     """Raised by a bridge when signal-cli-rest-api is unreachable or errors."""
@@ -45,6 +55,22 @@ class SignalBridge(Protocol):
 
     async def send(self, recipient: str, text: str) -> None:
         """Send one message. May raise SignalBridgeError."""
+        ...
+
+    async def send_receipt(self, recipient: str, timestamp: int) -> None:
+        """Send a ``read`` receipt for the message sent at ``timestamp``.
+
+        May raise SignalBridgeError. Single attempt, unbounded here: the bound is
+        applied by cancellation outside this module (owner-acknowledgement D6).
+        """
+        ...
+
+    async def start_typing(self, recipient: str) -> None:
+        """Start (or re-assert) the typing indicator. May raise SignalBridgeError."""
+        ...
+
+    async def stop_typing(self, recipient: str) -> None:
+        """Stop the typing indicator. May raise SignalBridgeError."""
         ...
 
 
@@ -201,6 +227,39 @@ class SignalAdapter:
                 logger.warning("signal send failed (%s); retry in %.1fs", exc, delay)
                 await self._sleep(delay)
 
+    # --- Owner acknowledgement (owner-acknowledgement D1, D2, D6, D7) -----------
+    #
+    # Single attempts, always addressed to `self._owner`: no operation takes a
+    # recipient or a sender, so there is no input a receipt could be re-aimed
+    # with. None of them takes `_send_lock` (D7): an acknowledgement carries no
+    # content, and queueing a receipt behind a multi-chunk reply would stall the
+    # receive loop whenever Henk is talking. None bounds itself either: the
+    # whole-request bound is applied by cancellation in the channel-neutral
+    # caller, outside this module, and so is the log line, since only the caller
+    # knows the once-per-turn scope. A bridge error is reported as `False`.
+
+    async def acknowledge(self, channel_ref: str | None) -> bool:
+        """Send the owner a read receipt for the message ``channel_ref`` names."""
+        timestamp = _parse_channel_ref(channel_ref)
+        if timestamp is None:
+            return False
+        return await self._to_owner(self._bridge.send_receipt, timestamp)
+
+    async def start_working(self) -> bool:
+        """Start, or re-assert, the owner's typing indicator."""
+        return await self._to_owner(self._bridge.start_typing)
+
+    async def stop_working(self) -> bool:
+        """Stop the owner's typing indicator."""
+        return await self._to_owner(self._bridge.stop_typing)
+
+    async def _to_owner(self, operation, *args) -> bool:
+        try:
+            await operation(self._owner, *args)
+        except SignalBridgeError:
+            return False
+        return True
+
     def _convert(self, envelope: dict) -> Optional[InboundMessage]:
         """Convert a signal-cli-rest-api envelope to a channel-neutral message.
 
@@ -220,13 +279,52 @@ class SignalAdapter:
         # drops every owner message. We prefer the stable UUID; do NOT loosen the
         # match to "either field" — that widens the allowlist. Set owner.id to
         # whatever this field emits, verified by the owner-accept smoke test.
+        # With owner acknowledgement on, this is diagnosable from the phone: an
+        # owner message that shows delivered but never READ means the allowlist
+        # dropped it silently, or the receipt failed, which is logged
+        # (owner-acknowledgement task 12.5).
         sender = env.get("sourceUuid") or env.get("source") or ""
         raw_ts = data.get("timestamp") or env.get("timestamp") or 0
         timestamp = float(raw_ts) / 1000.0 if raw_ts else 0.0
         is_group = "groupInfo" in data and data.get("groupInfo") is not None
         return InboundMessage(
-            sender=sender, text=body, timestamp=timestamp, is_group=is_group
+            sender=sender,
+            text=body,
+            timestamp=timestamp,
+            is_group=is_group,
+            channel_ref=_mint_channel_ref(raw_ts),
         )
+
+
+def _mint_channel_ref(raw_ts: object) -> str | None:
+    """The message's sender timestamp as a decimal string, which a receipt names.
+
+    ``None`` for a timestamp-less (absent or zero) envelope rather than ``"0"``,
+    which the receipt endpoint would reject on every such message (design D2).
+    Only an integer is minted: the bridge reports milliseconds as a JSON integer,
+    and anything else is not something a receipt could name exactly.
+    """
+    if isinstance(raw_ts, bool) or not isinstance(raw_ts, int) or raw_ts <= 0:
+        return None
+    return str(raw_ts)
+
+
+def _parse_channel_ref(channel_ref: object) -> int | None:
+    """The timestamp a reference minted by ``_mint_channel_ref`` names, else ``None``.
+
+    Stricter than ``int()`` on purpose: only the exact form this module mints is
+    interpreted, so a reference that ``int()`` would merely tolerate (whitespace,
+    a sign, underscores, non-ASCII digits, leading zeros) is refused without a
+    bridge request rather than sent as a receipt for some other message.
+    """
+    if not isinstance(channel_ref, str) or not channel_ref.isascii():
+        return None
+    if not channel_ref.isdigit():
+        return None
+    value = int(channel_ref)
+    if value <= 0 or str(value) != channel_ref:
+        return None
+    return value
 
 
 #: Why every phase gets the configured value in full, rather than a share of it.
@@ -316,3 +414,49 @@ class SignalCliRestBridge:
                 resp.raise_for_status()
         except Exception as exc:  # noqa: BLE001
             raise SignalBridgeError(f"send failed: {exc}") from exc
+
+    # Acknowledgement requests (owner-acknowledgement design D6/D7). Each is one
+    # attempt through `_build_client`, with no retry and no bound of its own: the
+    # whole-request bound is applied by cancellation in the channel-neutral
+    # caller, which is safe here because these carry no content and are
+    # idempotent. They never touch the adapter's send lock.
+
+    async def send_receipt(self, recipient: str, timestamp: int) -> None:
+        payload = {
+            "recipient": recipient,
+            "receipt_type": "read",  # never "viewed": that has media semantics
+            "timestamp": timestamp,
+        }
+        await self._acknowledgement(
+            "POST", f"/v1/receipts/{self._account}", payload, "receipt"
+        )
+
+    async def start_typing(self, recipient: str) -> None:
+        await self._acknowledgement(
+            "PUT",
+            f"/v1/typing-indicator/{self._account}",
+            {"recipient": recipient},
+            "typing start",
+        )
+
+    async def stop_typing(self, recipient: str) -> None:
+        # `client.request`, not `client.delete()`: httpx's delete() takes no body,
+        # and the bridge reads the recipient from it.
+        await self._acknowledgement(
+            "DELETE",
+            f"/v1/typing-indicator/{self._account}",
+            {"recipient": recipient},
+            "typing stop",
+        )
+
+    async def _acknowledgement(
+        self, method: str, path: str, payload: dict, what: str
+    ) -> None:
+        try:
+            async with self._build_client() as client:
+                resp = await client.request(
+                    method, f"{self._base_url}{path}", json=payload
+                )
+                resp.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            raise SignalBridgeError(f"{what} failed: {exc}") from exc

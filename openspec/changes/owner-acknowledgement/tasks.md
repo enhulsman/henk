@@ -33,7 +33,7 @@
 
 ## 1. Config
 
-- [ ] 1.1 Tests in `tests/test_config.py`, all through `Config.from_dict` (scenarios *Enabled
+- [x] 1.1 Tests in `tests/test_config.py`, all through `Config.from_dict` (scenarios *Enabled
       by default when the keys are absent*, *An explicit false is honoured*, *A non-boolean flag
       is refused*, *An out-of-range acknowledge timeout is refused*):
       - a `signal` section carrying only `bridge_url`, `account`, `safe_length` loads
@@ -46,7 +46,7 @@
         boolean, which `float()` would accept as `1.0`) or anything above
         `TYPING_REFRESH_SECONDS` (`7.5`) raises `ConfigError`; `2.5` and exactly `7.0` load;
       - the existing signal keys' effective values are unchanged.
-- [ ] 1.2 Implement in `henk/config.py`: `SignalConfig.acknowledge_owner: bool = True` and
+- [x] 1.2 Implement in `henk/config.py`: `SignalConfig.acknowledge_owner: bool = True` and
       `SignalConfig.acknowledge_timeout_seconds: float = 5.0`, **and** the `from_dict` builder
       reading each key with an explicit fallback, exactly as the adjacent
       `send_timeout_seconds` / `open_timeout_seconds` do (`config.py:1014-1027`). Strict
@@ -56,9 +56,9 @@
       the rollback check covers the misspelt-key case (task 10.4). The comments say what the timeout is: a
       whole-operation bound enforced by cancellation outside the adapter, not a phase timeout
       and unrelated to `send_timeout_seconds`.
-- [ ] 1.3 `config.yaml`: add both keys under `signal:` with one-line comments in the same
+- [x] 1.3 `config.yaml`: add both keys under `signal:` with one-line comments in the same
       terms as 1.2. The flag's comment names it as the rollback.
-- [ ] 1.4 Correct the stale wording this change would otherwise sit next to:
+- [x] 1.4 Correct the stale wording this change would otherwise sit next to:
       `SignalConfig.send_timeout_seconds`' comment (`config.py:352-356`) and `config.yaml:31-33`
       still say "TOTAL budget … decomposed/split across httpx's transport phases". Replace them
       with what shipped: the configured value applies to each phase in full, and no total is
@@ -66,7 +66,7 @@
 
 ## 2. Transport: bridge endpoints
 
-- [ ] 2.1 Extend `tests/conftest.py` `FakeBridge` (`:151-169`), keeping `sends` and the receive
+- [x] 2.1 Extend `tests/conftest.py` `FakeBridge` (`:151-169`), keeping `sends` and the receive
       script unchanged:
       - `receipts: list[tuple[str, int]]` (recipient, timestamp);
       - `typing: list[tuple[str, str]]` (`"start"`/`"stop"`, recipient);
@@ -81,7 +81,7 @@
         (`signal.py:113-116`), and `receive()` iterates the same `_script` each time
         (`conftest.py:162-166`). A one-envelope script was measured yielding the same DM six
         times in 0.3 s. Default `False` keeps every existing test's behaviour.
-- [ ] 2.2 Tests for `SignalCliRestBridge`, with `_build_client` patched to return an
+- [x] 2.2 Tests for `SignalCliRestBridge`, with `_build_client` patched to return an
       `httpx.AsyncClient` on an `httpx.MockTransport` that keeps the configured timeout.
       Assert the timeout is still present on the patched client, so the patch cannot bypass the
       guarantee. Scenarios *A read receipt names the owner and the message* and *Typing
@@ -94,13 +94,13 @@
         `client.delete()` takes no body, so this must use `client.request("DELETE", …,
         json=…)`, and the test pins that a body is sent;
       - a non-2xx response or a transport error raises `SignalBridgeError`, as `send` does.
-- [ ] 2.3 Implement the three methods on the `SignalBridge` Protocol (`signal.py:39-47`) and on
+- [x] 2.3 Implement the three methods on the `SignalBridge` Protocol (`signal.py:39-47`) and on
       `SignalCliRestBridge`, each through `_build_client()`. No retry, no bound here (design D6).
       Run the lock and client-construction tests: both must pass untouched (standing rule 5).
 
 ## 3. Contract and Signal adapter
 
-- [ ] 3.1 Tests first (scenarios *Inbound message received*, *Timestamp-less envelope carries
+- [x] 3.1 Tests first (scenarios *Inbound message received*, *Timestamp-less envelope carries
       no channel reference*, *A read receipt names the owner and the message*, *Typing indicator
       start and stop reach the owner*, *A failed acknowledgement request is reported, not
       raised*, *An uninterpretable reference makes no request*, *An acknowledgement does not wait
@@ -120,13 +120,13 @@
       - with a `SlowBridge`-style send holding `_send_lock` mid-chunk, `acknowledge` and
         `start_working` complete before the send finishes, and the send's chunks stay
         contiguous.
-- [ ] 3.2 Extend the recipient-inspection test (`tests/test_channel_adapter.py:199-231`) with
+- [x] 3.2 Extend the recipient-inspection test (`tests/test_channel_adapter.py:199-231`) with
       `ACK_OPERATIONS = {"acknowledge": ["channel_ref"], "start_working": [], "stop_working":
       []}`, checked on both `ChannelAdapter` and `SignalAdapter` for the exact parameter list
       **and** the `RECIPIENT_DENYLIST`, exactly as for sends (scenario *No recipient reachable
       through any acknowledgement operation*). Do not merge it into `SEND_OPERATIONS`; that
       dict's name is its claim.
-- [ ] 3.3 Implement:
+- [x] 3.3 Implement:
       - `InboundMessage.channel_ref: str | None = None` in `henk/channel/base.py` (no
         `repr=False`: design D2 explains why hiding it would protect nothing). The default
         keeps every existing construction valid (`inbound()` in conftest, `_msg()` in
@@ -141,7 +141,7 @@
         expiry and the one-lost-refresh arithmetic (2 × 7 = 14 < 15; design D4);
       - update the `DEPLOY-VERIFY` note (`signal.py:217-222`): a delivered-but-never-read owner
         message now diagnoses a silent allowlist drop (or a failed receipt, which is logged).
-- [ ] 3.4 Extend `tests/conftest.py` `FakeChannel` (`:17-46`) with the three operations, each
+- [x] 3.4 Extend `tests/conftest.py` `FakeChannel` (`:17-46`) with the three operations, each
       returning `True` and appending to a **new** `acks: list[tuple[str, str | None]]`
       (`("receipt", ref)`, `("start", None)`, `("stop", None)`). `sent` and `calls` stay
       exactly as they are, so every existing `.sent`/`.calls` assertion passes untouched.

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -300,3 +303,151 @@ def test_sample_config_declares_the_signal_timeouts():
     signal = Config.load(SAMPLE, env={}).signal
     assert signal.send_timeout_seconds == 10.0
     assert signal.open_timeout_seconds == 30.0
+
+
+# --- signal owner acknowledgement (owner-acknowledgement, task 1.1) -------
+#
+# Every test goes through `Config.from_dict` with the keys absent or set, never
+# against a dataclass attribute: rp5's config.yaml is locally modified and carries
+# neither key, so the loader's fallback IS the production value (design D8).
+
+
+def _signal_raw(**signal_keys):
+    """A loadable mapping whose `signal` section is bridge_url, account, safe_length
+    plus exactly the keys given."""
+    raw = _minimal_raw("+1")
+    raw["signal"]["safe_length"] = 2000
+    raw["signal"].update(signal_keys)
+    return raw
+
+
+def test_acknowledgement_enabled_by_default_when_the_keys_are_absent():
+    # Scenario: Enabled by default when the keys are absent. Catches a wrong
+    # fallback in the builder.
+    raw = _signal_raw()
+    assert set(raw["signal"]) == {"bridge_url", "account", "safe_length"}
+    signal = Config.from_dict(raw, env={}).signal
+    assert signal.acknowledge_owner is True
+    assert signal.acknowledge_timeout_seconds == 5.0
+
+
+def test_an_explicit_false_acknowledge_owner_is_honoured():
+    # Scenario: An explicit false is honoured. The absent-keys test passes on the
+    # dataclass default alone; this one catches a builder that never reads the key
+    # (design D8, proposal finding 2), so it must exist even though that one passes.
+    signal = Config.from_dict(_signal_raw(acknowledge_owner=False), env={}).signal
+    assert signal.acknowledge_owner is False
+
+
+def test_an_explicit_true_acknowledge_owner_loads_true():
+    signal = Config.from_dict(_signal_raw(acknowledge_owner=True), env={}).signal
+    assert signal.acknowledge_owner is True
+
+
+@pytest.mark.parametrize("bad", ["false", "true", 1, 0, None], ids=repr)
+def test_a_non_boolean_acknowledge_owner_is_refused(bad):
+    # Scenario: A non-boolean flag is refused. A quoted "false" is truthy and 1 is
+    # not a flag; a blank `acknowledge_owner:` loads as YAML null. Each is refused
+    # rather than read by bool(), which would turn "false" into True.
+    with pytest.raises(ConfigError) as excinfo:
+        Config.from_dict(_signal_raw(acknowledge_owner=bad), env={})
+    assert "signal.acknowledge_owner" in str(excinfo.value)
+
+
+def test_a_blank_acknowledge_owner_from_yaml_is_refused(tmp_path):
+    # The blank case as the owner would actually write it, through the YAML parser.
+    import yaml
+
+    raw = _signal_raw()
+    text = yaml.safe_dump(raw).replace(
+        "safe_length: 2000", "safe_length: 2000\n  acknowledge_owner:"
+    )
+    assert yaml.safe_load(text)["signal"]["acknowledge_owner"] is None
+    path = tmp_path / "config.yaml"
+    path.write_text(text)
+    with pytest.raises(ConfigError):
+        Config.load(path, env={})
+
+
+@pytest.mark.parametrize(
+    "bad", [0, 0.0, -1, -0.5, "soon", "5", None, True, False, 7.5, 8, 60], ids=repr
+)
+def test_an_out_of_range_acknowledge_timeout_is_refused(bad):
+    # Scenario: An out-of-range acknowledge timeout is refused. `True` is the trap:
+    # float(True) is 1.0, which would otherwise pass as a valid timeout. 7.5 is
+    # above TYPING_REFRESH_SECONDS: a timeout longer than the refresh interval lets
+    # one hung refresh push the gap between starts past the ~15 s client expiry.
+    with pytest.raises(ConfigError) as excinfo:
+        Config.from_dict(_signal_raw(acknowledge_timeout_seconds=bad), env={})
+    assert "signal.acknowledge_timeout_seconds" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("good", [2.5, 7.0, 7, 0.05])
+def test_an_in_range_acknowledge_timeout_loads(good):
+    # Exactly the refresh interval is allowed: the cap is `<=`, not `<` (D8's
+    # arithmetic holds at T == interval).
+    signal = Config.from_dict(
+        _signal_raw(acknowledge_timeout_seconds=good), env={}
+    ).signal
+    assert signal.acknowledge_timeout_seconds == float(good)
+    assert isinstance(signal.acknowledge_timeout_seconds, float)
+
+
+def test_the_acknowledge_timeout_cap_is_the_typing_refresh_interval():
+    # config.py holds a copy of the cap (it must not import the Signal module; see
+    # the next test). This is what keeps the copy honest: checked behaviourally
+    # against the adapter's constant, so moving the interval without the cap fails
+    # here.
+    from henk.channel.signal import TYPING_REFRESH_SECONDS
+
+    assert TYPING_REFRESH_SECONDS == 7.0
+    ok = Config.from_dict(
+        _signal_raw(acknowledge_timeout_seconds=TYPING_REFRESH_SECONDS), env={}
+    ).signal
+    assert ok.acknowledge_timeout_seconds == TYPING_REFRESH_SECONDS
+    with pytest.raises(ConfigError):
+        Config.from_dict(
+            _signal_raw(acknowledge_timeout_seconds=TYPING_REFRESH_SECONDS + 0.001),
+            env={},
+        )
+
+
+def test_loading_config_does_not_load_the_signal_adapter_module():
+    # A replay calls Config.load, and the replay must never load
+    # henk.channel.signal (tests/test_replay_isolation.py FORBIDDEN). The
+    # acknowledge-timeout cap is therefore a copy, not an import, even a local one.
+    code = (
+        "import json, sys\n"
+        "from henk.config import Config\n"
+        "Config.load('config.yaml')\n"
+        "print(json.dumps(sorted(m for m in sys.modules if m.startswith('henk'))))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", code], cwd=REPO_ROOT, capture_output=True,
+        text=True, check=True,
+    )
+    loaded = set(json.loads(result.stdout.strip().splitlines()[-1]))
+    assert "henk.config" in loaded
+    assert not any(
+        m == "henk.channel.signal" or m.startswith("henk.channel.signal.")
+        for m in loaded
+    )
+
+
+def test_acknowledgement_keys_leave_the_existing_signal_values_unchanged():
+    base = Config.from_dict(_signal_raw(), env={}).signal
+    with_keys = Config.from_dict(
+        _signal_raw(acknowledge_owner=False, acknowledge_timeout_seconds=2.5), env={}
+    ).signal
+    for signal in (base, with_keys):
+        assert signal.bridge_url == "http://b"
+        assert signal.account == "+1"
+        assert signal.safe_length == 2000
+        assert signal.send_timeout_seconds == 10.0
+        assert signal.open_timeout_seconds == 30.0
+
+
+def test_sample_config_declares_acknowledgement_enabled():
+    signal = Config.load(SAMPLE, env={}).signal
+    assert signal.acknowledge_owner is True
+    assert signal.acknowledge_timeout_seconds == 5.0

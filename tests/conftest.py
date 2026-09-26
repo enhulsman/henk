@@ -26,12 +26,19 @@ class FakeChannel:
     Both operations report ``DELIVERED``: this is a cooperative double, and a
     test that needs a failing send must exercise the real adapter over a failing
     bridge (that is the defect this contract exists to surface).
+
+    The acknowledgement operations record into ``acks`` only, never into
+    ``sent`` or ``calls``: they are not messages, and every existing assertion
+    over those two lists must stay exactly as it was. They always report
+    accepted, for the same cooperative reason.
     """
 
     def __init__(self) -> None:
         self.sent: list[str] = []
         #: (kind, text, failure_notice) where kind is "reply" or "proactive".
         self.calls: list[tuple[str, str, str | None]] = []
+        #: ("receipt", channel_ref) | ("start", None) | ("stop", None), in order.
+        self.acks: list[tuple[str, str | None]] = []
 
     async def send(self, text: str) -> SendOutcome:
         self.sent.append(text)
@@ -44,6 +51,18 @@ class FakeChannel:
         self.sent.append(text)
         self.calls.append(("proactive", text, failure_notice))
         return SendOutcome.DELIVERED
+
+    async def acknowledge(self, channel_ref: str | None) -> bool:
+        self.acks.append(("receipt", channel_ref))
+        return True
+
+    async def start_working(self) -> bool:
+        self.acks.append(("start", None))
+        return True
+
+    async def stop_working(self) -> bool:
+        self.acks.append(("stop", None))
+        return True
 
 
 class RecordingSession:
@@ -153,20 +172,69 @@ class FakeBridge:
 
     ``script`` is a list where each item is either a dict (an envelope to yield)
     or an Exception instance (raised at that point in the receive stream).
+
+    Acknowledgement operations (owner-acknowledgement task 2.1) record into
+    ``receipts`` and ``typing`` only once the request has been ACCEPTED, i.e.
+    after any fault for that operation has cleared, so "recorded" means "the
+    bridge completed it" and an ordering assertion over ``typing`` is an
+    assertion about completions. ``ack_attempts`` records every call, refused or
+    hung ones included, which is what makes "exactly one attempt" checkable.
+
+    ``ack_faults`` is keyed ``"receipt"``, ``"start"`` or ``"stop"``: an
+    exception instance is raised on every call of that operation, and an
+    ``asyncio.Event`` is awaited first (a hang until the test sets it, or
+    forever). Faults are per operation, so a test can hang only the stop; sends
+    are never affected.
+
+    ``hold_open``: once the script is exhausted, ``receive()`` blocks forever
+    instead of returning. A clean stream end makes ``SignalAdapter.messages()``
+    sleep and call ``receive()`` again, which replays the same script, so an
+    ``App.run`` test would otherwise see its envelopes over and over and never
+    settle. The default keeps every existing test's behaviour.
     """
 
-    def __init__(self, script: list | None = None) -> None:
+    def __init__(self, script: list | None = None, *, hold_open: bool = False) -> None:
         self._script = list(script or [])
         self.sends: list[tuple[str, str]] = []
+        #: (recipient, timestamp) per accepted read receipt.
+        self.receipts: list[tuple[str, int]] = []
+        #: ("start" | "stop", recipient) per accepted typing-indicator request.
+        self.typing: list[tuple[str, str]] = []
+        #: (operation, recipient) per acknowledgement call, accepted or not.
+        self.ack_attempts: list[tuple[str, str]] = []
+        self.ack_faults: dict[str, Exception | asyncio.Event] = {}
+        self.hold_open = hold_open
 
     async def receive(self) -> AsyncIterator[dict]:
         for item in self._script:
             if isinstance(item, Exception):
                 raise item
             yield item
+        if self.hold_open:
+            await asyncio.Event().wait()
 
     async def send(self, recipient: str, text: str) -> None:
         self.sends.append((recipient, text))
+
+    async def _ack(self, operation: str, recipient: str) -> None:
+        self.ack_attempts.append((operation, recipient))
+        fault = self.ack_faults.get(operation)
+        if isinstance(fault, asyncio.Event):
+            await fault.wait()
+        elif fault is not None:
+            raise fault
+
+    async def send_receipt(self, recipient: str, timestamp: int) -> None:
+        await self._ack("receipt", recipient)
+        self.receipts.append((recipient, timestamp))
+
+    async def start_typing(self, recipient: str) -> None:
+        await self._ack("start", recipient)
+        self.typing.append(("start", recipient))
+
+    async def stop_typing(self, recipient: str) -> None:
+        await self._ack("stop", recipient)
+        self.typing.append(("stop", recipient))
 
 
 def make_clock(values: list[float]):

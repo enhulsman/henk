@@ -54,6 +54,15 @@ class InboundMessage:
     text: str
     timestamp: float
     is_group: bool = False
+    #: Opaque, adapter-minted reference whose ONLY use is to be handed back to
+    #: that adapter's ``acknowledge`` (owner-acknowledgement design D2, the one
+    #: bounded encapsulation exception). Neutral code carries it and never parses
+    #: it, persists it, audits it or puts it in an agent turn; the core receives
+    #: an owner message as its text alone. ``None`` when the channel has nothing
+    #: to acknowledge by. Deliberately not ``repr=False``: the same value already
+    #: crosses the boundary as ``timestamp`` and is not sensitive, so hiding it
+    #: would protect nothing (the rule is about scope, not secrecy).
+    channel_ref: str | None = None
 
 
 @runtime_checkable
@@ -87,6 +96,39 @@ class ChannelAdapter(Protocol):
 
         Deliverable only to the configured owner identity; there is no recipient
         parameter, here or anywhere on this contract.
+        """
+        ...
+
+    # Acknowledgement operations (owner-acknowledgement). Content-free signals to
+    # the owner, not messages. None takes a recipient, a sender or any identity:
+    # each is directed to the configured owner identity the adapter was built
+    # with, which is what keeps a stranger unreachable even if a caller were to
+    # misplace the call. Each reports whether the channel accepted it, makes a
+    # single attempt, and never raises on a transport error. None bounds itself or
+    # logs: the caller applies the bound and owns the log line.
+
+    async def acknowledge(self, channel_ref: str | None) -> bool:
+        """Tell the owner that the inbound message ``channel_ref`` was read.
+
+        Takes only the reference this adapter minted on that message, never the
+        message itself, which carries a ``sender``. Only for a message that has
+        passed the owner-only allowlist. ``None``, or a reference this adapter
+        cannot interpret, makes no request and returns ``False``. Must not raise
+        on transport errors.
+        """
+        ...
+
+    async def start_working(self) -> bool:
+        """Start, or re-assert, the owner-facing working indicator.
+
+        Owner only; no parameters. Must not raise on transport errors.
+        """
+        ...
+
+    async def stop_working(self) -> bool:
+        """Stop the owner-facing working indicator.
+
+        Owner only; no parameters. Must not raise on transport errors.
         """
         ...
 

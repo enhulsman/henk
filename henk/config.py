@@ -349,15 +349,29 @@ class SignalConfig:
     #: Per-message budget in UTF-8 **bytes** (see ``henk.channel.base``). Floored
     #: at MAX_CODE_POINT_BYTES at load: a smaller value admits no valid chunk.
     safe_length: int = 2000
-    #: TOTAL budget for one bridge HTTP request, decomposed across httpx's four
-    #: transport phases by the adapter. A chosen number, not a measured one:
-    #: deliberately generous against a container on the same compose network,
-    #: because the alternative (httpx's 5s per-phase default) turned an accepted
-    #: message into a reported failure and a retried duplicate.
+    #: Timeout applied IN FULL to each of httpx's four transport phases (connect,
+    #: read, write, pool) of one bridge HTTP request. Not a total: no whole-request
+    #: budget is specified for sends, because httpx bounds read and write per socket
+    #: operation and only cancellation bounds a whole request (channel-integrity
+    #: post-archive correction). A chosen number, not a measured one: deliberately
+    #: generous against a container on the same compose network, because the
+    #: alternative (httpx's 5s per-phase default) turned an accepted message into a
+    #: reported failure and a retried duplicate.
     send_timeout_seconds: float = 10.0
     #: Connection timeout for the receive path's websocket. Preserves the value
     #: that used to be a constructor default the wiring never supplied.
     open_timeout_seconds: float = 30.0
+    #: Send the owner a read receipt for every allowlisted message and a working
+    #: indicator while an owner agent turn runs (owner-acknowledgement design D8).
+    #: Default ON by owner decision; ``false`` is the rollback and sends neither.
+    #: Must be a real boolean: a quoted "false" or a blank value is refused.
+    acknowledge_owner: bool = True
+    #: Whole-operation bound on each acknowledgement operation (a receipt, each
+    #: indicator start or refresh, and the indicator's close), enforced by
+    #: cancellation outside the adapter. Not a phase timeout, and unrelated to
+    #: ``send_timeout_seconds``. At most ``TYPING_REFRESH_SECONDS``, so one hung
+    #: refresh cannot push the gap between starts past the client-side expiry.
+    acknowledge_timeout_seconds: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -1026,6 +1040,20 @@ class Config:
                         "open_timeout_seconds", SignalConfig.open_timeout_seconds
                     )
                 ),
+                # Same pinning as above: absent on rp5, so these fallbacks are
+                # the effective values there (acknowledgement ON, 5 s bound).
+                acknowledge_owner=_require_strict_bool(
+                    signal_sec.get(
+                        "acknowledge_owner", SignalConfig.acknowledge_owner
+                    ),
+                    "signal.acknowledge_owner",
+                ),
+                acknowledge_timeout_seconds=_require_acknowledge_timeout(
+                    signal_sec.get(
+                        "acknowledge_timeout_seconds",
+                        SignalConfig.acknowledge_timeout_seconds,
+                    )
+                ),
             ),
             gatus=endpoint("gatus"),
             prometheus=endpoint("prometheus"),
@@ -1482,6 +1510,54 @@ def _require_safe_length(signal_sec: Mapping[str, Any]) -> int:
             "UTF-8 encoding; a smaller limit admits no valid chunk"
         )
     return value
+
+
+def _require_strict_bool(value: Any, name: str) -> bool:
+    """A flag that must be a real YAML boolean.
+
+    ``bool()`` would read a quoted ``"false"`` as True and a blank value (YAML
+    null) as False, so a rollback typed either way would silently do the opposite
+    or nothing. Both are refused, as is a number.
+    """
+    if not isinstance(value, bool):
+        raise ConfigError(
+            f"{name} ({value!r}) must be true or false (unquoted); "
+            "omit the key to use the default"
+        )
+    return value
+
+
+#: The cap on ``signal.acknowledge_timeout_seconds``: the typing refresh interval,
+#: ``henk.channel.signal.TYPING_REFRESH_SECONDS``. A copy rather than an import,
+#: because a replay loads this module and must never load the Signal adapter module
+#: (tests/test_replay_isolation.py); tests/test_config.py pins the two as equal.
+_ACKNOWLEDGE_TIMEOUT_CAP_SECONDS = 7.0
+
+
+def _require_acknowledge_timeout(value: Any) -> float:
+    """A positive number of seconds no larger than the typing refresh interval.
+
+    A boolean is refused before the number check, because ``float(True)`` is
+    ``1.0``. The cap (owner-acknowledgement design D8): the refresh is measured
+    from each start's issue time and an overdue one fires as soon as a hung one
+    is cut off, so with a bound at most the interval, one lost refresh leaves at
+    most twice the interval (14 s) between successful starts, under Signal's
+    ~15 s client expiry. A larger bound would let one hung refresh exceed it.
+    """
+    name = "signal.acknowledge_timeout_seconds"
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"{name} ({value!r}) must be a number of seconds")
+    seconds = float(value)
+    if not seconds > 0:
+        raise ConfigError(f"{name} ({value!r}) must be positive")
+    if seconds > _ACKNOWLEDGE_TIMEOUT_CAP_SECONDS:
+        raise ConfigError(
+            f"{name} ({value!r}) must not exceed the typing refresh interval "
+            f"({_ACKNOWLEDGE_TIMEOUT_CAP_SECONDS} s): a longer bound lets one hung "
+            "refresh "
+            "outlast the client-side typing expiry"
+        )
+    return seconds
 
 
 def _validate_liveness_ordering(config: "Config") -> None:

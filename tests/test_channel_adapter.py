@@ -6,6 +6,7 @@ import asyncio
 import logging
 from pathlib import Path
 
+import httpx
 import pytest
 
 from henk.channel.allowlist import AllowlistFilter
@@ -214,20 +215,34 @@ SEND_OPERATIONS = {
 }
 
 
+#: Every acknowledgement operation (owner-acknowledgement task 3.2), with the exact
+#: parameter list it is allowed to expose. Kept apart from SEND_OPERATIONS: that
+#: dict's name is its claim, and these are not sends. `acknowledge` takes only the
+#: adapter-minted channel reference, never the inbound message, because the message
+#: carries `sender` (proposal finding 11); the indicator operations take nothing.
+ACK_OPERATIONS = {
+    "acknowledge": ["channel_ref"],
+    "start_working": [],
+    "stop_working": [],
+}
+
+
 def test_no_send_operation_exposes_an_arbitrary_recipient():
+    # Also scenario: No recipient reachable through any acknowledgement operation.
     import inspect
 
     from henk.channel.base import ChannelAdapter
 
-    for name, expected in SEND_OPERATIONS.items():
-        for owner_type in (ChannelAdapter, SignalAdapter):
-            operation = getattr(owner_type, name)
-            params = [
-                p for p in inspect.signature(operation).parameters if p != "self"
-            ]
-            assert params == expected, f"{owner_type.__name__}.{name}"
-            leaked = RECIPIENT_DENYLIST & set(params)
-            assert not leaked, f"{owner_type.__name__}.{name} exposes {leaked}"
+    for operations in (SEND_OPERATIONS, ACK_OPERATIONS):
+        for name, expected in operations.items():
+            for owner_type in (ChannelAdapter, SignalAdapter):
+                operation = getattr(owner_type, name)
+                params = [
+                    p for p in inspect.signature(operation).parameters if p != "self"
+                ]
+                assert params == expected, f"{owner_type.__name__}.{name}"
+                leaked = RECIPIENT_DENYLIST & set(params)
+                assert not leaked, f"{owner_type.__name__}.{name} exposes {leaked}"
 
 
 async def test_proactive_send_reaches_owner_without_inbound():
@@ -637,6 +652,361 @@ def test_no_bridge_code_path_constructs_a_client_without_a_timeout():
 def test_receive_connection_timeout_comes_from_configuration():
     # Previously a constructor default the wiring never supplied.
     assert _bridge(open_timeout=25.0)._open_timeout == 25.0
+
+
+# --- Acknowledgement endpoints at the wire (owner-acknowledgement, task 2.2) ---
+#
+# `_build_client` is patched to return a client on an `httpx.MockTransport`, built
+# with the timeout the ORIGINAL factory produces. The handler then asserts the
+# timeout httpx actually hands the transport for the request, so a patch that
+# dropped it, or a method that bypassed `_build_client`, cannot pass unnoticed.
+
+ACK_BASE = "http://signal-cli-rest-api:8080"
+ACK_ACCOUNT = "+31611111111"
+ACK_TIMEOUT = 12.0
+
+
+def _wire_bridge(handler):
+    """A real `SignalCliRestBridge` whose client factory serves ``handler``."""
+    bridge = _bridge(send_timeout=ACK_TIMEOUT)
+    configured = bridge._build_client().timeout
+    seen: list[httpx.Request] = []
+
+    def recording(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        # The per-phase timeout reaches the transport on every request.
+        assert request.extensions["timeout"] == {
+            "connect": ACK_TIMEOUT,
+            "read": ACK_TIMEOUT,
+            "write": ACK_TIMEOUT,
+            "pool": ACK_TIMEOUT,
+        }
+        return handler(request)
+
+    def build():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(recording), timeout=configured
+        )
+        built.append(client)
+        return client
+
+    built: list[httpx.AsyncClient] = []
+    bridge._build_client = build
+    return bridge, seen, built
+
+
+def _ok(request):
+    return httpx.Response(200 if request.method == "POST" else 204)
+
+
+def _json(request):
+    import json
+
+    return json.loads(request.content)
+
+
+async def test_receipt_request_names_the_owner_and_the_message_at_the_wire():
+    # Scenario: A read receipt names the owner and the message.
+    bridge, seen, built = _wire_bridge(_ok)
+    await bridge.send_receipt(OWNER, 1690000000000)
+    assert len(seen) == 1
+    request = seen[0]
+    assert request.method == "POST"
+    assert str(request.url) == f"{ACK_BASE}/v1/receipts/{ACK_ACCOUNT}"
+    body = _json(request)
+    assert body == {
+        "recipient": OWNER,
+        "receipt_type": "read",
+        "timestamp": 1690000000000,
+    }
+    assert type(body["timestamp"]) is int
+    # Built through the one timed factory, and the patched client kept its timeout.
+    assert len(built) == 1
+    assert built[0].timeout == httpx.Timeout(ACK_TIMEOUT)
+
+
+async def test_typing_start_and_stop_reach_the_owner_at_the_wire():
+    # Scenario: Typing indicator start and stop reach the owner.
+    bridge, seen, built = _wire_bridge(_ok)
+    await bridge.start_typing(OWNER)
+    await bridge.stop_typing(OWNER)
+    assert [(r.method, str(r.url)) for r in seen] == [
+        ("PUT", f"{ACK_BASE}/v1/typing-indicator/{ACK_ACCOUNT}"),
+        ("DELETE", f"{ACK_BASE}/v1/typing-indicator/{ACK_ACCOUNT}"),
+    ]
+    # The DELETE carries a body: httpx's `client.delete()` cannot send one, so a
+    # stop built on it would reach the bridge with no recipient at all.
+    assert seen[1].content, "the stop was sent without a body"
+    assert [_json(r) for r in seen] == [{"recipient": OWNER}, {"recipient": OWNER}]
+    assert len(built) == 2
+    assert all(c.timeout == httpx.Timeout(ACK_TIMEOUT) for c in built)
+
+
+@pytest.mark.parametrize("status", [400, 404, 500, 503])
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda b: b.send_receipt(OWNER, 1690000000000),
+        lambda b: b.start_typing(OWNER),
+        lambda b: b.stop_typing(OWNER),
+    ],
+    ids=["receipt", "start", "stop"],
+)
+async def test_a_non_2xx_acknowledgement_response_raises_bridge_error(call, status):
+    bridge, seen, _ = _wire_bridge(lambda request: httpx.Response(status))
+    with pytest.raises(SignalBridgeError):
+        await call(bridge)
+    assert len(seen) == 1  # a single attempt: no retry at the bridge
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda b: b.send_receipt(OWNER, 1690000000000),
+        lambda b: b.start_typing(OWNER),
+        lambda b: b.stop_typing(OWNER),
+    ],
+    ids=["receipt", "start", "stop"],
+)
+async def test_an_acknowledgement_transport_error_raises_bridge_error(call):
+    def refuse(request):
+        raise httpx.ConnectError("connection refused", request=request)
+
+    bridge, seen, _ = _wire_bridge(refuse)
+    with pytest.raises(SignalBridgeError):
+        await call(bridge)
+    assert len(seen) == 1
+
+
+# --- FakeBridge's acknowledgement recording (task 2.1) ---------------------
+
+
+async def test_fake_bridge_records_an_acknowledgement_only_once_it_completes():
+    bridge = FakeBridge()
+    gate = asyncio.Event()
+    bridge.ack_faults["stop"] = gate
+    await bridge.start_typing(OWNER)
+    stop = asyncio.create_task(bridge.stop_typing(OWNER))
+    await asyncio.sleep(0)
+    # The hung stop was attempted but not accepted; only the stop is affected.
+    assert bridge.ack_attempts == [("start", OWNER), ("stop", OWNER)]
+    assert bridge.typing == [("start", OWNER)]
+    await bridge.send(OWNER, "unaffected")
+    gate.set()
+    await asyncio.wait_for(stop, 2.0)
+    assert bridge.typing == [("start", OWNER), ("stop", OWNER)]
+    assert bridge.sends == [(OWNER, "unaffected")]
+
+
+async def test_fake_bridge_raises_a_scripted_acknowledgement_fault():
+    bridge = FakeBridge()
+    bridge.ack_faults["receipt"] = SignalBridgeError("refused")
+    with pytest.raises(SignalBridgeError):
+        await bridge.send_receipt(OWNER, 1)
+    assert bridge.receipts == []
+    assert bridge.ack_attempts == [("receipt", OWNER)]
+
+
+async def test_fake_bridge_hold_open_blocks_instead_of_replaying():
+    held = FakeBridge([_envelope("once")], hold_open=True)
+    seen = []
+
+    async def drain():
+        async for envelope in held.receive():
+            seen.append(envelope)
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(drain(), 0.1)
+    assert len(seen) == 1
+
+    # The default still ends the stream, as every existing test relies on.
+    plain = FakeBridge([_envelope("once")])
+    assert [e async for e in plain.receive()] == [_envelope("once")]
+
+
+async def test_fake_channel_records_acknowledgements_apart_from_sends():
+    # Task 3.4: a new `acks` list, so every existing `.sent`/`.calls` assertion is
+    # untouched by acknowledgements.
+    from tests.conftest import FakeChannel
+
+    channel = FakeChannel()
+    assert await channel.acknowledge("1690000000000") is True
+    assert await channel.start_working() is True
+    assert await channel.send("reply") is SendOutcome.DELIVERED
+    assert await channel.stop_working() is True
+    assert channel.acks == [("receipt", "1690000000000"), ("start", None), ("stop", None)]
+    assert channel.sent == ["reply"]
+    assert channel.calls == [("reply", "reply", None)]
+
+
+# --- Owner acknowledgement on the Signal adapter (task 3.1) ----------------
+#
+# Every test here drives the REAL `SignalAdapter` over `FakeBridge` (standing
+# rule 1): `FakeChannel` is cooperative and would satisfy all of it vacuously.
+
+#: A sender that is not the owner, UUID-shaped as an obvious placeholder.
+OTHER_SENDER = "00000000-0000-4000-8000-000000000000"
+MESSAGE_TS = 1690000000000
+
+
+def _ack_adapter(bridge):
+    return SignalAdapter(bridge, account="+31611111111", owner=OWNER)
+
+
+async def test_inbound_message_carries_its_timestamp_as_the_channel_reference():
+    # Scenario: Inbound message received (sender, text, timestamp, and an opaque
+    # channel reference).
+    msgs = await _collect(_ack_adapter(FakeBridge([_envelope("hello")])), 1)
+    assert msgs[0].channel_ref == str(MESSAGE_TS)
+    assert msgs[0].timestamp == MESSAGE_TS / 1000.0
+
+
+def test_the_envelope_timestamp_is_the_fallback_reference():
+    env = {"envelope": {"source": OWNER, "timestamp": 1690000000123,
+                        "dataMessage": {"message": "hi"}}}
+    assert _ack_adapter(FakeBridge())._convert(env).channel_ref == "1690000000123"
+
+
+@pytest.mark.parametrize(
+    "data_ts, env_ts",
+    [(None, None), (0, 0), (0, None), (None, 0)],
+    ids=["both-absent", "both-zero", "data-zero-env-absent", "data-absent-env-zero"],
+)
+def test_timestamp_less_envelope_carries_no_channel_reference(data_ts, env_ts):
+    # Scenario: Timestamp-less envelope carries no channel reference. `None`, not
+    # "0": the receipt endpoint would reject "0" on every such message (finding 9).
+    data = {"message": "hi"}
+    if data_ts is not None:
+        data["timestamp"] = data_ts
+    env = {"source": OWNER, "dataMessage": data}
+    if env_ts is not None:
+        env["timestamp"] = env_ts
+    message = _ack_adapter(FakeBridge())._convert({"envelope": env})
+    assert message is not None and message.text == "hi"
+    assert message.channel_ref is None
+
+
+async def test_a_read_receipt_names_the_owner_and_the_message():
+    # Scenarios: A read receipt names the owner and the message; The receipt
+    # cannot be addressed to the sender. The envelope's source AND sourceUuid are
+    # someone else, and the receipt still goes to the constructor's `owner`: no
+    # input to `acknowledge` carries a sender to take an address from.
+    envelope = _envelope("hello", source=OTHER_SENDER)
+    envelope["envelope"]["sourceUuid"] = OTHER_SENDER
+    bridge = FakeBridge([envelope])
+    adapter = _ack_adapter(bridge)
+    [message] = await _collect(adapter, 1)
+    assert message.sender == OTHER_SENDER != OWNER
+
+    assert await adapter.acknowledge(message.channel_ref) is True
+    assert bridge.receipts == [(OWNER, MESSAGE_TS)]
+    assert type(bridge.receipts[0][1]) is int
+    assert bridge.ack_attempts == [("receipt", OWNER)]
+    assert bridge.sends == [] and bridge.typing == []
+
+
+@pytest.mark.parametrize(
+    "ref",
+    [None, "not-a-number", "", "0", "-5", "1.5", " 12", "+12", "1_000", "012", "١٢"],
+    ids=repr,
+)
+async def test_an_uninterpretable_reference_makes_no_request(ref):
+    # Scenario: An uninterpretable reference makes no request. Only a reference
+    # the adapter mints (a positive decimal integer) is interpreted; anything
+    # else, including what `int()` would happen to accept, is refused unsent.
+    bridge = FakeBridge()
+    assert await _ack_adapter(bridge).acknowledge(ref) is False
+    assert bridge.ack_attempts == []
+    assert bridge.receipts == []
+
+
+async def test_typing_indicator_start_and_stop_reach_the_owner():
+    # Scenario: Typing indicator start and stop reach the owner.
+    bridge = FakeBridge()
+    adapter = _ack_adapter(bridge)
+    assert await adapter.start_working() is True
+    assert await adapter.stop_working() is True
+    assert bridge.typing == [("start", OWNER), ("stop", OWNER)]
+    assert bridge.sends == [] and bridge.receipts == []
+
+
+@pytest.mark.parametrize(
+    "fault, call",
+    [
+        ("receipt", lambda a: a.acknowledge(str(MESSAGE_TS))),
+        ("start", lambda a: a.start_working()),
+        ("stop", lambda a: a.stop_working()),
+    ],
+    ids=["receipt", "start", "stop"],
+)
+async def test_a_failed_acknowledgement_request_is_reported_not_raised(
+    fault, call, caplog
+):
+    # Scenario: A failed acknowledgement request is reported, not raised: one
+    # attempt, no retry, `False`, and no log line (the caller owns it).
+    bridge = FakeBridge()
+    bridge.ack_faults[fault] = SignalBridgeError("refused")
+    with caplog.at_level(logging.DEBUG, logger="henk.channel.signal"):
+        accepted = await call(_ack_adapter(bridge))
+    assert accepted is False
+    assert bridge.ack_attempts == [(fault, OWNER)]
+    assert bridge.receipts == [] and bridge.typing == []
+    assert [r for r in caplog.records if r.name == "henk.channel.signal"] == []
+
+
+class HoldingBridge(FakeBridge):
+    """A bridge whose first send chunk is held until the test releases it.
+
+    `log` interleaves chunk sends and acknowledgements in completion order, so
+    the test can see an acknowledgement land in the middle of a send sequence.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = asyncio.Event()
+        self.holding = asyncio.Event()
+        self.log: list[str] = []
+
+    async def send(self, recipient, text):
+        await super().send(recipient, text)
+        self.log.append(f"chunk:{text.strip()[:1]}")
+        if len(self.sends) == 1:
+            self.holding.set()
+            await self.release.wait()
+
+    async def send_receipt(self, recipient, timestamp):
+        await super().send_receipt(recipient, timestamp)
+        self.log.append("receipt")
+
+    async def start_typing(self, recipient):
+        await super().start_typing(recipient)
+        self.log.append("start")
+
+
+async def test_an_acknowledgement_does_not_wait_behind_a_send_in_flight():
+    # Scenario: An acknowledgement does not wait behind a send in flight (D7).
+    bridge = HoldingBridge()
+    adapter = SignalAdapter(
+        bridge, account="+31611111111", owner=OWNER, safe_length=30, sleep=_nosleep
+    )
+    send = asyncio.create_task(adapter.send(MESSAGE_A))
+    try:
+        await asyncio.wait_for(bridge.holding.wait(), 2.0)
+        assert adapter._send_lock.locked()  # the send is mid-sequence
+
+        # Bounded (standing rule 7): an acknowledgement that took the send lock
+        # would hang here until the send finished, which is never.
+        assert await asyncio.wait_for(adapter.acknowledge(str(MESSAGE_TS)), 2.0)
+        assert await asyncio.wait_for(adapter.start_working(), 2.0)
+        assert not send.done()
+    finally:
+        bridge.release.set()
+    assert await asyncio.wait_for(send, 2.0) is SendOutcome.DELIVERED
+
+    assert bridge.log == ["chunk:A", "receipt", "start", "chunk:A", "chunk:A"]
+    # The send's own chunks stay contiguous and in order.
+    assert "".join(text for _, text in bridge.sends) == MESSAGE_A
+    assert all(recipient == OWNER for recipient, _ in bridge.sends)
 
 
 # --- Outbound send serialization (reminder-delivery, channel-adapter delta) ---
