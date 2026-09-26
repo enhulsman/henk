@@ -164,7 +164,7 @@ When acknowledgement is disabled, no read receipt and no working indicator SHALL
 
 #### Scenario: A start in flight cannot land after the stop
 - **WHEN** an owner turn ends while a refresh request is in flight
-- **THEN** the refresh completes before the stop is sent, and both complete within one acknowledge timeout
+- **THEN** the stop is sent only after the refresh has completed or been cut off by its own bound, and the turn's exit completes within one acknowledge timeout of the close beginning; a refresh that hangs until its own bound may leave the stop unsent, and the client-side expiry then clears the indicator
 
 #### Scenario: A healthy close does not wait out a poll
 - **WHEN** an owner turn ends while no typing request is in flight

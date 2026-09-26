@@ -378,3 +378,219 @@ changes.
   core's gate, and the App's adapter.
 - In the harness, `("stop", OWNER)` in `bridge.typing` is a completion, so group 8's stop
   condition is reached only after the close has finished.
+
+## Group 8 — Guard tests
+
+Suite after group 8: 3602 passed, 4 skipped (3598 + 4 new in
+`tests/test_acknowledgement_guards.py`; the 8.3 change extends an existing test). The new
+file's tests take about 0.3 s together (1.2 s with imports on a cold start) and were stable
+over 10 serial runs. **No defect was found. Nothing in `henk/` changed.**
+
+- **The harness is wired by hand, not through `build_runtime`.** `build_runtime` constructs
+  its own `SignalCliRestBridge`, and patching it out would test the patch. The harness copies
+  the relevant wiring: one `OwnerAcknowledgement` on the App's adapter, `paused` the core's
+  gate's `has_pending`, its bound `working` as the core's `working_indicator`, and the same
+  object on the Dispatcher. It also wires a real `AuditLog` with `MutationReceipts` (on the
+  gate and the core), a real store under `tmp_path` with `MemoryRecall` and `OwnerCommands`,
+  and `FakeSessionFactory`. The store is seeded with one memory, so the first turn carries a
+  recall block and the store file is really written and read. Reminders and events stay
+  off: the time header and delivery note are reminder-only, and the event path is not an
+  owner turn.
+- **The acknowledge bound in the harness is 0.5 s, not the 5 s default.** Nothing in these
+  runs hangs, so the value only has to be real. A smaller bound means a regression that did
+  hang still fails inside the 5 s drive bound, on an assertion.
+- **Envelopes carry both `envelope.timestamp` and `dataMessage.timestamp`**, as the bridge
+  reports them. The stranger uses the UUID placeholder for `source` and `sourceUuid`. The
+  owner's group envelope carries only `source`, as in 5.2.
+- **The drive** is `_until` and `_cancel`, imported from `tests/test_app.py` together with
+  `ACCOUNT` and `STRANGER`. It runs until the owner DMs' stops are all in `bridge.typing`,
+  then cancels `App.run` and awaits it, inside `asyncio.wait_for(…, 5.0)`. The store's
+  connection is closed after that await, and only then are the files scanned. Closing it
+  moves WAL content into the main file, and the scan reads every file under `tmp_path`
+  anyway, so a left-over `-wal` or `-shm` is covered too. An autouse fixture fails any test
+  that leaves a task running after `App.run` has shut down.
+- **8.1** compares `inspect.signature(AgentCore.submit)` parameters after `self` with
+  `["text"]`. Both assertion messages name design D2 and finding 10, and say what to do.
+- **8.2 sentinel: `1987654321987`.** It has 13 digits like a real millisecond timestamp, but
+  falls in 2032. No clock value in the run can contain it. `time.time()` renders 10 integer
+  digits and at most 7 fraction digits, so its repr cannot hold 13 contiguous digits. No
+  other envelope, id or hash can contain it either (a 13-digit decimal run inside a hex digest
+  is about a 1-in-10^14 event). The scan looks for its decimal ASCII form, which is the
+  reference itself. It does not look for the seconds float `InboundMessage.timestamp`
+  carries (`1987654321.987`). D2 notes that the same value crosses the boundary as that
+  field, and the spec restricts only the reference. A binary integer encoding (for example,
+  a SQLite INTEGER column) would also escape a byte scan. No owner-turn path writes one
+  today, and adding one would take a schema change, which review would see.
+- **Non-vacuity checks in 8.2**: the receipt carried the sentinel. The audit file holds
+  exactly one session record, with `turn_count == 1`, so the flush ran. The store file holds
+  the memory, and the session turn holds the recall block and the text. At least one send
+  was made.
+- **8.3** adds the five tokens and one assertion to the existing scan: a `MUST_SCAN` list
+  (`henk/channel/acknowledge.py`, `henk/app.py`) that must be among the scanned files. The
+  scan already used `rglob`, so this proves coverage rather than adding it. Probed: a
+  `"/v1/receipts"` constant planted in `acknowledge.py` turns the scan red on its assertion.
+  In passing I noticed that `receiptMessage`, a token that predates this change, appears
+  nowhere in `henk/`, `signal.py` included. It can only ever catch a new leak, which is fine
+  for a denylist, and it is left as it was.
+- **8.4** also asserts that the set of every recipient across `sends`, `receipts`, `typing`
+  and `ack_attempts` is exactly `{OWNER}`. It also checks that one receipt was attempted,
+  and that the only session saw only the owner DM. The two allowlist lines are asserted
+  verbatim.
+- **8.5 is one test that runs the harness twice**, in `tmp_path/enabled` and
+  `tmp_path/disabled`, so it can compare the two runs directly. `FakeSessionFactory` replies
+  `"{reply}:{content}"`, so the expected reply is computed from what the session saw. The
+  test asserts the reply splits into more than one chunk at `safe_length=80`. The disabled
+  run has no stop to wait for. It drives until the reply's last chunk is sent, then gives
+  the loop 50 more iterations before cancelling, so a stray acknowledgement after the reply
+  would have been recorded. Its `ack_attempts` is asserted empty as well as `receipts` and
+  `typing`. Probed: a `start_working` that also sends a message turns 8.5 red on the
+  `sends` equality.
+
+## Group 9 — mutation check
+
+Method: each mutant alone, applied by exact replacement from a scratch backup, run with
+`PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -B -m pytest -q -p no:cacheprovider …`, then
+restored and compared byte for byte (`filecmp`) against the backup. `git diff --stat`
+afterwards shows only this group's two test files, plus a `README.md` change that is not
+this group's (see the report). "Earlier" means the result was recorded by the group named,
+and is not re-run here unless marked **re-run**.
+
+| # | Mutant | Killed by | How it failed | Source |
+|---|---|---|---|---|
+| M1 | receipt moved above the allowlist check | `test_app.py::test_stranger_gets_nothing_with_acknowledgement_enabled` (5.2); `test_acknowledgement_guards.py::test_a_stranger_and_a_group_message_get_nothing_end_to_end` (8.4) | 5.2: `receipts` held the stranger's and the group message's refs, expected `[]`. 8.4: `receipts` had 3 entries, index 0 `(OWNER, …301)` ≠ the owner DM's `…303`. Both misdirected receipts were addressed to the **owner** (D1's structural addressing) | **re-run** against both |
+| M2 | `channel_ref` on `OwnerTurn`, passed through `submit` (and by the dispatcher) | `test_the_owner_turn_carries_the_text_alone` (8.1) | `['text', 'channel_ref'] == ['text']`, with the D2 / finding 10 message. 8.2 stays green under M2 alone, as it should: the reference is queued but never written, sent or composed. That is why 8.1 is structural | **new** |
+| M3a | the reference written into the session audit record via a side channel (`Dispatcher` → `core.note_inbound_ref(ref)` → `record["inbound_ref"]` in `_write_audit_record`), leaving `OwnerTurn`/`submit` untouched | `test_the_channel_reference_is_never_audited_persisted_sent_or_put_in_a_turn` (8.2) | "the channel reference was persisted in […/audit/audit.jsonl]". 8.1 stays green, so 8.2 bites on its own | **new** |
+| M3b | the M2 route carried on into the record (`process` stores `turn.channel_ref`, `_write_audit_record` writes it) | 8.1 and 8.2 | 8.1 as M2; 8.2 as M3a | **new** |
+| M3c | the reference put into the turn content (`submit(f"{text}\n[message {ref}]")`), `submit` still text-only | 8.2 | the session-turn check: the content ends `[message 1987654321987]`. The echoed reply would fail the send check next | **new** |
+| M4 | `paused` ignored | `test_the_indicator_is_suspended_while_paused_and_resumes_at_the_next_poll`; core: `test_the_indicator_is_suspended_while_an_approval_is_pending` | `20.0 == 4.0` (no pause stop); core: "refreshed while pending" | groups 4, 6 |
+| M5 | stop sent on the cancellation path | `test_a_cancelled_body_sends_no_stop[idle,hung]`, `test_a_cancel_during_entry_leaves_no_indicator_task`; core: `test_a_cancelled_worker_propagates_and_sends_no_stop[process,run]` | a `("stop", OWNER)` / `("stop", None)` that must not be there | groups 4, 6 |
+| M6 | `asyncio.timeout` removed from `receipt` | `test_a_hung_receipt_returns_within_the_bound_and_logs_one_line` | 2 s fail-fast bound | group 4 |
+| M7 | the close issues the stop from the closing coroutine | `test_a_refresh_in_flight_at_exit_completes_before_the_stop` | typing `[start, stop, start]` | group 4 |
+| M8 | failure logged on every tick | `test_refresh_failures_are_logged_once_per_turn` | `8 == 1` | group 4 |
+| M9 | acknowledgement operations take `_send_lock` | `test_an_acknowledgement_does_not_wait_behind_a_send_in_flight`; re-run also `test_the_lock_wraps_the_shared_sequence_not_the_two_wrappers` | 2 s bound; lock-count guard | group 3; **re-run** full suite: 2 failed |
+| M10 | `_convert` mints `"0"` for a timestamp-less envelope | `test_timestamp_less_envelope_carries_no_channel_reference` ×4 | `'0' is None` | group 3; **re-run** full suite: the same 4 failed, nothing else |
+| M11 | `from_dict` fallback for `acknowledge_owner` is `False` | `test_acknowledgement_enabled_by_default_when_the_keys_are_absent` | `False is True` | group 1 |
+| M12 | `from_dict` never passes `acknowledge_owner` | `test_an_explicit_false_acknowledge_owner_is_honoured` | `True is False` | group 1 |
+| M13 | `except BaseException` in the bounded helpers (and 13a-c singly) | outer-cancel receipt, cancelled-body[hung], outer-cancel-during-close | cancel swallowed / 2 s bound | group 4 |
+| M14 | a smuggled `sender` parameter on `acknowledge` | `test_no_send_operation_exposes_an_arbitrary_recipient` | "Left contains one more item: 'sender'" | group 3 |
+| M15 | the close waits out the poll | `test_a_healthy_close_wakes_on_exit_not_on_the_poll` (+ others) | stop missing from `typing` | group 4; **re-run** with a different shape (`_wake` waits `ALL_COMPLETED`): 20 failed, all 3 `App.run` guards among them (the 1 s poll outlasts the 0.5 s close bound, so no stop completes and `_until` fails) |
+| M16 | `asyncio.timeout` removed from the close | `test_a_hung_stop_is_bounded`, `test_the_bound_exhausted_before_the_stop_leaves_the_indicator_to_expiry`; core: `test_a_hung_stop_does_not_hold_the_next_turn_beyond_the_bound` | 2 s fail-fast bound | groups 4, 6; **re-run** (`timeout(None)`) full suite: exactly these 3 failed |
+| M17 | `try: await task / except CancelledError: pass` in the close | outer-cancel-during-close, hung-stop, bound-exhausted | cancel swallowed; expiry line missing | group 4 (M17b on the cancel path: equivalent mutant, see group 4) |
+| M18 | entry `sleep(0)` above the `try` | `test_a_cancel_during_entry_leaves_no_indicator_task` | orphaned indicator task | group 4 |
+| M19 | refresh 8.0 / measured from return / fixed poll wait | `test_one_lost_refresh_stays_under_the_client_expiry`; `test_one_hung_refresh_does_not_let_the_indicator_expire` | `8.0 * 2 < 15.0`; `[0, 7]`; `[0, 7, 15] != [0, 7, 14]` | group 4 |
+| M20 | acknowledge-timeout cap removed | `test_an_out_of_range_acknowledge_timeout_is_refused[…]`, `test_the_acknowledge_timeout_cap_is_the_typing_refresh_interval` | `DID NOT RAISE` | group 1 |
+
+No survivors, apart from group 4's recorded equivalent mutant M17b. Two further probes of the
+group 8 guards, which are not in the table: a wire route planted in `acknowledge.py` (8.3
+red), and a `start_working` that also sends a message (8.5 red).
+
+## Group 10 — Documentation
+
+Written by the orchestrating session, in parallel with group 8 (README only, no shared files).
+`## Configuration` gains the two keys and names `send_timeout_seconds`/`open_timeout_seconds`,
+which the `signal.*` bullet omitted; `## Architecture` gains the two-sentence owner/stranger
+paragraph; the v1 checklist's *Owner identity* item gains the never-read diagnostic; a new
+`### Deploy-verify checklist (owner acknowledgement — deploy day)` holds group 12 in short form
+and points to this change for the full commands; `## Rollback` gains the flag, the backup-first
+pointer and the loader check expecting `False`.
+
+## Group 11 — Verification and close-out
+
+- **11.1, read end to end.** *Outbound sends are serialized* speaks only of send sequences
+  ("reply or proactive"), and the transport delta says acknowledgement requests are not send
+  sequences, so it does not read as covering them. One scenario over-promised and was corrected
+  in the delta: *A start in flight cannot land after the stop* said the refresh and the stop
+  "both complete within one acknowledge timeout". That holds only for a refresh that returns
+  early: a refresh that hangs until its own bound (the same length, started earlier) uses up
+  almost all of the close's bound, so the stop can be left unsent (group 4 finding 3). It now
+  says the stop is sent only after the refresh has completed or been cut off, the turn's exit
+  completes within one timeout of the close beginning, and a stop left unsent is cleared by the
+  client-side expiry, which is what the requirement text already said for an exhausted bound.
+
+## Review round (11.2) — test gaps closed
+
+A reviewer found four test gaps and no implementation defect. Tests only; `henk/` is
+unchanged, and no new test exposed a defect.
+
+- **Gap 1, the configured bound.** The elapsed checks allowed `T + 0.5` on `T = 0.05`
+  (about 11x), so a close bound of 5x or 2x and a receipt bound of 3x passed the suite. Two
+  fixes, each enough on its own. (a) `test_every_bounded_operation_gets_exactly_the_configured_timeout`
+  replaces the module's `asyncio` global with a spy (`ack_asyncio` fixture, via
+  `monkeypatch`, so only `acknowledge.py`'s own calls are seen and the real module is restored)
+  and drives a receipt plus a turn with a refresh, a pause stop, a resume start, a second
+  refresh and the close. It asserts seven `asyncio.timeout` calls, each with exactly the
+  configured value (a distinctive 0.321), and pins the issue times so the scenario provably ran.
+  The final stop opens no bound of its own: it runs inside the close's. (b) The measuring tests
+  (hung receipt, hung stop, bound exhausted in `test_acknowledge.py`; hung stop in
+  `test_agent_core_acknowledgement.py`; hung receipt in `test_app.py`) now use a 0.2 s bound
+  and hold the elapsed time to `[0.9, 1.5) x bound`. 0.2 s keeps scheduling noise small
+  against the bound, and 1.5x sits below the smallest multiple a mutant would plausibly
+  apply (2x). `MARGIN` is gone. `T = 0.05` stays for tests that need a bound to exist but do
+  not measure it.
+- **Gap 2, exceptions through the indicator path.** `test_refresh_failures_are_logged_once_per_turn`
+  is parametrized `refused`/`raising` (`RuntimeError` from the bridge, which the Signal
+  adapter lets through, as a second adapter might for anything). The start and later the stop
+  raise; the refresh count, one loop line and one close line still hold. New
+  `test_a_failing_stop_logs_one_close_line_and_the_close_returns[refused|raising]`. The
+  final-stop narrowing mutant turned out to be **equivalent at the log level**: the task dies
+  with the `RuntimeError`, and the close's dead-task branch logs the same line. It is killed by
+  asserting the indicator task (found by the same spy's `create_task`) ends without an
+  exception. Pinning that is justified because the two layers must each hold: with both gone,
+  a raising stop would go unlogged. New `test_an_indicator_task_that_dies_is_logged_once_by_the_close`
+  makes the `paused` predicate raise, so the task dies outside every per-request handler; the
+  close returns, logs exactly one line naming the `RuntimeError`, and leaves no task behind.
+  `FakeTime.sleeping()` now fails the test with a message instead of raising `TimeoutError`
+  when no sleeper registers (a dead loop), and the refresh test's outer bound is 2x
+  `FAIL_FAST` so that message wins the race.
+- **Gap 3, the daemon scenario.** `test_the_signal_daemon_is_not_configured_to_send_read_receipts`
+  in `test_channel_adapter.py`, beside the other static repo guards (no compose test existed).
+  It parses `docker-compose.yml` and fails on `receipt` (case-insensitive) in the
+  signal-cli-rest-api service's environment (list or mapping form, keys and values), command
+  or entrypoint. It also requires `MODE=` in that environment, so the guard cannot pass on an
+  empty or moved service, and forbids an `env_file` on the service, which would carry settings
+  the guard cannot read. It names the scenario *The daemon does not acknowledge on Henk's
+  behalf* and says it pins the repo only: **task 12.2 still verifies the deployed daemon.**
+- **Gap 4, "in order".** `MESSAGE_A` has three identical chunks, so the overlap test could not
+  see their order. New `ORDERED_CHUNKS`/`MESSAGE_ORDERED` (chunks starting `1`, `2`, `3`, which
+  is what `HoldingBridge.log` records) is used by that test alone. It asserts the split, the
+  exact log `["chunk:1", "receipt", "start", "chunk:2", "chunk:3"]` and the exact `sends` list.
+  Other `MESSAGE_A` users are untouched.
+
+### Mutation results (review round 11.2)
+
+The `acknowledge.py` mutants were loaded in-process with the reviewer's `mutplug` (no repo edit),
+each over the full suite. The compose and permutation mutants were file edits through
+`mutate.py`, restored and byte-compared afterwards.
+
+| Mutant | Killed by | Failure |
+|---|---|---|
+| close bound x5 | structural test; hung stop; bound exhausted; core hung stop | `[0.321, …] != [0.321]*7`; `1.001s is more than one 0.2s bound`; core: `_until` 2 s fail-fast (two 1 s closes) |
+| close bound x2 | structural; hung stop; bound exhausted; core hung stop | `0.401s is more than one 0.2s bound`; core `0.400s …` |
+| receipt bound x3 | structural; hung receipt; `test_app` hung receipt | `the receipt`; `0.601s is more than one …` |
+| `_attempt` catches only `TimeoutError` | `test_refresh_failures_are_logged_once_per_turn[raising]` | `Failed: the indicator loop never went back to sleep` |
+| final stop catches only `TimeoutError` | `test_a_failing_stop_logs_one_close_line_and_the_close_returns[raising]` | `RuntimeError('adapter bug') is None` (log-equivalent, see above) |
+| dead-task log removed | `test_an_indicator_task_that_dies_is_logged_once_by_the_close` | `[]` (no close line) |
+| compose env `SIGNAL_CLI_SEND_READ_RECEIPTS=true` | daemon guard | `['environment: SIGNAL_CLI_SEND_READ_RECEIPTS=true']` |
+| compose `command: ["--send-read-receipts"]` | daemon guard | `['command: --send-read-receipts']` |
+| compose mapping-form `Auto_Read_Receipt: "1"` | daemon guard | `['environment: Auto_Read_Receipt=1']` |
+| expected sends permuted (1, 3, 2) | overlap test | list mismatch |
+| expected log permuted | overlap test | list mismatch |
+
+No survivors. Flake check on the four touched files: 15 serial runs and 6 parallel processes
+x 5 runs, 45 of 45 green (150 tests each).
+- **11.2, conformance sweep.** Done by a fresh reviewer against both deltas, scenario by
+  scenario. No implementation defect. It found four test gaps, all closed and mutant-proven in
+  the *Review round (11.2)* section above: the bound tests allowed ~11x the configured timeout
+  (a close bounded at 5x passed the whole suite), no test sent an adapter exception through the
+  indicator path, the daemon scenario had no repo guard, and the send-overlap test could not
+  observe chunk order. The daemon scenario is now guarded in the repo and still verified on the
+  instance by 12.2.
+- **11.3.** Full suite 3608 passed, 4 skipped, against the pre-change baseline of 3478 passed,
+  4 skipped (+130). No existing test was modified beyond those the tasks name
+  (`test_no_send_operation_exposes_an_arbitrary_recipient`, `WIRE_FORMAT_TOKENS`) and the
+  send-overlap test this change itself added. No project linter is configured: `uvx ruff check`
+  over the changed files shows no new rule class against the same files at `cdb13ef`; the
+  handful of new findings copy idioms already present in those files (`# noqa: BLE001` on the
+  bridge's exception wrapper, unused unpacked `_wire()` values), and the one import-order
+  finding in a new test file was fixed.
+- **11.4.** `openspec validate owner-acknowledgement --strict` passes.

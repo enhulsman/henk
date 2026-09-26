@@ -331,11 +331,11 @@ for the last owner DM. Then cancel the `App.run` task and await it, exactly as `
 `finally` has then run `core.aclose()`, which is what flushes the session's audit record. Wrap
 the whole drive in `asyncio.wait_for(…, 5.0)` (standing rule 7).
 
-- [ ] 8.1 `OwnerTurn` guard (scenario *The channel reference never reaches the agent core*):
+- [x] 8.1 `OwnerTurn` guard (scenario *The channel reference never reaches the agent core*):
       `[f.name for f in dataclasses.fields(OwnerTurn)] == ["text"]`, and `AgentCore.submit`'s
       parameters (minus `self`) `== ["text"]`. The failure message names design D2 and finding
       10, so whoever trips it knows the rule it guards.
-- [ ] 8.2 Sentinel scan (scenario *The channel reference is never audited, persisted, sent or
+- [x] 8.2 Sentinel scan (scenario *The channel reference is never audited, persisted, sent or
       put in a turn*), on the harness: the owner envelope's timestamp is a distinctive sentinel
       integer. Assert:
       - it appears in `FakeBridge.receipts`;
@@ -344,19 +344,19 @@ the whole drive in `asyncio.wait_for(…, 5.0)` (standing rule 7).
       - it is absent from `FakeBridge.sends`.
 
       Logs are deliberately not scanned (design D2).
-- [ ] 8.3 Wire-token scan: extend `WIRE_FORMAT_TOKENS` (`test_channel_adapter.py:275`) with
+- [x] 8.3 Wire-token scan: extend `WIRE_FORMAT_TOKENS` (`test_channel_adapter.py:275`) with
       `receipt_type`, `typing-indicator`, `/v1/receipts`, `/v2/send`, `/v1/receive`. The last
       two are routes the scan's own comment claims to cover and its list lacks. Not `typing`:
       it matches `from typing import`. Confirm the scan passes, including over
       `henk/channel/acknowledge.py`.
-- [ ] 8.4 End-to-end stranger run with acknowledgement enabled, on the harness: the script
+- [x] 8.4 End-to-end stranger run with acknowledgement enabled, on the harness: the script
       holds a stranger envelope, an owner group envelope and, last, an owner DM, so the
       drive's stop condition is reached only after both drops have been processed. Assert:
       - `FakeBridge.receipts` has exactly one entry, the owner DM's;
       - `FakeBridge.typing` holds only owner-addressed entries;
       - nothing is addressed to the stranger's number anywhere in the bridge's records;
       - the allowlist's two drop lines are logged.
-- [ ] 8.5 Acknowledgements are not messages (scenario *Acknowledgements are not messages*): run
+- [x] 8.5 Acknowledgements are not messages (scenario *Acknowledgements are not messages*): run
       the harness twice, with acknowledgement enabled and disabled, for the same owner DM and a
       multi-chunk scripted reply. In both runs, `FakeBridge.sends` equals exactly
       `[(OWNER, c) for c in split_message(reply, safe_length)]`. The disabled run's
@@ -364,7 +364,7 @@ the whole drive in `asyncio.wait_for(…, 5.0)` (standing rule 7).
 
 ## 9. Mutation check
 
-- [ ] 9.1 Apply each mutant alone, run the named tests, and confirm each fails. Record the table
+- [x] 9.1 Apply each mutant alone, run the named tests, and confirm each fails. Record the table
       in `notes/apply-decisions.md`. Any survivor is a missing assertion: fix the test, not the
       mutant.
 
@@ -393,40 +393,40 @@ the whole drive in `asyncio.wait_for(…, 5.0)` (standing rule 7).
 
 ## 10. Documentation
 
-- [ ] 10.1 README `## Configuration`: one bullet for `signal.acknowledge_owner` (true, the
+- [x] 10.1 README `## Configuration`: one bullet for `signal.acknowledge_owner` (true, the
       rollback flag, and the note that rp5's file will not carry it, so it is on after deploy)
       and `signal.acknowledge_timeout_seconds` (5.0, a whole-operation bound enforced by
       cancellation). Correct the `signal.*` bullet list to name `send_timeout_seconds` and
       `open_timeout_seconds`, which it omits.
-- [ ] 10.2 README `## Architecture` (or the channel section): two sentences on what the owner
+- [x] 10.2 README `## Architecture` (or the channel section): two sentences on what the owner
       now sees, and that strangers see nothing more than before.
-- [ ] 10.3 README: a `### Deploy-verify checklist (owner acknowledgement — deploy day)` holding
+- [x] 10.3 README: a `### Deploy-verify checklist (owner acknowledgement — deploy day)` holding
       group 12's checks in short form. In the existing v1 checklist, the *Owner identity* item
       gains: "a delivered-but-never-read DM means the allowlist dropped it, or the receipt
       failed; the log says which".
-- [ ] 10.4 README `## Rollback`: the flag, with a pointer to the backup-first recipe for editing
+- [x] 10.4 README `## Rollback`: the flag, with a pointer to the backup-first recipe for editing
       rp5's `config.yaml`, **and the check after the edit**: re-run task 12.1's loader one-liner
       and expect `False`. The `signal:` section does not reject unknown keys, so a misspelt key
       is silently ignored and would leave acknowledgement on (design D8).
 
 ## 11. Verification and close-out
 
-- [ ] 11.1 Read every requirement this change touches end to end, in final assembled form,
+- [x] 11.1 Read every requirement this change touches end to end, in final assembled form,
       against each other: *Owner-only allowlist*, *Signal transport via signal-cli-rest-api*,
       *Swappable channel-adapter contract*, *Owner-only acknowledgement of inbound messages*,
       *Outbound sends are serialized* (unchanged, but it must not read as covering
       acknowledgements), and agent-core's *Owner agent turns are bracketed by the working
       indicator*.
-- [ ] 11.2 Spec→test conformance sweep: for each scenario, does its test assert the
+- [x] 11.2 Spec→test conformance sweep: for each scenario, does its test assert the
       *scenario*, or what the implementer built? (The lesson in channel-integrity's
       post-archive corrections.)
-- [ ] 11.3 Full suite plus lint green. Record the pass count against the pre-change baseline.
+- [x] 11.3 Full suite plus lint green. Record the pass count against the pre-change baseline.
       Tests this change knowingly touches: `test_channel_adapter.py` (recipient inspection,
       wire tokens, new transport tests), `test_app.py` (new tests only; existing ones
       untouched), `test_config.py`, `test_runtime.py`, and `conftest.py` (`FakeBridge`,
       `FakeChannel`). No other existing test may need modifying; if one does, re-run standing
       rule 6's grep rather than editing past it.
-- [ ] 11.4 `openspec validate owner-acknowledgement --strict`, then commit
+- [x] 11.4 `openspec validate owner-acknowledgement --strict`, then commit
       (publication-safe; the hook enforces it).
 
 ## 12. Deploy verification (owner-run on rp5, root shell)
