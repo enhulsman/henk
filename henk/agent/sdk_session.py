@@ -94,6 +94,27 @@ BUILTIN_HOST_TOOLS = (
     "Skill",
     "SlashCommand",
     "ExitPlanMode",
+    # 2026-09-27: CLI 2.1.283's init tool list under Henk's options (snapshot and
+    # live check in tests/test_builtin_host_tools.py). Henk described the Cron*,
+    # Workflow and DesignSync ones to the owner on 2026-09-26.
+    "AskUserQuestion",
+    "EnterPlanMode",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "ScheduleWakeup",
+    "Monitor",
+    "Workflow",
+    "ListAgents",
+    "SendMessage",
+    "PushNotification",
+    "ReportFindings",
+    "DesignSync",
+    "EnterWorktree",
+    "ExitWorktree",
+    # Enabled only under subscription auth (rp5's OAuth token), so no dummy-key
+    # probe shows it; the bundle declares it.
+    "RemoteTrigger",
 )
 
 
