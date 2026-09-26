@@ -4,20 +4,30 @@
 Signal, you will now see "Henk is typing" in the chat while the triage runs, until the
 triage message lands, exactly as you do when you ask Henk something. A triage that the daily
 alert cap holds back (it is still written to the audit log and handoffs, but not sent) shows
-nothing, so "typing" is never followed by silence. Nothing else changes: no new message, no
-notification, no new setting. Typing appears when the triage turn starts, which is after the
-120 s debounce, so it can begin up to about two minutes after the Discord/ntfy alert.
+nothing. A triage the cap has not held back always ends in a message, unless the triage
+itself fails between the model's answer and the send (for example the step that remembers
+the triage's handoff for next time raising) or the delivery fails; the typing is stopped
+either way. Nothing else changes: no new message, no notification, no new setting. Typing
+starts about two minutes after the Discord/ntfy alert (the fixed 120 s debounce window
+opened by the first event), later if Henk is busy with another turn, and lasts until the
+triage lands (about a minute for an Opus triage).
 
 **Decisions that are yours** (my pick first):
 
 1. **Which triages show typing.** (a) *Only triages that will be sent to you* (recommended):
-   the send decision is made before the turn starts, so the indicator always ends in a
-   message. (b) All triages, including cap-suppressed ones: "typing" would then sometimes end
-   in nothing, which is a false promise.
+   the send decision is made before the turn starts, so the indicator ends in a message
+   unless the triage fails between the model's answer and the send, or the delivery fails,
+   and it is stopped on every exit either way. (b) All triages, including cap-suppressed
+   ones: "typing" would then routinely end in nothing, which is a false promise.
 2. **Which setting controls it.** (a) *The existing `signal.acknowledge_owner` flag*
    (recommended): one flag, one rollback, and a triage indicator without the chat indicator
    has no scenario. (b) A new flag just for triage typing: an extra key on rp5's
    locally-modified `config.yaml` for a behaviour you can already switch off.
+3. **When to ship it.** (a) *On its own, now* (recommended): it is small, independent of
+   roadmap item 5, and the test that proves typing pauses during an approval inside a
+   triage lands with it, so item 5 inherits a tested behaviour. (b) Hold it and ship it
+   together with item 5 (runbook actions), when approval prompts inside triages become
+   real: one deploy instead of two, but you go without triage typing until then.
 
 ## Why
 
@@ -30,7 +40,9 @@ the alert says a triage is coming. The exclusion was the conservative first step
 lifts it for the triages that will actually reach the owner.
 
 It also prepares roadmap item 5 (runbook actions). Approval prompts will then occur inside
-triages, and the indicator's pause-during-approval behaviour will matter there.
+triages, and the indicator's pause-during-approval behaviour will matter there. No triage
+can raise an approval prompt today (every registered write tool is owner-turn-only), so this
+change proves the pause with a test-only tool that is allowed in triages.
 
 ## What Changes
 
@@ -64,10 +76,11 @@ None.
 ## Impact
 
 - **Code:** `henk/agent/core.py` (`_process_event` enters the existing `_working()` bracket
-  when the turn is announceable). No change to `henk/channel/`, `henk/app.py`,
-  `henk/runtime.py` or config: the runtime already passes the bracket to the core.
-- **Tests:** a new event-turn section beside `tests/test_agent_core_acknowledgement.py`, plus
-  one `App.run` guard.
+  when the turn is announceable, plus its stale comments). `henk/runtime.py`: comment only.
+  No change to `henk/channel/`, `henk/app.py` or config: the runtime already passes the
+  bracket to the core.
+- **Tests:** a new event-turn section in `tests/test_agent_core_acknowledgement.py`, plus one
+  guard that drives the real alert cap through `EventCoordinator.dispatch_batch`.
 - **Deployment:** image rebuild only. No config edit, volume, port or ACL change. Rollback is
   the existing `signal.acknowledge_owner: false`, which now also turns off triage typing, or
   the previous image.

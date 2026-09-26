@@ -52,17 +52,21 @@ Owner **command** turns SHALL NOT be bracketed: they are deterministic and insta
 ### Requirement: Sent event triages are bracketed by the working indicator
 When owner acknowledgement is enabled, the agent core SHALL show the channel adapter's working indicator for every **event turn whose output will be sent to the owner** — an announceable turn, as decided by the alert cap before the turn is queued — and SHALL NOT show it for a turn the cap has made non-announceable. The owner is waiting on such a triage: the external alert has already said one is coming. A cap-suppressed triage produces no Signal message, so an indicator there would promise a message that never comes.
 
-The bracket SHALL be the same asynchronous bracket owner agent turns use, with the same discipline, bounds, cancellation and approval-pause behaviour (see "Owner agent turns are bracketed by the working indicator" and the channel-adapter spec). It SHALL open before the incident session is started and SHALL close only after the proactive send has been attempted: the triage message for a completed turn, or the incomplete-triage notice for an errored one, since either is the message the owner is waiting on. Opening it SHALL issue the indicator's start before the session receives the turn's content, and SHALL NOT wait on the start's response.
+The bracket SHALL be the same asynchronous bracket owner agent turns use, with the same discipline, bounds, cancellation and approval-pause behaviour (see "Owner agent turns are bracketed by the working indicator" and the channel-adapter spec). It SHALL open before the incident session is started and SHALL close only after the proactive send has been attempted: the triage message for a completed turn, or the incomplete-triage notice for a turn that did not complete (an error, a refusal, or no reply), since either is the message the owner is waiting on. Opening it SHALL issue the indicator's start before the session receives the turn's content, and SHALL NOT wait on the start's response.
 
-On every normal exit path — a completed triage and its send, an errored triage and its notice, or an exception from starting the incident session — the indicator SHALL be stopped. On cancellation, the indicator task SHALL be cancelled and awaited, no stop SHALL be attempted over the network, and the cancellation SHALL propagate out of the turn. A cap-suppressed event turn, and every event turn when acknowledgement is disabled, SHALL be processed exactly as before this change.
+On every exit other than cancellation — a sent triage message, a sent incomplete-triage notice, or an exception raised anywhere inside the bracket, including while starting the incident session — the indicator SHALL be stopped. On cancellation, including a cancellation delivered while the bracket is being entered, the indicator task SHALL be cancelled and awaited, no stop SHALL be attempted over the network, and the cancellation SHALL propagate out of the turn. A cap-suppressed event turn, and every event turn when acknowledgement is disabled, SHALL be processed exactly as before this change.
 
 #### Scenario: A sent triage is bracketed
 - **WHEN** an announceable event turn completes and its triage message is sent
 - **THEN** the working indicator was started before the session received the turn's content and stopped after the triage message was sent
 
-#### Scenario: An errored sent triage clears after its notice
-- **WHEN** an announceable event turn raises and the incomplete-triage notice is sent
+#### Scenario: A sent triage that did not complete clears after its notice
+- **WHEN** an announceable event turn raises, is refused, or produces no reply, and the incomplete-triage notice is sent
 - **THEN** the working indicator is stopped after the notice was sent, not left running
+
+#### Scenario: An exception inside the bracket still stops the indicator
+- **WHEN** an exception is raised between the agent turn and the proactive send of an announceable event turn
+- **THEN** the working indicator is stopped, no indicator task is left running, and the exception propagates as it does today
 
 #### Scenario: A cap-suppressed triage shows no indicator
 - **WHEN** a non-announceable event turn is processed

@@ -16,11 +16,25 @@ Current event path (`henk/agent/core.py`, `_process_event`, read 2026-09-26):
    record and advances the checkpoint. On a genuine audit failure it also sends the
    one-shot degraded-durability notice.
 5. **Only when `turn.announceable`**, the triage message (completed) or the
-   incomplete-triage notice (errored) goes out through `_send_proactively`.
+   incomplete-triage notice (a turn that did not complete: an error, a refusal or no
+   reply) goes out through `_send_proactively`.
 
 `turn.announceable` is decided before the turn is queued, by `EventPipeline._apply_cap`
-(`henk/events/pipeline.py`), and is its only source. Event turns are framed as tainted, so
-the gate blocks every mutating tool in them and no approval prompt can occur in a triage today.
+(`henk/events/pipeline.py`), and is its only source.
+
+The turn is queued after the debounce, which is a fixed window, not a quiet period: the
+first event opens it and the batch is dispatched when it closes, however many events
+arrived meanwhile (`henk/events/coordinator.py:108-120`, `deadline = mono_clock() +
+window` at `:110`). So the triage turn starts about 120 s after the first alert, later if
+the core's serial queue is busy with another turn.
+
+Every registered mutating tool is owner-turn-scoped (`henk/tools/base.py:60,95`; the four
+overrides in `henk/tools/memory.py`, `capture.py` and `reminders.py` all declare
+`(TurnType.OWNER,)`), so an event turn's mutating calls are denied `out-of-scope` before
+any prompt (`henk/gate/approval.py:266-273`). Taint governs owner turns in a tainted session
+(`approval.py:274-281`). A future EVENT-scoped per-instance tool (roadmap item 5) would
+prompt inside an announceable triage; in a non-announceable one it is `SUPPRESSED` without
+a prompt (`approval.py:238-246`).
 
 ## Goals / Non-Goals
 
@@ -37,8 +51,12 @@ debounce, or what a triage sends.
 
 The core enters `self._working()` when `turn.announceable` is true, and a `nullcontext()`
 otherwise. `announceable` is the send decision itself, not a prediction of it: the cap ran
-before the turn was queued, and `_process_event` sends exactly when it is true. So an
-indicator never ends in silence.
+before the turn was queued, and `_process_event` sends exactly when it is true. So a triage
+the cap has not held back always ends in a message unless the triage itself fails between
+the turn and the send (for example the recurrence `handoff_sink` raising inside
+`_flush_event_triage`) or the delivery fails; the indicator is stopped on every exit either
+way. An audit write failure is not such a case: `AuditLog.write` catches `OSError` and
+returns `False`, which leads to the degraded-durability notice and then the send.
 
 *Alternatives.* Bracketing every event turn: a cap-suppressed triage would show typing and
 then send nothing, a false promise. Deciding after the turn: too late, since the indicator is
@@ -55,8 +73,8 @@ when a message from that sender arrives.
 The degraded-durability notice, when a genuine audit failure triggers it, is sent inside the
 bracket. That is accurate: more is coming, since the triage message follows it.
 
-The early `return` for a non-announceable turn sits outside any bracket, because that turn
-never entered one.
+The suppressed path runs under `nullcontext()`; the `if not turn.announceable: return` at
+`core.py:506` is unchanged.
 
 *Alternative.* Bracketing only `run_turn`: would drop the indicator during the audit flush and
 the send, and split the close across outcome branches, as the owner-turn design already
@@ -68,8 +86,12 @@ rejected.
 `henk/runtime.py`, `henk/app.py` and config are untouched. The bounds (one acknowledge
 timeout per operation and for the close), cancellation (no stop, task awaited), once-per-turn
 logging and the pause predicate all carry over. `paused=gate.has_pending` is never true during
-a triage today (tainted turns cannot prompt), so it costs nothing now and is already correct
-for roadmap item 5.
+a triage today: every registered mutating tool is owner-turn-scoped
+(`henk/tools/base.py:60,95`), so an event turn's mutating calls are denied `out-of-scope`
+before any prompt (`henk/gate/approval.py:266-273`), and taint governs only owner turns in a
+tainted session. A future EVENT-scoped per-instance tool (roadmap item 5) would prompt inside
+an announceable triage. The pause test in task 1.2 proves the pause for event turns with a
+test-only EVENT-scoped tool, so item 5 inherits a tested behaviour.
 
 ### D4 — No new flag
 
@@ -86,8 +108,20 @@ must pass untouched.
 
 ## Risks / Trade-offs
 
-- **Typing starts late relative to the alert** (debounce, up to about 120 s). → Accepted and
-  stated in the proposal; the indicator marks the turn, not the alert.
+- **Typing starts late relative to the alert**: about 120 s after the first event, because
+  the debounce is a fixed window opened by that event (`coordinator.py:108-120`), and later
+  when the serial queue is busy with another turn. → Accepted and stated in the proposal;
+  the indicator marks the turn, not the alert.
+- **Typing that ends with nothing arriving.** A FAILED or PARTIAL delivery of the triage
+  message stops typing with nothing (or only part) arriving, and an exception between the
+  turn and the send (the `handoff_sink` raising inside the flush) stops it with no send at
+  all. → The same accepted residual as an owner turn's failed reply (owner-acknowledgement
+  D3); the delivery outcome is logged, and the exception still reaches `AgentCore.run`'s
+  logger as today.
+- **Typing right after a reply, when a triage is queued behind an owner turn.** The owner
+  sees Henk's reply, then "typing" again at once. → The cue is accurate: Henk is working on
+  something for the owner, and the triage message that follows explains it. That the
+  triage displaces the owner's open conversation predates this change.
 - **A long triage means many refreshes** (about one per 7 s for a minute-long Opus turn). →
   Negligible; the same cost an equally long owner turn already has.
 - **A hung stop after a triage holds the next queued turn by at most one acknowledge
@@ -103,4 +137,4 @@ image, tagged before deploy.
 
 ## Open Questions
 
-None, pending the owner's two decisions in the proposal.
+None, pending the owner's three decisions in the proposal.
