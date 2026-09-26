@@ -198,3 +198,51 @@ async def test_reasoning_settings_reach_the_session_factory():
         assert factory_config.thinking == "disabled"
     finally:
         await client.aclose()
+
+
+async def test_owner_acknowledgement_is_one_instance_on_the_apps_adapter_and_gate():
+    # owner-acknowledgement 7.1, flag on (the default). One OwnerAcknowledgement,
+    # shared by the dispatcher (receipts) and the core (the bracket), over the
+    # App's own adapter, paused by the gate the core frames. A non-default timeout,
+    # so a wiring that fell back to the default cannot pass by coincidence.
+    from henk.channel import signal
+    from henk.channel.acknowledge import OwnerAcknowledgement
+
+    base = Config.load(SAMPLE, env={})
+    config = dataclasses.replace(
+        base,
+        signal=dataclasses.replace(base.signal, acknowledge_timeout_seconds=2.5),
+    )
+    assert config.signal.acknowledge_owner is True
+    app, client = build_runtime(config)
+    try:
+        acknowledgement = app._dispatcher._acknowledgement
+        assert isinstance(acknowledgement, OwnerAcknowledgement)
+        indicator = app._core._working_indicator
+        assert indicator == acknowledgement.working
+        assert indicator.__self__ is acknowledgement  # the same instance, bound
+        # The same-instance rule the scheduler follows: a second adapter over the
+        # same bridge would pass every per-call test and share no state.
+        assert acknowledgement._adapter is app._adapter
+        assert acknowledgement._timeout == 2.5
+        assert acknowledgement._refresh == signal.TYPING_REFRESH_SECONDS
+        gate = app._core._gate
+        assert gate is app._dispatcher._gate
+        assert acknowledgement._paused == gate.has_pending
+        assert acknowledgement._paused.__self__ is gate
+    finally:
+        await client.aclose()
+
+
+async def test_owner_acknowledgement_off_wires_neither_receipt_nor_indicator():
+    # owner-acknowledgement 7.1, flag off: the rollback wires nothing at all.
+    base = Config.load(SAMPLE, env={})
+    config = dataclasses.replace(
+        base, signal=dataclasses.replace(base.signal, acknowledge_owner=False)
+    )
+    app, client = build_runtime(config)
+    try:
+        assert app._dispatcher._acknowledgement is None
+        assert app._core._working_indicator is None
+    finally:
+        await client.aclose()

@@ -240,3 +240,141 @@ against the backup and an empty `git diff --stat` confirmed nothing was left beh
 | M19 | interval measured from a start's return | `test_one_hung_refresh_does_not_let_the_indicator_expire` | killed (starts `[0, 7]`, no start at 14) |
 | M19 | fixed poll wait instead of `min(poll, next_due − clock())` | `test_one_hung_refresh_does_not_let_the_indicator_expire` | killed (`[0, 7, 15] != [0, 7, 14]`) |
 | M19 | `TYPING_REFRESH_SECONDS = 8.0` (in-process) | `test_one_lost_refresh_stays_under_the_client_expiry` (+ 6 cadence tests) | killed (`8.0 * 2 < 15.0`) |
+
+## Group 5 — Dispatcher receipt (`henk/app.py`)
+
+Suite after groups 5-7: 3598 passed, 4 skipped (3574 + 24 new: 8 in `tests/test_app.py`,
+14 in `tests/test_agent_core_acknowledgement.py`, 2 in `tests/test_runtime.py`). The three
+files take 0.65 s together, and were stable over 15 serial runs and 18 runs six-way
+parallel.
+
+- **The receipt sits after routing on both branches.** The gate branch's early `return` became
+  an `else:`, so every allowlisted message reaches one receipt call: a `yes`/`no` routed to
+  the gate, an unrelated message that failed an approval closed and was re-queued, and a
+  plain turn. A message with `channel_ref is None` skips the call entirely, so nothing is
+  logged (D2).
+- **`app.py` imports `OwnerAcknowledgement` for the annotation.** `henk.app` is already in
+  the replay's `FORBIDDEN` list, and `acknowledge.py` imports only `henk.channel.base`, so
+  the replay's import graph is unchanged.
+- **Every acknowledgement-enabled test in group 5 runs a real `SignalAdapter` over a
+  `FakeBridge`**, not only the failure and stranger tests. The adapter is also the gate's and
+  the core's channel, the way the runtime wires it. The disabled test uses `FakeChannel`,
+  because its `acks` list is what "no entry of any kind" is about.
+- **Order is observed, not inferred.** `_OrderedBridge` records a receipt when it is
+  *issued*, and the test's own wiring wraps `core.submit` on the instance. `receipts` only
+  records completions, so it cannot show that the message was queued before the receipt
+  began.
+- **5.2 converts the envelopes through the real adapter's `messages()`.** So each message
+  carries the reference that a misplaced receipt would use, and the test asserts it has one
+  (otherwise the test is vacuous). The stranger uses the UUID placeholder for both `source`
+  and `sourceUuid`. The owner's group envelope carries only `source`, because `_convert`
+  prefers `sourceUuid`. The core worker runs during the test, so a stranger message that got
+  queued would create a session. The drop lines are the allowlist's own
+  (`henk/channel/allowlist.py`): `dropped message from non-owner sender=%s` and
+  `dropped group message from sender=%s`. They are asserted verbatim, and compared with a
+  run through a dispatcher that has no acknowledgement ("logged exactly as with
+  acknowledgement disabled").
+- **One test was added that the task list does not name**: a message without a reference is
+  queued, with no `ack_attempts` and nothing logged. It covers the dispatcher half of scenario
+  *A message without a channel reference is not acknowledged and logs nothing*. Group 4
+  covered the `receipt(None)` half.
+- **Standing rule 6.** Re-grepped `Dispatcher(\|AgentCore(\|\.sent\b\|\.calls\b\|\.sends\b`.
+  The two pre-existing constructions, `tests/test_app.py:74` (it was `:68`; the new imports
+  moved it down 6 lines) and `tests/test_reminders_runtime.py:199`, are unchanged. They
+  construct without the keyword and pass. No test monkeypatches `Dispatcher`, `on_inbound`
+  or `_process_owner`. The only change to existing lines in `test_app.py` is the import block
+  (`logging`, `time`, `pytest`, `OwnerAcknowledgement`, `SignalAdapter`,
+  `TYPING_REFRESH_SECONDS`, and `FakeBridge` added to the conftest import). No existing test
+  body changed.
+- **Structural addressing, seen under M1.** With the receipt moved above the allowlist, the
+  stranger's message *is* acknowledged, but to the **owner**, `(OWNER, 1700000000101)`, never
+  to the stranger. That is D1's claim that the ordering property became a structural one.
+  M1 is still a violation (a receipt for a message that failed the check), and 5.2 catches it
+  on `receipts == []`.
+
+## Group 6 — Core bracket (`henk/agent/core.py`)
+
+- **`_Sender` is not widened** (design D3, deliberate). The core never calls
+  `acknowledge`/`start_working`/`stop_working`. It only enters the injected bracket, so a core
+  test double does not need to implement them.
+- **The unwired bracket is `contextlib.nullcontext()`**, entered with `async with` (supported
+  since 3.10). Its `__aenter__`/`__aexit__` never suspend, so a core without an indicator
+  schedules an owner turn exactly as before. `_framed_turn` is unchanged.
+- **`core.py` does not import `henk.channel.acknowledge`.** `tests/test_replay_isolation.py`
+  limits the replay's channel imports to `henk.channel`, `.base` and `.allowlist`, and the
+  replay imports the core. The parameter is typed
+  `Callable[[], AbstractAsyncContextManager[None]] | None` from `contextlib`.
+- **Placement is D3's diagram**: `/new` and the app-side command return before the
+  `async with`. The bracket then encloses `_ensure_session`, the composition, the gate-framed
+  `run_turn`, and the reply or error-reply send. The error branch's `return` leaves the
+  bracket normally, so its stop follows the error reply. An `_ensure_session` exception
+  passes through the bracket's `except Exception` (so the close runs) and propagates out of
+  `process` to `AgentCore.run`'s logger, as it did before. The test asserts that it raises.
+- **Module docstring**: one bullet added to the responsibility list.
+- **The `working_indicator=None` test** runs three wirings (keyword omitted, explicit `None`,
+  enabled). Each is checked against the hardcoded composition the existing recall and
+  time-header tests pin: `"{header}\n\n{recall}\n\nhello"`, then `"{header}\n\nand again"`,
+  with recall on the first turn only. Replies are `ok:{content}`. The enabled run is held to
+  the same bytes, and only its `acks` differ.
+- **The approval-integration test** drives a real `ApprovalGate(demote_standing=True)` with
+  `StandingTool` (from `test_gate_authorization.py`) through the real `decide_tool_permission`.
+  The acknowledgement's `paused` is that gate's `has_pending`. The cadence runs on group 4's
+  `FakeTime`. The test imports only the class, so `test_acknowledge.py`'s autouse fixture does
+  not come along, and this file has its own leftover-task fixture. It advances to t = 10,
+  past the t = 7 refresh, while the prompt is pending, and asserts that only the pause stop
+  followed the prompt. It then calls `gate.deliver("yes")` directly (the dispatcher route is
+  covered in 5.1). The session holds after the tool runs, so the resume start is asserted
+  while the turn is still running.
+- **The hung-stop test** takes "the bracket began to close" to be the moment the first
+  reply's send completed, because the bracket exits right after it. It asserts
+  `gap < T + MARGIN`, and `gap >= 0.9 T` to prove the close waited on the hung stop. It waits
+  until both turns' close lines are logged before cancelling the worker, so the cancel cannot
+  race the second close.
+- **The cancellation test is parametrized** over `process` and `AgentCore.run`. In both,
+  `task.cancelled()` holds, `acks == [("start", None)]`, and the autouse fixture proves the
+  indicator task is done.
+
+## Group 7 — Runtime wiring (`henk/runtime.py`)
+
+- One `OwnerAcknowledgement` is built right after the gate (after the adapter), when
+  `config.signal.acknowledge_owner` is set, with `timeout=acknowledge_timeout_seconds`,
+  `refresh_seconds=TYPING_REFRESH_SECONDS` and `paused=gate.has_pending`. It is passed to
+  `Dispatcher(..., acknowledgement=...)` (now `runtime.py:276-278`), and its bound `working`
+  is passed to `AgentCore(working_indicator=...)` (`runtime.py:272`). When the flag is off,
+  both are `None`.
+- `henk/runtime.py` imports `TYPING_REFRESH_SECONDS` from `henk.channel.signal`, which it
+  already imported. `test_replay_isolation.py` still passes: `henk.runtime` is itself in
+  `FORBIDDEN`, so the replay never loads it.
+- **The 7.1 test uses a non-default timeout (2.5)**, so a wiring that fell back to 5.0 cannot
+  pass by coincidence. Identity is asserted through the bound methods:
+  `core._working_indicator.__self__ is acknowledgement`, and
+  `acknowledgement._paused.__self__ is app._core._gate`, which is also the dispatcher's
+  gate.
+
+### Mutation results (groups 5-7)
+
+Each mutant was applied alone to a scratch-backed copy of one source file. The named tests
+were run with `python -B`, then the backup was copied back. `cmp` against each backup
+confirmed that all four files were restored, and `git diff --stat` shows only the intended
+changes.
+
+| # | Mutant | Caught by | Result |
+|---|---|---|---|
+| M1 | receipt moved above the allowlist check in `on_inbound` | `test_stranger_gets_nothing_with_acknowledgement_enabled` alone (8.4 does not exist yet), plus 4 ordering tests | killed (`receipts` held `(OWNER, 1700000000101)` and `(OWNER, 1700000000102)`, expected `[]`) |
+| — | receipt skipped for approval replies (APPROVE/DENY return before it) | `test_an_approval_reply_is_routed_to_the_gate_and_acknowledged` | killed (the `yes` message's receipt was missing) |
+| M4 (core) | `paused` ignored (`self._paused = lambda: False`, whatever the wiring) | `test_the_indicator_is_suspended_while_an_approval_is_pending` | killed ("refreshed while pending": `[('start',)] != [('stop',)]`) |
+| M5 (core) | the cancel path closes (and so sends the stop) instead of cancelling the task | `test_a_cancelled_worker_propagates_and_sends_no_stop[process,run]` | killed (`('stop', None)` extra) |
+| M16 (core) | `asyncio.timeout` removed from the close (`timeout(None)`) | `test_a_hung_stop_does_not_hold_the_next_turn_beyond_the_bound` | killed (2 s fail-fast bound: the second turn never started) |
+| — | bracket moved to enclose only `run_turn` | normal-turn (stop before the reply send), errored-turn, session-setup-raises (`[] != [start, stop]`), approval, hung-stop | killed (5 tests) |
+| — | bracket applied to `/memories` | `test_commands_and_reset_are_not_bracketed[/memories]` | killed (`acks` not empty) |
+| — | runtime passes a different gate's `has_pending` | `test_owner_acknowledgement_is_one_instance_on_the_apps_adapter_and_gate` | killed |
+| — | runtime passes a fresh `SignalAdapter` | same | killed (`_adapter is not app._adapter`) |
+
+### For group 8
+
+- `tests/test_app.py` now holds `ACCOUNT`, `STRANGER` (the UUID placeholder),
+  `_OrderedBridge`, `_wire_ack` and `_received`, which the `App.run` harness can reuse. The
+  harness wires the acknowledgement as `build_runtime` does: one object, `paused` from the
+  core's gate, and the App's adapter.
+- In the harness, `("stop", OWNER)` in `bridge.typing` is a completion, so group 8's stop
+  condition is reached only after the close has finished.

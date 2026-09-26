@@ -37,6 +37,10 @@ Responsibilities (v1.2):
 - every agent turn is framed for the gate with its turn type, announceability and
   the session's taint (design D10), cleared on every exit path including errors:
   the gate can only enforce turn scope if the core tells it what turn is running;
+- every owner **agent** turn, from session setup to the reply or error send, runs
+  inside the injected working-indicator bracket when one is wired; commands and
+  event turns never do, and with none wired owner turns are unchanged
+  (owner-acknowledgement D3);
 - reset on ``/new`` and after an idle window;
 - one append-only audit record per session, flushed on session close, carrying
   every mutating authorization decision made while it was live (design D5).
@@ -49,7 +53,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from contextlib import contextmanager
+from contextlib import AbstractAsyncContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Iterable
 
@@ -195,6 +199,8 @@ class AgentCore:
         handoff_archive: Any | None = None,
         event_factory: SessionFactory | None = None,
         recorder: Any | None = None,
+        working_indicator: Callable[[], AbstractAsyncContextManager[None]]
+        | None = None,
     ) -> None:
         self._factory = factory
         # The triage profile's factory (D11): used ONLY by `_start_event_session`.
@@ -269,6 +275,13 @@ class AgentCore:
         # Writes one recording per event triage (triage-quality D13). None, when
         # `triage_recording.enabled` is false or in a unit test, records nothing.
         self._recorder = recorder
+        # The owner-turn working-indicator bracket (owner-acknowledgement D3): a
+        # zero-argument callable returning an async context manager — the runtime
+        # passes the acknowledgement's bound `working`. The core never calls an
+        # acknowledgement operation itself, which is why `_Sender` is not widened.
+        # None (`signal.acknowledge_owner: false`, and every unit test) runs owner
+        # turns exactly as before this change.
+        self._working_indicator = working_indicator
         # Whether THIS session has already received its recall block. Keyed on the
         # first TURN that read it rather than session creation: an event turn that
         # injected it marks the session (triage-quality D7), and one that could not
@@ -367,29 +380,45 @@ class AgentCore:
             await self._reply(command_reply)
             return
 
-        await self._ensure_session("owner-message")
-        # Composition order, outermost first: time, then memory, then what Henk just
-        # sent, then what the owner said. The delivered-reminder block sits closest to
-        # the owner's message because it is the context their message most likely
-        # refers to.
-        content = self._with_time_header(
-            self._with_recall(self._with_deliveries(text))
-        )
-        try:
-            with self._framed_turn(TurnType.OWNER):
-                reply = await self._session.run_turn(content)  # type: ignore[union-attr]
-        except Exception:
-            logger.exception("agent turn failed")
+        # The working indicator brackets the owner's whole wait (D3): it opens
+        # before session setup, which can close an idle session and build the
+        # next, and closes only after the reply or error reply has been sent,
+        # because the owner's wait ends when the reply lands. The gate framing
+        # stays inner and synchronous, exactly as before.
+        async with self._working():
+            await self._ensure_session("owner-message")
+            # Composition order, outermost first: time, then memory, then what Henk
+            # just sent, then what the owner said. The delivered-reminder block sits
+            # closest to the owner's message because it is the context their message
+            # most likely refers to.
+            content = self._with_time_header(
+                self._with_recall(self._with_deliveries(text))
+            )
+            try:
+                with self._framed_turn(TurnType.OWNER):
+                    reply = await self._session.run_turn(content)  # type: ignore[union-attr]
+            except Exception:
+                logger.exception("agent turn failed")
+                if self._acc is not None:
+                    self._acc.outcome = "error"
+                await self._reply(self._error_reply)
+                self._last_activity = self._clock()
+                return
             if self._acc is not None:
-                self._acc.outcome = "error"
-            await self._reply(self._error_reply)
+                self._acc.turn_count += 1
             self._last_activity = self._clock()
-            return
-        if self._acc is not None:
-            self._acc.turn_count += 1
-        self._last_activity = self._clock()
-        if reply:
-            await self._reply(reply)
+            if reply:
+                await self._reply(reply)
+
+    def _working(self) -> AbstractAsyncContextManager[None]:
+        """The injected working-indicator bracket, or a null one when none is wired.
+
+        ``nullcontext`` enters and exits without yielding to the event loop, so an
+        unwired core schedules an owner turn exactly as it did before (D3).
+        """
+        if self._working_indicator is None:
+            return nullcontext()
+        return self._working_indicator()
 
     # --- Event turns (proactive triage path) ------------------------------
 

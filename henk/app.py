@@ -8,7 +8,12 @@ allowlist, the gate, and the core are unwired islands (scrutiny C3). The
 2. while an approval is pending, the message is classified by the gate BEFORE
    normal queueing — an unrelated message fails the pending approval closed and
    is then re-queued as a normal turn (never swallowed);
-3. otherwise it is queued for serial processing by the core.
+3. otherwise it is queued for serial processing by the core;
+4. only then, with owner acknowledgement enabled, the owner gets a read receipt
+   for it (owner-acknowledgement D1). After the allowlist, because this is the
+   one line where "this message passed the check" is a fact; after routing,
+   because the receipt is awaited inside the receive loop, and a hung one must
+   delay at most the *next* message, never the one it acknowledges.
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ import asyncio
 import logging
 
 from henk.agent.core import AgentCore
+from henk.channel.acknowledge import OwnerAcknowledgement
 from henk.channel.allowlist import AllowlistFilter
 from henk.channel.base import ChannelAdapter, InboundMessage
 from henk.gate.approval import ApprovalGate, Classification
@@ -28,11 +34,20 @@ class Dispatcher:
     """Routes an allowed inbound message to either the gate or the core queue."""
 
     def __init__(
-        self, allowlist: AllowlistFilter, gate: ApprovalGate, core: AgentCore
+        self,
+        allowlist: AllowlistFilter,
+        gate: ApprovalGate,
+        core: AgentCore,
+        *,
+        acknowledgement: OwnerAcknowledgement | None = None,
     ) -> None:
         self._allowlist = allowlist
         self._gate = gate
         self._core = core
+        # The bounded read receipt, or None when `signal.acknowledge_owner` is
+        # false (and in every test that predates it): then nothing is sent and
+        # routing is exactly as before.
+        self._acknowledgement = acknowledgement
 
     async def on_inbound(self, message: InboundMessage) -> None:
         if not self._allowlist.allows(message):
@@ -45,8 +60,14 @@ class Dispatcher:
                 # Fail-closed already happened inside deliver(); the message is
                 # not an approval, so process it as a normal new turn.
                 await self._core.submit(message.text)
-            return
-        await self._core.submit(message.text)
+        else:
+            await self._core.submit(message.text)
+        # Every allowlisted message is acknowledged once, whichever way it was
+        # routed: an approval keyword and a message that failed an approval closed
+        # were both received and accepted. The receipt goes to the owner the
+        # adapter was built with; nothing here can name another recipient.
+        if self._acknowledgement is not None and message.channel_ref is not None:
+            await self._acknowledgement.receipt(message.channel_ref)
 
 
 class App:

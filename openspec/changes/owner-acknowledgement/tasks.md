@@ -241,7 +241,7 @@
 
 ## 5. Dispatcher receipt (`henk/app.py`)
 
-- [ ] 5.1 Tests first in `tests/test_app.py` (scenarios *Owner message receives a read
+- [x] 5.1 Tests first in `tests/test_app.py` (scenarios *Owner message receives a read
       receipt*, *An approval reply is acknowledged*, *A hung receipt does not hold the message it
       acknowledges*, *Disabled means nothing is sent*):
       - owner DM: `core.submit` is called, then one receipt with the message's reference,
@@ -251,7 +251,7 @@
       - hanging receipt: the message is already on the core queue when the receipt starts, and
         `on_inbound` returns within the timeout plus margin;
       - `acknowledgement=None`: no `acks` entry of any kind, and behaviour identical to today.
-- [ ] 5.2 **The stranger test, re-run with acknowledgement enabled** (scenario *Stranger gets
+- [x] 5.2 **The stranger test, re-run with acknowledgement enabled** (scenario *Stranger gets
       nothing with acknowledgement enabled*; this is the one that matters). Add
       `test_stranger_gets_nothing_with_acknowledgement_enabled` beside
       `test_stranger_dropped_before_reaching_core` (`test_app.py:92-97`), leaving that test
@@ -259,7 +259,7 @@
       `OwnerAcknowledgement` over a real `SignalAdapter` + `FakeBridge`. Assert
       `FakeBridge.receipts == []`, `FakeBridge.typing == []`, `FakeBridge.sends == []`,
       `factory.created == 0`, and the allowlist's drop log lines present.
-- [ ] 5.3 Implement: `Dispatcher.__init__(allowlist, gate, core, *, acknowledgement=None)`.
+- [x] 5.3 Implement: `Dispatcher.__init__(allowlist, gate, core, *, acknowledgement=None)`.
       Keyword-only with a `None` default, so `tests/test_app.py:68` and
       `tests/test_reminders_runtime.py:199` construct unchanged; confirm both still pass, and
       record that they were checked. The receipt goes after routing, skipped when
@@ -267,7 +267,7 @@
 
 ## 6. Core bracket (`henk/agent/core.py`)
 
-- [ ] 6.1 Tests first, in a new `tests/test_agent_core_acknowledgement.py`, with a real
+- [x] 6.1 Tests first, in a new `tests/test_agent_core_acknowledgement.py`, with a real
       `OwnerAcknowledgement` over `FakeChannel` unless a failure is needed (every agent-core
       delta scenario):
       - normal turn: `acks` shows `start` before the session's `run_turn` saw the content, and
@@ -292,7 +292,7 @@
         `ack_faults["stop"]` a never-set event, and two owner messages queued. The first reply
         is in `bridge.sends`, and the second turn's `run_turn` begins within T plus margin of
         the first bracket's close.
-- [ ] 6.2 Implement: `AgentCore(..., working_indicator=None)`, typed as a zero-argument callable
+- [x] 6.2 Implement: `AgentCore(..., working_indicator=None)`, typed as a zero-argument callable
       returning an async context manager. In `_process_owner`, `async with` it (or a null async
       context) placed exactly as design D3 shows, from before `_ensure_session` to after the
       reply or error send. `_framed_turn` is unchanged. **`_Sender` (`core.py:120-126`) is not
@@ -301,7 +301,7 @@
 
 ## 7. Runtime wiring (`henk/runtime.py`)
 
-- [ ] 7.1 Tests first in `tests/test_runtime.py`:
+- [x] 7.1 Tests first in `tests/test_runtime.py`:
       - flag on (the default): the Dispatcher's acknowledgement and the core's
         `working_indicator` are the **same** `OwnerAcknowledgement` instance; its adapter **is**
         the App's adapter (the same-instance rule the scheduler already follows,
@@ -309,7 +309,7 @@
         its refresh equals `signal.TYPING_REFRESH_SECONDS`; its `paused` is the gate's
         `has_pending`, on the same gate the core frames;
       - flag off: both are `None`.
-- [ ] 7.2 Implement in `build_runtime`: construct one `OwnerAcknowledgement` after the gate and
+- [x] 7.2 Implement in `build_runtime`: construct one `OwnerAcknowledgement` after the gate and
       adapter exist, when `config.signal.acknowledge_owner`; pass it to the Dispatcher
       (`runtime.py:249`) and its `working` to `AgentCore` (`runtime.py:192`).
 

@@ -26,9 +26,14 @@ from henk.audit import (
     ReminderReceipts,
     read_audit_records,
 )
+from henk.channel.acknowledge import OwnerAcknowledgement
 from henk.channel.allowlist import AllowlistFilter
 from henk.channel.base import ChannelAdapter, SendOutcome
-from henk.channel.signal import SignalAdapter, SignalCliRestBridge
+from henk.channel.signal import (
+    TYPING_REFRESH_SECONDS,
+    SignalAdapter,
+    SignalCliRestBridge,
+)
 from henk.config import Config
 from henk.events.checkpoint import OffsetCheckpoint
 from henk.events.coordinator import EventCoordinator
@@ -142,6 +147,23 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         demote_standing=config.gate.demote_standing,
         recorder=receipts,
     )
+    # Owner acknowledgement (owner-acknowledgement D1-D6): ONE object, or None when
+    # `signal.acknowledge_owner` is false (the rollback; absent means true). The
+    # dispatcher sends its read receipts and the core enters its `working` bracket,
+    # both under the one configured bound. It is handed the SAME adapter the
+    # core and the scheduler hold, and is paused by the SAME gate the core frames:
+    # a second gate's `has_pending` would never be true, and the indicator would
+    # keep asserting "typing" next to an approval prompt.
+    acknowledgement = (
+        OwnerAcknowledgement(
+            adapter,
+            timeout=config.signal.acknowledge_timeout_seconds,
+            refresh_seconds=TYPING_REFRESH_SECONDS,
+            paused=gate.has_pending,
+        )
+        if config.signal.acknowledge_owner
+        else None
+    )
     factory = SdkSessionFactory(
         registry,
         gate,
@@ -245,8 +267,15 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         # One recording per event triage (triage-quality D13), or None when
         # `triage_recording.enabled` is false (the rollback; absent means true).
         recorder=_triage_recorder(config),
+        # The working-indicator bracket around every owner agent turn, or None
+        # when acknowledgement is off, and then owner turns run exactly as before.
+        working_indicator=(
+            acknowledgement.working if acknowledgement is not None else None
+        ),
     )
-    dispatcher = Dispatcher(AllowlistFilter(config.owner.id), gate, core)
+    dispatcher = Dispatcher(
+        AllowlistFilter(config.owner.id), gate, core, acknowledgement=acknowledgement
+    )
 
     coordinator = (
         _build_coordinator(config, core, audit, pipeline, checkpoint, adapter)
