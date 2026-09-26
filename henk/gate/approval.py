@@ -16,7 +16,7 @@ types it may run in (owner-only by default). The core frames every turn with a
 silently, fail closed — during an event turn *and* during any turn of a session
 an event turn has touched. That closes both halves of the injection path: the
 event turn itself and the owner follow-up that triage mandates continues the same
-session.
+session. A permitted tool may also raise taint during a turn, before it runs.
 
 Every decision, permitted or not, is reported to the decision recorder so the
 audit log carries a receipt at decision time: an agent that acts without asking
@@ -24,7 +24,8 @@ must be *more* accountable, not less. Reporting is best-effort by construction �
 a broken audit path must never convert a permitted action into a denied one, nor
 the reverse.
 
-Read-only and notify-only invocations bypass all of this (no prompt, no receipt).
+Read-only and notify-only invocations bypass prompts and receipts, but can raise
+taint when the registered tool declares itself a source.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Protocol
 
@@ -113,14 +114,16 @@ class TurnContext:
     """What the gate needs to know about the turn an invocation arrived in.
 
     Supplied by the agent core around every agent turn and cleared on the way out
-    (including error paths), so gate state never outlives its turn.
+    (including error paths), so gate state never outlives its turn. Incident
+    taint has no source; tool-raised taint names the first tool that raised it.
     """
 
     turn_type: TurnType = TurnType.OWNER
     #: False for a cap-suppressed incident: nothing may reach the channel.
     announceable: bool = True
-    #: True once the session has processed an event turn — for its whole life.
+    #: True once the session has processed an event turn or a tool raised taint.
     tainted: bool = False
+    taint_source: str | None = None
 
 
 #: Used when no turn framed the invocation. An unframed call is structurally an
@@ -176,9 +179,11 @@ class ApprovalGate:
         """Frame the turn an invocation will arrive in (called by the core)."""
         self._turn_context = context
 
-    def exit_turn(self) -> None:
-        """Drop the turn's context. Must run on every exit path, errors included."""
+    def exit_turn(self) -> TurnContext | None:
+        """Return and clear the turn's context on every exit path."""
+        context = self._turn_context
         self._turn_context = None
+        return context
 
     @property
     def turn_context(self) -> TurnContext | None:
@@ -213,10 +218,13 @@ class ApprovalGate:
     async def authorize(self, tool: Tool, arguments: dict[str, Any]) -> GateDecision:
         """Decide one invocation of ``tool``. Never raises on a busy or scoped-out
         gate — every ambiguous case resolves as a recorded non-execution."""
+        framed_at_start = self._turn_context is not None
         if tool.tool_class in (ToolClass.READ_ONLY, ToolClass.NOTIFY_ONLY):
             # No prompt and no receipt: these bypass the gate by classification,
             # and their execution evidence lives in the session record's tool_calls.
-            return GateDecision(ApprovalOutcome.APPROVED)
+            decision = GateDecision(ApprovalOutcome.APPROVED)
+            self._raise_taint(tool, framed_at_start)
+            return decision
 
         context = self._turn_context or _UNFRAMED_CONTEXT
         reference = f"appr-{next(self._refs)}"
@@ -224,15 +232,21 @@ class ApprovalGate:
 
         scope_reason = self._scope_denial_reason(tool, context)
         if scope_reason is not None:
+            detail = None
+            if (context.turn_type is TurnType.OWNER and context.taint_source is not None
+                    and TurnType.EVENT not in tool.turn_scope):
+                detail = f"taint raised by {context.taint_source}"
             return self._resolve(
                 tool, declared_tier, ApprovalOutcome.OUT_OF_SCOPE, reference,
-                context, scope_reason,
+                context, scope_reason, detail=detail,
             )
 
         if self.effective_tier(tool) is AuthorizationTier.STANDING:
-            return self._resolve(
+            decision = self._resolve(
                 tool, declared_tier, ApprovalOutcome.AUTHORIZED, reference, context, ""
             )
+            self._raise_taint(tool, framed_at_start)
+            return decision
 
         # Per-instance from here on (including a demoted standing action).
         if context.turn_type is TurnType.EVENT and not context.announceable:
@@ -254,10 +268,27 @@ class ApprovalGate:
             )
 
         outcome = await self._prompt_and_wait(tool, arguments, reference)
-        return self._resolve(
+        decision = self._resolve(
             tool, declared_tier, outcome, reference, context,
             _OUTCOME_REASONS.get(outcome, ""),
         )
+        if decision.permits:
+            self._raise_taint(tool, framed_at_start)
+        return decision
+
+    def _raise_taint(self, tool: Tool, framed_at_start: bool) -> None:
+        """Taint the context held now, before a permitted source can run."""
+        if not tool.raises_taint:
+            return
+        context = self._turn_context
+        if context is None:
+            if framed_at_start:
+                return  # the authorizing turn ended while approval was pending
+            context = _UNFRAMED_CONTEXT
+        if not context.tainted:
+            self._turn_context = replace(
+                context, tainted=True, taint_source=tool.name
+            )
 
     @staticmethod
     def _scope_denial_reason(tool: Tool, context: TurnContext) -> str | None:
@@ -272,6 +303,16 @@ class ApprovalGate:
                     "/remember, /capture or /remind, or /new for a clean session."
                 )
             if context.tainted:
+                if context.taint_source is not None:
+                    return (
+                        f"a tool called earlier in this session ({context.taint_source}) "
+                        "returned content from outside the owner's control, so this "
+                        "session is now tainted for its lifetime and writes are out of "
+                        "scope in it; nothing was stored or scheduled. The owner can "
+                        "use /remember, /capture or /remind (which bypass this session "
+                        "entirely), or /new to start a clean session where writes work "
+                        "again."
+                    )
                 return (
                     "this session has already handled an incident, so it stays "
                     "tainted for its lifetime and writes are out of scope in it; "
@@ -315,8 +356,10 @@ class ApprovalGate:
         reference: str,
         context: TurnContext,
         reason: str,
+        *,
+        detail: str | None = None,
     ) -> GateDecision:
-        self.report(
+        fields = dict(
             tool=tool.name,
             tier=tier.value if tier is not None else None,
             outcome=outcome.value,
@@ -326,6 +369,9 @@ class ApprovalGate:
             # model-initiated call. Owner commands report their own receipts.
             initiated_by="model",
         )
+        if detail is not None:
+            fields["detail"] = detail
+        self.report(**fields)
         return GateDecision(outcome=outcome, reference=reference, reason=reason)
 
     def report(self, **fields: Any) -> None:
@@ -422,9 +468,9 @@ async def gated_invoke(
 ) -> ToolResult:
     """Invoke ``tool`` through ``gate``, executing at most once and only if allowed.
 
-    This is the wrapper every tool call goes through. A non-executing decision
-    becomes a failure result carrying the gate's own reason, so the model relays a
-    stated constraint instead of improvising one.
+    This convenience wrapper is for callers outside the SDK path; the SDK calls
+    ``authorize`` directly. Taint is raised there, before a permitted tool runs.
+    A non-executing decision becomes a failure result carrying the gate's reason.
     """
     decision = await gate.authorize(tool, arguments)
     if decision.permits:

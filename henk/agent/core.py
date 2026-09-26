@@ -233,6 +233,7 @@ class AgentCore:
         # in EVERY turn of a tainted session, including the owner follow-up that
         # incident-triage mandates continues the same session.
         self._session_tainted = False
+        self._session_taint_source: str | None = None
         # Mutation receipts: durable at decision time in the audit log, and fanned
         # back here so the session record's approvals[] is never empty when a
         # mutating tool was invoked (the verified defect this change fixes).
@@ -698,12 +699,17 @@ class AgentCore:
                 turn_type=turn_type,
                 announceable=announceable,
                 tainted=self._session_tainted,
+                taint_source=self._session_taint_source,
             )
         )
         try:
             yield
         finally:
-            gate.exit_turn()
+            context = gate.exit_turn()
+            if (isinstance(context, TurnContext) and context.tainted
+                    and not self._session_tainted):
+                self._session_tainted = True
+                self._session_taint_source = context.taint_source
 
     # --- Session lifecycle + audit ----------------------------------------
 
@@ -718,6 +724,7 @@ class AgentCore:
             self._session = self._factory.create()
             self._last_activity = now
             self._session_tainted = False  # a brand-new session; no incident in it
+            self._session_taint_source = None
             self._recall_given = False
             self._acc = _SessionAudit(trigger=trigger, **self._profile_of(self._factory))
         elif self._acc is not None and self._acc.flushed:
@@ -750,6 +757,7 @@ class AgentCore:
         self._last_activity = self._clock()
         # The ONLY way an event turn enters a session, so taint cannot be missed.
         self._session_tainted = True
+        self._session_taint_source = None
         # A fresh session has no recall yet; the event turn is its first turn and
         # takes it (D7).
         self._recall_given = False
@@ -766,13 +774,14 @@ class AgentCore:
         # event, must never publish under a closed session's incidents (D8).
         if self._incident_context is not None:
             self._incident_context.clear()
+        self._session_tainted = False
+        self._session_taint_source = None
         if self._session is None:
             return
         session = self._session
         acc = self._acc
         self._session = None
         self._acc = None
-        self._session_tainted = False
         self._recall_given = False
         # An event-triage record was already flushed at triage completion (D3);
         # only owner sessions (and any un-flushed acc) write their record here.

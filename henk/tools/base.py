@@ -1,7 +1,8 @@
 """Tool base types and the classified tool registry.
 
-Every tool carries an explicit mutation class, and every *mutating* tool
-additionally carries the two axes of the permission model (design D4/D10):
+Every tool carries an explicit mutation class and may declare whether its result
+can raise session taint. Every *mutating* tool additionally carries the two axes
+of the permission model (design D4/D10):
 
 - an **authorization tier** — ``standing`` (execute without prompting, receipt
   always) or ``per-instance`` (inline approval, single-use, argument-bound). The
@@ -82,7 +83,9 @@ class Tool:
 
     Subclasses set ``name``, ``description``, ``tool_class``, ``parameters``
     (a JSON-schema dict) and implement ``_run``. A mutating subclass must also set
-    ``authorization`` and may narrow or widen ``turn_scope``.
+    ``authorization`` and may narrow or widen ``turn_scope``. A tool whose result
+    can carry free text authored by someone other than the owner declares
+    ``raises_taint`` on its class or instance.
     """
 
     name: str = ""
@@ -93,6 +96,8 @@ class Tool:
     authorization: AuthorizationTier | None = None
     #: Turn types this tool may execute in. Owner-only by default (fail closed).
     turn_scope: tuple[TurnType, ...] = DEFAULT_TURN_SCOPE
+    #: True when the result can carry free text authored by someone else.
+    raises_taint: bool = False
 
     async def run(self, **arguments: Any) -> ToolResult:
         return await self._run(**arguments)
