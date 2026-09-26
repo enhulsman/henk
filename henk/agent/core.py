@@ -37,10 +37,10 @@ Responsibilities (v1.2):
 - every agent turn is framed for the gate with its turn type, announceability and
   the session's taint (design D10), cleared on every exit path including errors:
   the gate can only enforce turn scope if the core tells it what turn is running;
-- every owner **agent** turn, from session setup to the reply or error send, runs
-  inside the injected working-indicator bracket when one is wired; commands and
-  event turns never do, and with none wired owner turns are unchanged
-  (owner-acknowledgement D3);
+- every owner **agent** turn, from session setup to the reply or error send, and
+  every announceable event triage, from session setup through the proactive send,
+  run inside the injected working-indicator bracket when one is wired; commands
+  and cap-suppressed triages do not (owner-acknowledgement D3);
 - reset on ``/new`` and after an idle window;
 - one append-only audit record per session, flushed on session close, carrying
   every mutating authorization decision made while it was live (design D5).
@@ -275,12 +275,11 @@ class AgentCore:
         # Writes one recording per event triage (triage-quality D13). None, when
         # `triage_recording.enabled` is false or in a unit test, records nothing.
         self._recorder = recorder
-        # The owner-turn working-indicator bracket (owner-acknowledgement D3): a
+        # The working-indicator bracket for owner agent turns and sent triages: a
         # zero-argument callable returning an async context manager — the runtime
         # passes the acknowledgement's bound `working`. The core never calls an
         # acknowledgement operation itself, which is why `_Sender` is not widened.
-        # None (`signal.acknowledge_owner: false`, and every unit test) runs owner
-        # turns exactly as before this change.
+        # None (`signal.acknowledge_owner: false`) leaves turns unchanged.
         self._working_indicator = working_indicator
         # Whether THIS session has already received its recall block. Keyed on the
         # first TURN that read it rather than session creation: an event turn that
@@ -414,7 +413,7 @@ class AgentCore:
         """The injected working-indicator bracket, or a null one when none is wired.
 
         ``nullcontext`` enters and exits without yielding to the event loop, so an
-        unwired core schedules an owner turn exactly as it did before (D3).
+        unwired core schedules owner and event turns as it did before (D3).
         """
         if self._working_indicator is None:
             return nullcontext()
@@ -423,103 +422,106 @@ class AgentCore:
     # --- Event turns (proactive triage path) ------------------------------
 
     async def _process_event(self, turn: EventTurn) -> None:
-        # D5: a new incident always starts its own isolated session, displacing
-        # any open session (owner conversation or a prior incident) so no context
-        # bleeds across incidents. The displaced session's record is already
-        # durable (event triages flush per-triage; owner sessions flush on close).
-        await self._start_event_session(turn)
-        # Record which incidents this turn is triaging up front, so even an
-        # errored triage's record names them (the audit is the transferable
-        # artifact — an error must not be an anonymous blank).
-        if self._acc is not None:
-            self._acc.had_event_turn = True
-            self._acc.announceable = turn.announceable
-            self._acc.events.extend(
-                {
-                    "identity_key": it.identity.key,
-                    "source": it.identity.source,
-                    "name": it.identity.name,
-                    "state": it.identity.state.value,
-                    "recurrence": it.recurrence,
-                    "event_id": it.event.id,
-                }
-                for it in turn.items
+        # The cap decides whether this turn will send to the owner before it is
+        # queued. Keep the indicator up through the proactive send.
+        async with (self._working() if turn.announceable else nullcontext()):
+            # D5: a new incident always starts its own isolated session, displacing
+            # any open session (owner conversation or a prior incident) so no context
+            # bleeds across incidents. The displaced session's record is already
+            # durable (event triages flush per-triage; owner sessions flush on close).
+            await self._start_event_session(turn)
+            # Record which incidents this turn is triaging up front, so even an
+            # errored triage's record names them (the audit is the transferable
+            # artifact — an error must not be an anonymous blank).
+            if self._acc is not None:
+                self._acc.had_event_turn = True
+                self._acc.announceable = turn.announceable
+                self._acc.events.extend(
+                    {
+                        "identity_key": it.identity.key,
+                        "source": it.identity.source,
+                        "name": it.identity.name,
+                        "state": it.identity.state.value,
+                        "recurrence": it.recurrence,
+                        "event_id": it.event.id,
+                    }
+                    for it in turn.items
+                )
+            # Recall first (D7): the event turn is its session's first turn. Read here,
+            # after the acc exists, so the event record carries the block's hash.
+            recall = self._take_recall()
+            # The related-handoff digest (D9). read_digest never raises: a read failure
+            # is logged there and the turn proceeds with no digest, recorded as [].
+            digest = read_digest(self._handoff_archive, turn)
+            if self._acc is not None:
+                self._acc.prior_handoff_ids = list(digest.shown_ids)
+            content = compose_event_turn_content(
+                turn,
+                recall=recall.text if recall is not None else None,
+                tool_names=self._tool_names,
+                digest=digest,
             )
-        # Recall first (D7): the event turn is its session's first turn. Read here,
-        # after the acc exists, so the event record carries the block's hash.
-        recall = self._take_recall()
-        # The related-handoff digest (D9). read_digest never raises: a read failure
-        # is logged there and the turn proceeds with no digest, recorded as [].
-        digest = read_digest(self._handoff_archive, turn)
-        if self._acc is not None:
-            self._acc.prior_handoff_ids = list(digest.shown_ids)
-        content = compose_event_turn_content(
-            turn,
-            recall=recall.text if recall is not None else None,
-            tool_names=self._tool_names,
-            digest=digest,
-        )
-        reply: str | None = None
-        raised = False
-        try:
-            with self._framed_turn(TurnType.EVENT, announceable=turn.announceable):
-                reply = await self._session.run_turn(content)  # type: ignore[union-attr]
-        except Exception:
-            logger.exception("triage turn failed")
-            raised = True
-        # D12: how the turn ended, from the SDK's structured signals first and the
-        # reply text last. Read after a raise too: a result that reported the
-        # error was observed before the stream raised.
-        ending = classify_ending(
-            self._session_ending(self._session), raised=raised, reply=reply
-        )
-        completed = ending.outcome == COMPLETED
-        if self._acc is not None:
-            self._acc.outcome = ending.outcome
-            if not raised:
-                self._acc.turn_count += 1
+            reply: str | None = None
+            raised = False
+            try:
+                with self._framed_turn(TurnType.EVENT, announceable=turn.announceable):
+                    reply = await self._session.run_turn(content)  # type: ignore[union-attr]
+            except Exception:
+                logger.exception("triage turn failed")
+                raised = True
+            # D12: how the turn ended, from the SDK's structured signals first and the
+            # reply text last. Read after a raise too: a result that reported the
+            # error was observed before the stream raised.
+            ending = classify_ending(
+                self._session_ending(self._session), raised=raised, reply=reply
+            )
+            completed = ending.outcome == COMPLETED
+            if self._acc is not None:
+                self._acc.outcome = ending.outcome
+                if not raised:
+                    self._acc.turn_count += 1
+                if completed:
+                    arc = check_triage_arc(reply or "")
+                    self._acc.triage_arc_complete = arc.complete
+                    self._acc.confidence = arc.confidence
+                    self._acc.diagnosis = extract_diagnosis(reply or "")
+                else:
+                    # The reply text is discarded, not parsed: an SDK-rendered error
+                    # or refusal is not a triage, and has no diagnosis to record.
+                    self._acc.triage_arc_complete = False
+            self._last_activity = self._clock()
+            # D13: record the triage before its record is flushed, so the record's
+            # link names a file that exists. Never raises; a failure links nothing.
+            recording_id = self._record_triage(turn, content, reply, ending, digest)
+            if self._acc is not None:
+                self._acc.recording_id = recording_id
+
+            # D3: make this triage durable now (session stays open for owner
+            # interrogation), then advance the checkpoint gated on that write. An
+            # errored triage is recorded and advances too (D1), so a poison event is
+            # not reprocessed forever.
+            handoff_id = await self._flush_event_triage(turn)
+
+            # Proactive send only for announceable incidents; cap-overflow triage
+            # still ran (and its handoff + audit record are already durable), and a
+            # cap-suppressed incomplete triage stays silent too.
+            if not turn.announceable:
+                return
             if completed:
-                arc = check_triage_arc(reply or "")
-                self._acc.triage_arc_complete = arc.complete
-                self._acc.confidence = arc.confidence
-                self._acc.diagnosis = extract_diagnosis(reply or "")
+                text, what = reply or "", "triage message"
             else:
-                # The reply text is discarded, not parsed: an SDK-rendered error
-                # or refusal is not a triage, and has no diagnosis to record.
-                self._acc.triage_arc_complete = False
-        self._last_activity = self._clock()
-        # D13: record the triage before its record is flushed, so the record's
-        # link names a file that exists. Never raises; a failure links nothing.
-        recording_id = self._record_triage(turn, content, reply, ending, digest)
-        if self._acc is not None:
-            self._acc.recording_id = recording_id
-
-        # D3: make this triage durable now (session stays open for owner
-        # interrogation), then advance the checkpoint gated on that write. An
-        # errored triage is recorded and advances too (D1), so a poison event is
-        # not reprocessed forever.
-        handoff_id = await self._flush_event_triage(turn)
-
-        # Proactive send only for announceable incidents; cap-overflow triage
-        # still ran (and its handoff + audit record are already durable), and a
-        # cap-suppressed incomplete triage stays silent too.
-        if not turn.announceable:
-            return
-        if completed:
-            text, what = reply or "", "triage message"
-        else:
-            # The honest form of the message this incident was going to produce
-            # (D12): application-authored, no model text, and the suppressed count
-            # rides on it exactly as on a model-written triage.
-            text = incomplete_triage_notice(
-                turn, ending, handoff_published=bool(handoff_id)
+                # The honest form of the message this incident was going to produce
+                # (D12): application-authored, no model text, and the suppressed count
+                # rides on it exactly as on a model-written triage.
+                text = incomplete_triage_notice(
+                    turn, ending, handoff_published=bool(handoff_id)
+                )
+                what = "incomplete-triage notice"
+            await self._send_proactively(
+                self._with_suppressed_note(text, turn),
+                what=what,
+                failure_notice=TRIAGE_FAILURE_NOTICE,
             )
-            what = "incomplete-triage notice"
-        await self._send_proactively(
-            self._with_suppressed_note(text, turn),
-            what=what,
-            failure_notice=TRIAGE_FAILURE_NOTICE,
-        )
 
     async def _flush_event_triage(self, turn: EventTurn) -> str | None:
         """Write the event triage's record, wire recurrence, advance the cursor.

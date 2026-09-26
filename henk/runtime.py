@@ -267,8 +267,8 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         # One recording per event triage (triage-quality D13), or None when
         # `triage_recording.enabled` is false (the rollback; absent means true).
         recorder=_triage_recorder(config),
-        # The working-indicator bracket around every owner agent turn, or None
-        # when acknowledgement is off, and then owner turns run exactly as before.
+        # The working-indicator bracket around owner agent turns and sent triages,
+        # or None when acknowledgement is off, leaving those turns unchanged.
         working_indicator=(
             acknowledgement.working if acknowledgement is not None else None
         ),
