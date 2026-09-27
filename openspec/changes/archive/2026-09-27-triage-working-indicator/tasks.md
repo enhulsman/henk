@@ -132,7 +132,7 @@ send, every typing request and every content a session receives, in one list.
 
 - [x] 7.1 Tag the running image as the rollback target, redeploy with the README recipe, apply
       the three "silently did nothing" tells.
-- [ ] 7.2 **A sent triage shows typing.** Preconditions, checked first: no triage of the
+- [x] 7.2 **A sent triage shows typing.** Preconditions, checked first: no triage of the
       staged identity within its cooldown (default 6 h, `henk/events/pipeline.py:39`; check
       the audit log for the last `rp2` node_exporter triage), and cap headroom (fewer than
       `cap_per_24h` announceable triages in the last 24 h). Stage a harmless real event, as
@@ -172,10 +172,25 @@ change that deploys, not here.
 Owner-run: `main` at `8c2101b` (this change, the `BUILTIN_HOST_TOOLS` fix `7746e2e` and
 same-turn-taint) was pushed and rebuilt on rp5, rollback target tagged
 `henk-henk:rollback-8877f6e` with the recipe; the owner reported the rebuild fine (7.1).
-7.2 (a staged sent triage on the phone) and 7.3 were not run in this deploy and stay open.
+7.2 was run afterwards (below); 7.3 (optional) was not run.
 
 Asked "which tools can you see?", Henk listed its 13 own tools and none of the
 scheduling, workflow or project-syncing built-ins it had described on 2026-09-26, but it
 still saw one built-in, `ShareOnboardingGuide`, which the CLI enables per account and
 the dummy-key snapshot could not show. The follow-up fix passes `tools=[]` so the CLI
 enables no built-in at all (`tests/test_builtin_host_tools.py`).
+
+After the `tools=[]` redeploy (image built 2026-09-27 15:23 CEST from `7d377c2`), the phone
+listed only Henk's 13 tools, and "can you check how rp2 is doing?" ran a tool-calling turn
+that answered correctly: the closed toolset works end to end with no built-in enabled.
+
+**7.2, 2026-09-27.** Staged by the owner: rp2 `node_exporter` stopped at 19:52:36 UTC behind
+the on-host restart guard (the last rp2 triage was more than 24 h earlier, so cooldown and
+cap had room). The owner saw "typing" in the Henk chat about 2 minutes after the ntfy alert,
+until the triage landed; the gap is the coordinator's debounce window, before the triage turn
+starts. Henk's container log (bridge request lines only): the typing start at 19:57:57, a
+refresh every 7 s (9 starts), the triage message's two chunks at 19:58:55 and 19:58:56, then
+the typing stop at 19:58:56.2, after the send. Every request returned 2xx, and no
+`owner working indicator` warning was logged. The audit record was not read (it needs a root
+shell); the proactive send itself shows the turn was announceable, because a non-announceable
+triage returns before sending.
