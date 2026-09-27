@@ -157,3 +157,48 @@ minimal form: the bracket encloses steps 1-5.
 
 These are early evidence, not group 4's mutation table. That table must be run against the
 real implementation.
+
+## Part C — implementation and close-out (2026-09-27)
+
+The implementation (task 3.1) was written by a Codex autopilot on
+`autopilot/2026-09-27-typing` from `autopilot.md`, owner-reviewed, then rebased with the
+spec and test commits onto `main` (which had gained the unrelated
+`BUILTIN_HOST_TOOLS` fix). It touches `henk/agent/core.py` (`_process_event` runs inside
+`self._working()` when `turn.announceable`, else `nullcontext()`, from before
+`_start_event_session` through the proactive send; module docstring, attribute comment
+and `_working` docstring updated) and the one `henk/runtime.py` comment. No test was
+edited after the failing-tests commit.
+
+### Mutation table (task 4.1), against the real implementation
+
+Each mutant applied alone to the rebased branch, the two acknowledgement test files run,
+the file restored. Every mutant compiled, so each red is the check and not a SyntaxError.
+
+| # | Mutant | Caught by (required) | Also red |
+|---|---|---|---|
+| T1 | `async with self._working():` for every event turn | `test_a_cap_suppressed_triage_shows_no_indicator` (1.1), `test_the_alert_cap_decides_which_triage_shows_the_indicator` (2.1) | — |
+| T2 | `async with nullcontext():` (the old behaviour) | `test_a_sent_triage_is_bracketed`, 2.1 | every other sent-triage test (16 in all) |
+| T3 | proactive-send tail dedented out of the bracket | `test_a_sent_triage_is_bracketed`, `…did_not_complete_clears_after_its_notice[raise/refusal/no-reply]` | degraded-durability, hung-stop, refresh, approval-pause, 2.1 |
+| T4 | `_start_event_session` moved before the bracket | `test_the_indicator_clears_when_starting_the_incident_session_fails`, `test_a_cancel_at_the_brackets_entry_…` | — |
+| T5 | `working`'s `BaseException` branch calls `_close` (sends a stop) | `test_cancellation_during_a_sent_triage_sends_no_stop[process/run]` | the entry-cancel test, and the owner-turn `test_a_cancelled_worker_propagates_and_sends_no_stop[process/run]` |
+| T6 | `_close`'s bound is `asyncio.timeout(None)` | `test_a_hung_stop_after_a_triage_does_not_hold_the_next_turn_beyond_the_bound` | the owner-turn hung-stop test |
+| T7 | `_framed_turn(TurnType.EVENT, announceable=False)` in `_process_event` | `test_the_indicator_pauses_during_an_approval_in_a_sent_triage` | — (only that test, as M1 requires) |
+
+No mutant survived.
+
+### Full suite (task 6.2)
+
+`main` before this change (with the `BUILTIN_HOST_TOOLS` fix): 3612 passed, 6 skipped.
+The rebased branch: **3630 passed, 6 skipped** (12 deselected). 3630 = 3612 − 1 replaced +
+1 replacement + 18 new. The 6 skipped are the SDK-gated tests; the SDK is not installed
+locally.
+
+### Conformance sweep (task 6.1)
+
+A fresh `project-scrutinizer` mapped every ADDED scenario of both deltas, and the changed
+blocks of the MODIFIED ones, to at least one test that can fail; the removed *Event turns
+are not bracketed* scenario's test is gone, replaced by 1.1. Both hung-stop tests assert
+`[0.9T, 1.5T)` with T the acknowledge timeout. Verdict APPROVED. Non-blocking notes: the
+"does not wait on the start's response" clause is covered at the bracket level
+(`tests/test_acknowledge.py`), not on the event path; the disabled test's oracle is the
+composer itself rather than literals, with its arguments pinned independently.

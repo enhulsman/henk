@@ -84,7 +84,7 @@ send, every typing request and every content a session receives, in one list.
 
 ## 3. Implementation (`henk/agent/core.py`)
 
-- [ ] 3.1 In `_process_event`, enter `self._working()` when `turn.announceable`, else
+- [x] 3.1 In `_process_event`, enter `self._working()` when `turn.announceable`, else
       `nullcontext()`, from before `_start_event_session` to after the proactive send (design
       D2). The suppressed path runs under `nullcontext()`; the `if not turn.announceable:
       return` at `core.py:506` is unchanged. `_framed_turn`, `_flush_event_triage` and the
@@ -92,12 +92,12 @@ send, every typing request and every content a session receives, in one list.
       that will be sent are bracketed too) and the stale comments: `henk/runtime.py:270-271`,
       the `_working_indicator` comment at `core.py:278-283`, and the `_working` docstring
       (`core.py:413-421`).
-- [ ] 3.2 Confirm untouched and green: `tests/test_replay_isolation.py`,
+- [x] 3.2 Confirm untouched and green: `tests/test_replay_isolation.py`,
       `tests/test_replay_grade.py`, `tests/test_graceful_shutdown.py`, the event-path tests.
 
 ## 4. Mutation check
 
-- [ ] 4.1 Apply each alone, confirm red on an assertion (or the fail-fast bound), restore,
+- [x] 4.1 Apply each alone, confirm red on an assertion (or the fail-fast bound), restore,
       and record the table:
 
       | # | Mutant | Must be caught by |
@@ -116,17 +116,17 @@ send, every typing request and every content a session receives, in one list.
 
 ## 5. Documentation
 
-- [ ] 5.1 README `## Architecture` paragraph on acknowledgement: typing also shows while a
+- [x] 5.1 README `## Architecture` paragraph on acknowledgement: typing also shows while a
       triage that will be sent to the owner runs, and not for a cap-suppressed one. The
       `signal.acknowledge_owner` bullet names triage typing. The owner-acknowledgement
       deploy-verify checklist gains a triage item (7.2 below).
 
 ## 6. Verification and close-out
 
-- [ ] 6.1 Spec→test conformance sweep by a fresh reviewer (`project-scrutinizer`), scenario by
+- [x] 6.1 Spec→test conformance sweep by a fresh reviewer (`project-scrutinizer`), scenario by
       scenario, including the bound tests' magnitude.
-- [ ] 6.2 Full suite green; record the count against the pre-change baseline.
-- [ ] 6.3 `openspec validate triage-working-indicator --strict`, then commit.
+- [x] 6.2 Full suite green; record the count against the pre-change baseline.
+- [x] 6.3 `openspec validate triage-working-indicator --strict`, then commit.
 
 ## 7. Deploy verification (owner-run on rp5, root shell)
 
@@ -145,3 +145,24 @@ send, every typing request and every content a session receives, in one list.
       within the grace period; "typing" clears on its own within about 15 s.
 - [ ] 7.4 Record an *As-built* section here, then `openspec archive triage-working-indicator
       --yes`.
+
+## As-built (archived 2026-09-27, before deploy)
+
+Archived at the owner's instruction before the rp5 deploy, so group 7 is still open and is
+carried by the README's owner-acknowledgement deploy checklist (its new **Sent triage**
+item is 7.2). The deploy, its rollback tag and the phone check are recorded in the next
+change that deploys, not here.
+
+- **Implementation.** `henk/agent/core.py` `_process_event` runs inside `self._working()`
+  when `turn.announceable`, else `nullcontext()`, from before `_start_event_session`
+  through the proactive send. Written by a Codex autopilot from `autopilot.md`, reviewed by
+  the owner, rebased onto `main`. The design held: no deviation from D1-D3.
+- **Tests.** 18 new collected tests plus the 1.1 replacement; none edited after the
+  failing-tests commit. Full suite 3630 passed, 6 skipped (baseline 3612 / 6).
+- **Mutation.** T1-T7 all killed by their required tests (table in
+  `notes/apply-decisions.md` Part C).
+- **Conformance.** A fresh `project-scrutinizer` sweep (6.1) mapped every ADDED and changed
+  scenario to a test that can fail and checked both bound tests at `[0.9T, 1.5T)` of one
+  acknowledge timeout: APPROVED, no blocking finding.
+- **README.** Architecture paragraph, the `signal.acknowledge_owner` bullet, and a
+  **Sent triage** deploy-checklist item.

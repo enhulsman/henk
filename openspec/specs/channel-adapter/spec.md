@@ -191,7 +191,7 @@ The wait is deliberately unbounded by any hold timer or chunk cap — both were 
 - **THEN** it is exercised against the adapter's real lock with a slow transport double, not against a cooperative channel double that never yields mid-send
 
 ### Requirement: Owner-only acknowledgement of inbound messages
-When owner acknowledgement is enabled (`signal.acknowledge_owner`, default **true**; an absent key SHALL mean enabled), Henk SHALL send the owner a **read receipt** for every inbound message that passes the owner-only allowlist, whether it is queued as a turn or routed to a pending approval, and SHALL show a **working indicator** for the duration of every owner agent turn (agent-core spec). Neither SHALL be sent for any message that has not passed the allowlist.
+When owner acknowledgement is enabled (`signal.acknowledge_owner`, default **true**; an absent key SHALL mean enabled), Henk SHALL send the owner a **read receipt** for every inbound message that passes the owner-only allowlist, whether it is queued as a turn or routed to a pending approval, and SHALL show a **working indicator** for the duration of every owner agent turn and of every event turn whose output will be sent to the owner (agent-core spec). Neither SHALL be sent for any message that has not passed the allowlist.
 
 The receipt SHALL be sent by the dispatch layer, only after the allowlist check has passed and after the message has been routed. It SHALL be directed to the configured owner identity, never to the message's sender field. When the message carries no channel reference, `acknowledge` SHALL be a no-op: no bridge request, and no failure logged.
 
@@ -222,6 +222,14 @@ When acknowledgement is disabled, no read receipt and no working indicator SHALL
 #### Scenario: A message without a channel reference is not acknowledged and logs nothing
 - **WHEN** an owner message carrying no channel reference passes the allowlist
 - **THEN** it is handled normally, no receipt request is made, and no acknowledgement failure is logged
+
+#### Scenario: A triage the owner will receive shows the indicator
+- **WHEN** acknowledgement is enabled and an event triage whose output will be sent to the owner runs
+- **THEN** the working indicator is shown from the start of the turn until after the triage message or incomplete-triage notice is sent, with the same refresh, bounds and cancellation as an owner turn
+
+#### Scenario: A triage the owner will not receive shows nothing
+- **WHEN** an event triage has been held back by the alert cap
+- **THEN** no working indicator request reaches the bridge for it
 
 #### Scenario: The indicator stays up through a long turn
 - **WHEN** acknowledgement is enabled and an owner agent turn runs longer than the client-side expiry
