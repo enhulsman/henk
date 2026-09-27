@@ -8,7 +8,8 @@ SDK's ``can_use_tool`` callback and assembles ``ClaudeAgentOptions`` so that:
   every tool that is not ``mcp__henk__*`` and runs *before* the SDK's permission
   chain, so it cannot be bypassed (deploy 2026-07-20 proved ``can_use_tool`` is
   NOT universal — ``ToolSearch``/``TaskCreate`` built-ins executed without it);
-- built-ins are also stripped from context (``disallowed_tools``) as hygiene;
+- built-ins are also kept out of context as hygiene: ``tools=[]`` enables none of
+  them, and ``disallowed_tools`` strips the known ones as a second layer;
 - ``setting_sources=[]`` + ``strict_mcp_config`` stop settings files / stray MCP
   config from auto-approving tools behind our back;
 - ``can_use_tool`` (``allowed_tools`` empty) remains as the read/mutate + approval
@@ -68,6 +69,9 @@ RESULT_CAPTURING_TOOLS = frozenset({HANDOFF_TOOL_NAME})
 #: (:func:`~henk.agent.permission.pretooluse_block_decision`), which default-denies
 #: everything outside ``mcp__henk__*`` and cannot be bypassed. This list is kept
 #: broad so the model is not even tempted by tools the hook would block anyway.
+#: It is the SECOND hygiene layer: ``tools=[]`` (see :func:`toolset_options`) enables
+#: no built-in at all, which also covers the ones enabled per account that no list
+#: can enumerate (``ShareOnboardingGuide`` reached the model on rp5 on 2026-09-27).
 BUILTIN_HOST_TOOLS = (
     "Bash",
     "BashOutput",
@@ -133,6 +137,9 @@ class ClosedToolsetConfig:
     #: Deliberately empty: auto-approving a tool skips ``can_use_tool`` and would
     #: bypass the gate. Every call must go through the callback.
     allowed_tools: tuple[str, ...] = ()
+    #: Deliberately empty: the CLI built-ins to enable, passed as ``tools``. Empty
+    #: enables none; ``None`` would leave the CLI's default set on.
+    builtin_tools: tuple[str, ...] = ()
     #: Reasoning settings passed to the SDK. ``None`` leaves the bundled CLI's own
     #: default in force (see ``reasoning_options``).
     effort: str | None = None
@@ -159,9 +166,28 @@ def build_closed_toolset_config(
         disallowed_tools=tuple(BUILTIN_HOST_TOOLS),
         permission_mode="default",
         allowed_tools=(),
+        builtin_tools=(),
         effort=effort,
         thinking=thinking,
     )
+
+
+def toolset_options(config: ClosedToolsetConfig) -> dict[str, Any]:
+    """The ``ClaudeAgentOptions`` kwargs that decide which tools the session has.
+
+    Henk's own tools arrive through the MCP server, not through these.
+    ``setting_sources=[]`` ignores user/project/local settings files, so no
+    settings.json allow rule can auto-approve a tool and skip the controls;
+    ``strict_mcp_config`` admits only the explicitly configured MCP server.
+    """
+    return {
+        "tools": list(config.builtin_tools),
+        "allowed_tools": list(config.allowed_tools),  # empty by design
+        "disallowed_tools": list(config.disallowed_tools),
+        "permission_mode": config.permission_mode,
+        "setting_sources": [],
+        "strict_mcp_config": True,
+    }
 
 
 def reasoning_options(config: ClosedToolsetConfig) -> dict[str, Any]:
@@ -310,9 +336,6 @@ class SdkSessionFactory:
             model=self._config.model,
             system_prompt=self._config.system_prompt,
             mcp_servers={MCP_SERVER_NAME: self._build_mcp_server()},
-            allowed_tools=list(self._config.allowed_tools),  # empty by design
-            disallowed_tools=list(self._config.disallowed_tools),
-            permission_mode=self._config.permission_mode,
             can_use_tool=self._build_can_use_tool(),
             # The actual closed-toolset boundary (see _build_pretooluse_hook):
             # unbypassable, unlike can_use_tool.
@@ -321,11 +344,7 @@ class SdkSessionFactory:
                     HookMatcher(matcher="*", hooks=[self._build_pretooluse_hook()])
                 ]
             },
-            # Ignore user/project/local settings files so no settings.json allow
-            # rule can auto-approve a tool and skip our controls.
-            setting_sources=[],
-            # Only the explicitly-configured in-process MCP server.
-            strict_mcp_config=True,
+            **toolset_options(self._config),
             **reasoning_options(self._config),
         )
         # name → tool_class so the audit record's tool_calls carry the class the

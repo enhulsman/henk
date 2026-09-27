@@ -1,7 +1,7 @@
-"""BUILTIN_HOST_TOOLS names every built-in the bundled CLI puts in the model's context.
+"""No CLI built-in reaches the model's context: ``tools=[]`` first, BUILTIN_HOST_TOOLS second.
 
-The list is hygiene, not the boundary (the ``PreToolUse`` hook is): a built-in it
-misses is still blocked, but the model sees it and describes it. That happened live
+Both layers are hygiene, not the boundary (the ``PreToolUse`` hook is): a built-in
+they miss is still blocked, but the model sees it and describes it. That happened live
 on 2026-09-26, when Henk told the owner it "shows me some general-purpose tools, like
 scheduling, multi-agent workflows and project syncing" — the list dated from
 2026-07-20 and the CLI had grown Cron*, Workflow and DesignSync since.
@@ -14,6 +14,14 @@ taken 2026-09-27 from the CLI bundled in the pinned SDK wheel (sha256 as in
 and an empty config dir. ``can_use_tool`` matters: without it AskUserQuestion and the
 plan-mode tools are absent. The live test at the bottom repeats that probe whenever
 the SDK is installed; the pin test makes an SDK bump fail here until it is re-taken.
+
+The list alone proved incomplete on its first deploy (2026-09-27): rp5 runs on a
+subscription token, and there Henk still saw ``ShareOnboardingGuide``, which the CLI
+enables per account and no dummy-key probe can show. A deny-list cannot enumerate
+tools gated on an account it cannot reproduce, so the closed toolset now also passes
+``tools=[]`` (``--tools ""``: enable no built-in), which needs no enumeration. The
+list stays as the second layer. The subscription-only case is verified on the phone
+at deploy, not here.
 """
 
 from __future__ import annotations
@@ -24,7 +32,13 @@ from pathlib import Path
 
 import pytest
 
-from henk.agent.sdk_session import BUILTIN_HOST_TOOLS
+from henk.agent.sdk_session import (
+    BUILTIN_HOST_TOOLS,
+    SdkSessionFactory,
+    build_closed_toolset_config,
+    toolset_options,
+)
+from henk.tools.base import ToolRegistry
 
 SNAPSHOT_SDK = "0.2.160"
 SNAPSHOT_CLI = "2.1.283"
@@ -87,7 +101,45 @@ def test_list_has_no_duplicates():
     assert len(BUILTIN_HOST_TOOLS) == len(set(BUILTIN_HOST_TOOLS))
 
 
-async def _announced_tools(config_dir: Path, disallowed: list[str]) -> list[str]:
+def _henk_config():
+    return build_closed_toolset_config(ToolRegistry(), model="m", system_prompt="p")
+
+
+def test_the_closed_toolset_enables_no_builtin():
+    cfg = _henk_config()
+    assert cfg.builtin_tools == ()
+    options = toolset_options(cfg)
+    # An empty list, not None: None leaves the CLI's default set enabled.
+    assert options["tools"] == []
+    assert options["disallowed_tools"] == list(BUILTIN_HOST_TOOLS)
+    assert options["allowed_tools"] == []
+    assert options["permission_mode"] == "default"
+    assert options["setting_sources"] == []
+    assert options["strict_mcp_config"] is True
+
+
+def test_toolset_options_are_valid_claude_agent_options():
+    sdk = pytest.importorskip("claude_agent_sdk")
+    options = sdk.ClaudeAgentOptions(**toolset_options(_henk_config()))
+    assert options.tools == []
+    assert options.disallowed_tools == list(BUILTIN_HOST_TOOLS)
+
+
+def test_a_created_session_carries_the_toolset():
+    # create() itself is deploy-only; this pins that it spreads toolset_options
+    # into the options its client gets, not a hand-copied subset of them.
+    pytest.importorskip("claude_agent_sdk")
+    factory = SdkSessionFactory(ToolRegistry(), gate=None, model="m", system_prompt="p")
+    options = factory.create()._client.options
+    assert options.tools == []
+    assert options.disallowed_tools == list(BUILTIN_HOST_TOOLS)
+    assert options.allowed_tools == []
+    assert options.setting_sources == []
+    assert options.strict_mcp_config is True
+    assert options.permission_mode == "default"
+
+
+async def _announced_tools(config_dir: Path, toolset: dict) -> list[str]:
     """The ``tools`` of the installed CLI's init message, under Henk's option shape.
 
     No request leaves the machine: the base URL is a closed loopback port and the
@@ -110,13 +162,9 @@ async def _announced_tools(config_dir: Path, disallowed: list[str]) -> list[str]
         model="claude-opus-5-5",
         system_prompt="probe",
         mcp_servers={"henk": sdk.create_sdk_mcp_server(name="henk", tools=[probe])},
-        allowed_tools=[],
-        disallowed_tools=disallowed,
-        permission_mode="default",
         can_use_tool=deny,
         hooks={"PreToolUse": [sdk.HookMatcher(matcher="*", hooks=[pass_through])]},
-        setting_sources=[],
-        strict_mcp_config=True,
+        **toolset,
         cwd=str(config_dir),
         env={
             "CLAUDE_CONFIG_DIR": str(config_dir),
@@ -138,8 +186,16 @@ async def _announced_tools(config_dir: Path, disallowed: list[str]) -> list[str]
     return await asyncio.wait_for(first_init(), 90)
 
 
+def _toolset(**overrides) -> dict:
+    """Henk's real toolset kwargs, with one layer switched off for a probe."""
+    toolset = toolset_options(_henk_config())
+    toolset.update(overrides)
+    return {k: v for k, v in toolset.items() if v is not None}
+
+
 async def test_installed_cli_ships_no_unlisted_builtin(tmp_path):
-    announced = await _announced_tools(tmp_path, disallowed=[])
+    # Both layers off, so every built-in shows: the list's own drift check.
+    announced = await _announced_tools(tmp_path, _toolset(tools=None, disallowed_tools=[]))
     builtins = {name for name in announced if not name.startswith("mcp__")}
     assert builtins, "probe saw no built-ins at all; the probe itself is broken"
     unlisted = builtins - set(BUILTIN_HOST_TOOLS)
@@ -147,5 +203,16 @@ async def test_installed_cli_ships_no_unlisted_builtin(tmp_path):
 
 
 async def test_installed_cli_shows_only_henk_tools_under_the_list(tmp_path):
-    announced = await _announced_tools(tmp_path, disallowed=list(BUILTIN_HOST_TOOLS))
+    announced = await _announced_tools(tmp_path, _toolset(tools=None))
+    assert announced == ["mcp__henk__probe"]
+
+
+async def test_installed_cli_shows_only_henk_tools_with_no_builtin_enabled(tmp_path):
+    # tools=[] on its own, list empty: the layer that needs no enumeration.
+    announced = await _announced_tools(tmp_path, _toolset(disallowed_tools=[]))
+    assert announced == ["mcp__henk__probe"]
+
+
+async def test_installed_cli_shows_only_henk_tools_under_henks_toolset(tmp_path):
+    announced = await _announced_tools(tmp_path, toolset_options(_henk_config()))
     assert announced == ["mcp__henk__probe"]
