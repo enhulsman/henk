@@ -130,7 +130,7 @@ send, every typing request and every content a session receives, in one list.
 
 ## 7. Deploy verification (owner-run on rp5, root shell)
 
-- [ ] 7.1 Tag the running image as the rollback target, redeploy with the README recipe, apply
+- [x] 7.1 Tag the running image as the rollback target, redeploy with the README recipe, apply
       the three "silently did nothing" tells.
 - [ ] 7.2 **A sent triage shows typing.** Preconditions, checked first: no triage of the
       staged identity within its cooldown (default 6 h, `henk/events/pipeline.py:39`; check
@@ -166,3 +166,16 @@ change that deploys, not here.
   acknowledge timeout: APPROVED, no blocking finding.
 - **README.** Architecture paragraph, the `signal.acknowledge_owner` bullet, and a
   **Sent triage** deploy-checklist item.
+
+### Deploy (2026-09-27)
+
+Owner-run: `main` at `8c2101b` (this change, the `BUILTIN_HOST_TOOLS` fix `7746e2e` and
+same-turn-taint) was pushed and rebuilt on rp5, rollback target tagged
+`henk-henk:rollback-8877f6e` with the recipe; the owner reported the rebuild fine (7.1).
+7.2 (a staged sent triage on the phone) and 7.3 were not run in this deploy and stay open.
+
+Asked "which tools can you see?", Henk listed its 13 own tools and none of the
+scheduling, workflow or project-syncing built-ins it had described on 2026-09-26, but it
+still saw one built-in, `ShareOnboardingGuide`, which the CLI enables per account and
+the dummy-key snapshot could not show. The follow-up fix passes `tools=[]` so the CLI
+enables no built-in at all (`tests/test_builtin_host_tools.py`).
