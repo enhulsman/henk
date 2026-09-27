@@ -92,8 +92,10 @@ callback**; reads/notify run, mutations hit the gate. Only the final text reply
 is sent back.
 
 With `signal.acknowledge_owner` on (the default), the owner sees each message marked
-**read** once it passes the allowlist, and "typing" for as long as an agent turn runs;
-typing pauses while Henk waits on an approval, and commands and event triage show none.
+**read** once it passes the allowlist, and "typing" for as long as an agent turn runs.
+A triage that will be sent to the owner shows "typing" too, from before its incident session
+starts until the triage message lands; a triage the alert cap suppresses shows none, and
+neither do commands. Typing pauses while Henk waits on an approval.
 Strangers and group messages get nothing more than before: no receipt, no typing, no reply.
 
 ### Event flow (v1.2)
@@ -213,7 +215,8 @@ existing `henk_audit` volume (already in the rp5 backup allowlist).
   bridge request) / `signal.open_timeout_seconds` (30.0, the receive websocket connect).
 - `signal.acknowledge_owner` (owner-acknowledgement; default **true**) — send the owner a
   read receipt for every message that passes the allowlist, and a "typing" indicator while
-  an owner agent turn runs. `false` is the rollback and sends neither. rp5's locally
+  an owner agent turn runs or a triage that will be sent to the owner runs
+  (triage-working-indicator). `false` is the rollback and sends neither. rp5's locally
   modified `config.yaml` does not carry this key, so a deploy turns acknowledgement **on**
   with no edit. Must be an unquoted boolean; `"false"`, `1` or a blank value is refused.
 - `signal.acknowledge_timeout_seconds` (5.0) — a whole-operation bound on each
@@ -731,6 +734,11 @@ Full commands are in `openspec/changes/owner-acknowledgement/tasks.md` group 12
   no acknowledgement or send-failure line in the log.
 - [ ] **Approval pause** (optional) — "typing" is not shown while an approval prompt waits
   and resumes after `yes`.
+- [ ] **Sent triage** (triage-working-indicator) — with no triage of the staged identity
+  inside its 6 h cooldown and headroom under the alert cap, stage a harmless real event;
+  "typing" shows from the triage turn's start until the triage message lands, the triage's
+  audit record has `announceable: true`, and the owner-working-indicator grep above prints
+  nothing.
 - [ ] **Shutdown** — a restart mid-turn stops within the grace period (no `Exited 137`); any
   lingering "typing" clears on the phone within about 15 s.
 
