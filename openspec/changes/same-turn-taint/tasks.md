@@ -60,52 +60,52 @@
 
 ## 2. Declaration (`henk/tools/base.py`)
 
-- [ ] 2.1 Add `raises_taint: bool = False` to `Tool`, documented beside `turn_scope` with the
+- [x] 2.1 Add `raises_taint: bool = False` to `Tool`, documented beside `turn_scope` with the
       taint-source test from D1. Update the module docstring's list of declared axes.
 
 ## 3. Gate (`henk/gate/approval.py`)
 
-- [ ] 3.1 `TurnContext` gains `taint_source: str | None = None` (D4); the class and module
+- [x] 3.1 `TurnContext` gains `taint_source: str | None = None` (D4); the class and module
       docstrings describe tool-raised taint beside incident taint.
-- [ ] 3.2 In `authorize`, on every permitting decision for a tool whose instance declares
+- [x] 3.2 In `authorize`, on every permitting decision for a tool whose instance declares
       `raises_taint`, taint the gate's current context before returning, with no `await` in
       between; a no-op on an already-tainted context; a no-op if the call was framed and the
       turn has since exited (D2). Fail closed when unframed (D7).
-- [ ] 3.3 `_scope_denial_reason`: keep the event-turn and incident reasons byte for byte; add
+- [x] 3.3 `_scope_denial_reason`: keep the event-turn and incident reasons byte for byte; add
       the tool-taint reason for a tainted context with a `taint_source` (D6, exact string).
-- [ ] 3.4 Pass `detail="taint raised by <tool>"` to the receipt for that denial only; every
+- [x] 3.4 Pass `detail="taint raised by <tool>"` to the receipt for that denial only; every
       other gate receipt keeps `detail=None` (D6).
-- [ ] 3.5 Make the context held at exit available to the core (suggested: `exit_turn()`
+- [x] 3.5 Make the context held at exit available to the core (suggested: `exit_turn()`
       returns it) (D5).
-- [ ] 3.6 Correct `gated_invoke`'s docstring: it is a convenience for callers outside the SDK
+- [x] 3.6 Correct `gated_invoke`'s docstring: it is a convenience for callers outside the SDK
       path, not the production path, and taint is raised in `authorize`.
 
 ## 4. Core (`henk/agent/core.py`)
 
-- [ ] 4.1 Track `_session_taint_source` beside `_session_tainted`; frame it into every
+- [x] 4.1 Track `_session_taint_source` beside `_session_tainted`; frame it into every
       `TurnContext`; reset it in the new-session branch of `_ensure_session`, in
       `_start_event_session` and in `_close_session`, including its no-session early return
       (D5).
-- [ ] 4.2 In `_framed_turn`'s `finally`, fold a tainted exit context into the session taint
+- [x] 4.2 In `_framed_turn`'s `finally`, fold a tainted exit context into the session taint
       and source, tolerating gate doubles whose `exit_turn` returns `None` (D5).
 
 ## 5. Verification
 
-- [ ] 5.1 `uv run pytest -q` fully green, with nothing under `tests/` edited.
-- [ ] 5.2 Mutation-check the new tests; for each mutation at least one new test must fail:
+- [x] 5.1 `uv run pytest -q` fully green, with nothing under `tests/` edited.
+- [x] 5.2 Mutation-check the new tests; for each mutation at least one new test must fail:
       drop the raise in 3.2; move the raise from `authorize` to after `tool.run` in
       `gated_invoke`; drop the tool-taint reason (3.3); drop the `detail` (3.4); drop the
       fold in 4.2; drop the source resets in `_close_session` and `_start_event_session`
       together (each alone is covered by the other: displacement runs both, and a stale
       source is observable only through displacement, because a source is read only while
       the session is tainted). Report the results for the coordinator to record.
-- [ ] 5.3 In `henk/replay/harness.py`, add a comment at `ReplayStub` saying why
+- [x] 5.3 In `henk/replay/harness.py`, add a comment at `ReplayStub` saying why
       `raises_taint` is not copied (replay frames every turn with the tainted `REPLAY_TURN`).
 
 ## 6. Close-out (coordinator)
 
-- [ ] 6.1 `openspec validate same-turn-taint --strict` passes.
-- [ ] 6.2 At archive, update NORTH-STAR row 4b: the taint prerequisite has landed; the
+- [x] 6.1 `openspec validate same-turn-taint --strict` passes.
+- [x] 6.2 At archive, update NORTH-STAR row 4b: the taint prerequisite has landed; the
       session-titles obligations are the system-prompt wording for tool-raised taint, the
       live check that `can_use_tool` fires for a read-only `mcp__henk__` tool, and marking
       `sessions_read` only when built with titles rendering on. Replace the stale
