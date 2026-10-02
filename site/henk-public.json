@@ -1,0 +1,28 @@
+{
+  "generated_at": "2026-10-01T16:40:00+02:00",
+  "state": "ok",
+  "state_values": ["ok", "incident"],
+  "incident": null,
+  "today": {
+    "alerts_seen": 212,
+    "triaged": 3,
+    "sent_to_owner": 1
+  },
+  "since_launch": {
+    "days": 70,
+    "alerts_seen": 9114,
+    "sent_to_owner": 41
+  },
+  "last_message": {
+    "sent_at": "2026-09-29T03:12:00+02:00",
+    "text": "nextcloud-rclone on vps has restarted 472,184 times since Friday; the unit is in a crash loop, not down, so Gatus kept reporting it healthy.\nDiagnosis: a stale rclone config token makes every run exit non-zero and systemd restarts it without a backoff (confidence: high)\nFix: refresh the rclone token and add StartLimitBurst to the unit\nPickup: run henk-pickup for the published handoff."
+  },
+  "incident_example": {
+    "state": "incident",
+    "incident": {
+      "name": "Gatus: adguard-rp2 down",
+      "since": "2026-10-01T16:31:00+02:00",
+      "owner_told": true
+    }
+  }
+}

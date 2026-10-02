@@ -7,3 +7,9 @@ __pycache__/
 
 # Project-local pre-commit checks (operator-specific)
 .githooks/local-checks.sh
+
+# Three-way design builds, untracked until one is chosen (site/BRIEF.md)
+site/builds/
+
+# Generated comps and frames (70 MB of PNGs); the chosen assets ship with the page in resume-page
+site/design/
