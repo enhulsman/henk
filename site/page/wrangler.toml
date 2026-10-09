@@ -1,0 +1,10 @@
+# Henk's public page, https://henk.hulsman.dev (static assets only, no worker code).
+# Deploy from this directory: wrangler deploy
+# Built from site/builds/b-tile-v3 (untracked); copy a finished build's index.html, frames/
+# and ornament.webp into public/. henk-public.json here carries only state and last_message.
+name = "henk-page"
+compatibility_date = "2025-08-25"
+routes = [{ pattern = "henk.hulsman.dev", custom_domain = true }]
+
+[assets]
+directory = "./public"

@@ -13,3 +13,6 @@ site/builds/
 
 # Generated comps and frames (70 MB of PNGs); the chosen assets ship with the page in resume-page
 site/design/
+
+# wrangler deploy state for site/page
+.wrangler/

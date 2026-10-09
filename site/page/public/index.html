@@ -1,0 +1,700 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Henk</title>
+<meta name="description" content="Someone has to keep an eye on things. Henk, a personal homelab agent, painted on a Delft tile.">
+<meta name="theme-color" content="#274B9F">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredericka+the+Great&family=Meddon&display=swap">
+<link rel="preload" as="image" href="frames/R1-0.webp" fetchpriority="high">
+<script>
+// comparison switch, off by default: ?face=cormorant or ?face=dela swaps the HENK face
+// and loads that one extra stylesheet; without the parameter nothing here runs
+(function () {
+  var face = new URLSearchParams(location.search).get('face');
+  var fonts = { cormorant: 'Cormorant+Garamond:wght@700', dela: 'Dela+Gothic+One' };
+  if (!face || !fonts[face]) return;
+  document.documentElement.dataset.face = face;
+  var l = document.createElement('link');
+  l.rel = 'stylesheet';
+  l.href = 'https://fonts.googleapis.com/css2?family=' + fonts[face] + '&display=swap';
+  document.head.appendChild(l);
+})();
+</script>
+<style>
+  :root {
+    --blue: #274B9F;
+    --white: #FFFFFF;
+    --cream: #F6EFE2;
+    --display: "Fredericka the Great", Impact, "Arial Black", system-ui, sans-serif;
+    --script: Meddon, "Segoe Script", "Brush Script MT", cursive;
+    --body: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+
+    /* The hero is a fixed artboard that scales uniformly. --u is one artboard pixel:
+       landscape 1440x900, portrait 375x812 (below 1:1). Every number below is in
+       artboard pixels and is multiplied by --u where it is used. */
+    --bw: 1440;
+    --bh: 900;
+    --u: min(100vw / var(--bw), 100svh / var(--bh));
+    --fig-top: 5;
+    --fig-h: 576;                                   /* 64% of the artboard; his soles land on the letter tops */
+    --fig-w: calc(var(--fig-h) * 0.74667);          /* 896 / 1200 */
+    --henk-size: 269;                               /* ink ~865 wide, 60% of the artboard; cap ~207 */
+    --henk-bottom: 132.6;                           /* baseline at 762, 30 above the bottom ornament line */
+    --line-left: 965;
+    --line-top: 198;                                /* his eye level: a third of the way down the frame */
+    --line-size: 36;
+    --line-width: 470;
+    /* ornaments are viewport furniture, not artboard content */
+    --orn: clamp(72px, 12vmin, 132px);
+  }
+  /* comparison faces (?face=), same 60% ink width, same baseline, soles on the letter tops */
+  html[data-face="cormorant"] {
+    --display: "Cormorant Garamond", Georgia, serif;
+    --henk-weight: 700;
+    --henk-nudge: -.015em;
+    --henk-size: 320;
+    --henk-bottom: 115.6;
+    --fig-top: 10.6;
+  }
+  html[data-face="dela"] {
+    --display: "Dela Gothic One", Impact, "Arial Black", sans-serif;
+    --henk-nudge: 0em;
+    --henk-size: 245.5;
+    --henk-bottom: 150.3;
+    --fig-top: 33;
+  }
+
+  * { box-sizing: border-box; }
+  html { background: var(--blue); }
+  body {
+    margin: 0;
+    background: var(--blue);
+    color: var(--cream);
+    font-family: var(--body);
+    font-size: 1.0625rem;
+    line-height: 1.5;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--white); }
+  :focus-visible { outline: 3px solid var(--white); outline-offset: 4px; border-radius: 2px; }
+  img { display: block; }
+  .screen { mix-blend-mode: screen; }
+
+  /* ---------- the tile ---------- */
+  .tile {
+    position: relative;
+    height: 100svh;
+    overflow: hidden;
+    background: var(--blue);
+  }
+
+  .orn {
+    position: absolute;
+    width: var(--orn);
+    height: var(--orn);
+    pointer-events: none;
+    user-select: none;
+    -webkit-mask-image: linear-gradient(to right, #000 97%, transparent),
+                        linear-gradient(to bottom, #000 97%, transparent);
+    -webkit-mask-composite: source-in;
+    mask-image: linear-gradient(to right, #000 97%, transparent),
+                linear-gradient(to bottom, #000 97%, transparent);
+    mask-composite: intersect;
+  }
+  .orn.tl { top: 0; left: 0; }
+  .orn.tr { top: 0; right: 0; transform: scaleX(-1); }
+  .orn.bl { bottom: 0; left: 0; transform: scaleY(-1); }
+  .orn.br { bottom: 0; right: 0; transform: scale(-1, -1); }
+
+  .board {
+    /* the artboard, centred in the viewport; no transform or opacity here either,
+       so the frames' screen blend still sees the cobalt behind them */
+    position: absolute;
+    left: calc(50% - var(--bw) * var(--u) / 2);
+    top: calc(50% - var(--bh) * var(--u) / 2);
+    width: calc(var(--bw) * var(--u));
+    height: calc(var(--bh) * var(--u));
+  }
+
+  .henk-figure {
+    /* no transform or opacity here on purpose: a stacking context on this box
+       would make the screen blend hit a transparent backdrop and leave the
+       frames' black square visible */
+    position: absolute;
+    top: calc(var(--fig-top) * var(--u));
+    left: calc(50% - var(--fig-w) * var(--u) / 2);
+    height: calc(var(--fig-h) * var(--u));
+    width: calc(var(--fig-w) * var(--u));
+  }
+  .henk-figure img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    pointer-events: none;
+    user-select: none;
+    /* fade the outer 3% so a half-covered edge pixel never draws a seam */
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 3%, #000 97%, transparent),
+                        linear-gradient(to bottom, transparent, #000 3%, #000 97%, transparent);
+    -webkit-mask-composite: source-in;
+    mask-image: linear-gradient(to right, transparent, #000 3%, #000 97%, transparent),
+                linear-gradient(to bottom, transparent, #000 3%, #000 97%, transparent);
+    mask-composite: intersect;
+  }
+  .henk-figure img.on { opacity: 1; }
+
+  /* the typing bubble: incident, and the look-at-you moment */
+  .typing {
+    position: absolute;
+    left: 4%;
+    top: 15%;
+    width: 20%;
+    aspect-ratio: 2 / 1.15;
+    background: var(--white);
+    border-radius: 999px;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    gap: 9%;
+    opacity: 0;
+    transform: translateY(6px);
+    transition: opacity .35s ease, transform .35s ease;
+  }
+  .typing::after {
+    /* a little tail toward his head */
+    content: "";
+    position: absolute;
+    right: -4%;
+    bottom: 6%;
+    width: 22%;
+    height: 32%;
+    background: var(--white);
+    clip-path: polygon(0 0, 100% 100%, 0 60%);
+  }
+  .typing i {
+    width: 15%;
+    aspect-ratio: 1;
+    border-radius: 50%;
+    background: var(--blue);
+    animation: dot 1.2s ease-in-out infinite;
+  }
+  .typing i:nth-child(2) { animation-delay: .2s; }
+  .typing i:nth-child(3) { animation-delay: .4s; }
+  @keyframes dot {
+    0%, 60%, 100% { transform: translateY(0); opacity: .55; }
+    30% { transform: translateY(-28%); opacity: 1; }
+  }
+  .typing.show { display: flex; }
+  .typing.in { opacity: 1; transform: translateY(0); }
+
+  h1.henk {
+    position: absolute;
+    left: 50%;
+    bottom: calc(var(--henk-bottom) * var(--u));
+    margin: 0;
+    /* Fredericka's ink sits a little right of its advance box; nudge so the word is centred by ink */
+    transform: translateX(calc(-50% + var(--henk-nudge, -.03em)));
+    font-family: var(--display);
+    font-weight: var(--henk-weight, 400);
+    font-size: calc(var(--henk-size) * var(--u));
+    line-height: .77;
+    letter-spacing: 0;
+    color: var(--white);
+    white-space: nowrap;
+    user-select: none;
+  }
+
+  .line {
+    position: absolute;
+    margin: 0;
+    left: calc(var(--line-left) * var(--u));
+    /* land the first line's x-height on his eyes */
+    top: calc(var(--line-top) * var(--u) - .7em);
+    max-width: calc(var(--line-width) * var(--u));
+    color: var(--white);
+    font-family: var(--script);
+    font-size: calc(var(--line-size) * var(--u));
+    line-height: 1.3;
+    text-wrap: balance;
+  }
+
+  /* ---------- below the fold ---------- */
+  .rest {
+    max-width: 68rem;
+    margin: 0 auto;
+    padding: 7rem 1.25rem 5rem;
+  }
+  .three {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 2.5rem;
+  }
+  .three h2 {
+    margin: 0 0 .5rem;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--white);
+  }
+  .three p { margin: 0; max-width: 34ch; }
+
+  .message {
+    margin: 6rem auto 0;
+    max-width: 40rem;
+  }
+  .message .who {
+    margin: 0 0 .5rem;
+    font-size: .875rem;
+    color: var(--cream);
+  }
+  .message .bubble {
+    margin: 0;
+    background: var(--white);
+    color: var(--blue);
+    padding: 1rem 1.25rem;
+    border-radius: 1.25rem 1.25rem 1.25rem .25rem;
+    white-space: pre-line;
+    font-size: 1rem;
+    line-height: 1.5;
+  }
+
+  .links {
+    margin: 5rem 0 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: .875rem;
+    justify-content: center;
+  }
+  .pill {
+    display: inline-block;
+    padding: .7rem 1.3rem;
+    border: 2px solid var(--white);
+    border-radius: 999px;
+    color: var(--white);
+    text-decoration: none;
+    font-size: 1rem;
+    line-height: 1.2;
+  }
+  .pill:hover { background: var(--white); color: var(--blue); }
+
+  .honest {
+    margin: 2.5rem auto 0;
+    text-align: center;
+    max-width: 40rem;
+  }
+  .honest code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: .95em;
+    color: var(--white);
+  }
+
+  footer {
+    padding: 2rem 1.25rem 2.5rem;
+    text-align: center;
+    font-size: .875rem;
+    color: var(--cream);
+  }
+  footer a { color: var(--cream); }
+
+  /* ---------- portrait artboard, 375x812, below 1:1 ---------- */
+  @media (max-aspect-ratio: 1/1) {
+    :root {
+      --bw: 375;
+      --bh: 812;
+      --fig-top: 96;
+      --fig-h: 520;                                 /* 64% of the artboard; wider than the board by 7 px a side, the strokes stay inside */
+      --henk-size: 70;                              /* ink ~225 wide, 60% of the artboard */
+      --henk-bottom: 163;                           /* box bottom at 649, 20 above the line */
+      --line-size: 22.4;
+      --orn: clamp(60px, 19vw, 84px);
+    }
+    html[data-face="cormorant"] { --henk-size: 83.3; --henk-bottom: 158.6; --fig-top: 98.9; }
+    html[data-face="dela"] { --henk-size: 63.9; --henk-bottom: 167.6; --fig-top: 104.8; }
+    .line {
+      left: 50%;
+      top: auto;
+      bottom: calc(85 * var(--u));
+      transform: translateX(-50%);
+      width: calc(300 * var(--u));
+      max-width: none;
+      text-align: center;
+    }
+  }
+
+  /* ---------- below the fold, narrow ---------- */
+  @media (max-width: 720px) {
+    .three { grid-template-columns: 1fr; gap: 2rem; }
+    .three p { max-width: none; }
+    .rest { padding-top: 5rem; }
+    .message { margin-top: 4rem; }
+    .links { margin-top: 3.5rem; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .typing i { animation: none; opacity: .8; }
+    .typing { transition: none; transform: none; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <section class="tile" id="tile" data-state="ok" data-frames="first">
+    <img class="orn tl screen" src="ornament.webp" alt="" aria-hidden="true" width="800" height="800">
+    <img class="orn tr screen" src="ornament.webp" alt="" aria-hidden="true" width="800" height="800">
+    <img class="orn bl screen" src="ornament.webp" alt="" aria-hidden="true" width="800" height="800">
+    <img class="orn br screen" src="ornament.webp" alt="" aria-hidden="true" width="800" height="800">
+
+    <div class="board">
+    <div class="henk-figure" id="figure" role="img"
+         aria-label="Henk, painted in white on Delft blue: an old man in a flat cap sits on a kitchen chair by the window with a cup of coffee, the clock on the wall above him. He sips, looks out of the window, nods, settles again, and now and then turns to look at you.">
+      <img class="frame screen on" src="frames/R1-0.webp" alt="" aria-hidden="true" width="896" height="1200" fetchpriority="high" data-frame="R1-0">
+      <div class="typing" id="typing" aria-hidden="true"><i></i><i></i><i></i></div>
+    </div>
+
+    <h1 class="henk">HENK</h1>
+
+    <p class="line">“Someone has to keep an eye on things.”</p>
+    </div>
+  </section>
+
+  <section class="rest">
+    <div class="three">
+      <div>
+        <h2>What he watches</h2>
+        <p>The homelab: which services are up, which are not, what the sensors say. He reads from a small, closed set of tools and nothing else. Ask him “is everything up?” over Signal and he will tell you.</p>
+      </div>
+      <div>
+        <h2>When something breaks</h2>
+        <p>He opens one conversation, not a stream: a diagnosis with how sure he is, a suggested fix, and where to pick the work up. Storms collapse into one message. Chronic grumbles go to the record, not to you.</p>
+      </div>
+      <div>
+        <h2>What he never does without asking</h2>
+        <p>Change anything. Every write declares its tier in the code; anything not standing waits for an inline yes from the owner and fails closed on silence. Strangers get nothing, not even a read receipt.</p>
+      </div>
+    </div>
+
+    <div class="message">
+      <p class="who">Something Henk sent, <time id="msg-time" datetime="2026-09-26T17:59:00+02:00">26 September, 17:59</time> (trimmed)</p>
+      <p class="bubble" id="msg-text">Recurrence — same alert as this morning. rp2's node_exporter recovered in between but dropped again with the same "connection refused" signature.
+Diagnosis: node_exporter process on rp2 is repeatedly crashing/stopping (host itself is fine). Root cause still unconfirmed. (confidence: moderate)
+Fix: SSH to rp2, restart node_exporter, but this time also check dmesg/syslog for OOM-kills or SD-card I/O errors — two occurrences in 6h means restart-and-wait isn't enough anymore.
+Pickup: handoff 7sKd2PqLx9Wm — a third recurrence should be treated as a standing fault.</p>
+    </div>
+
+    <nav class="links" aria-label="Further reading">
+      <a class="pill" href="https://github.com/enhulsman/henk">Read the code</a>
+      <a class="pill" href="https://hulsman.dev/blog/henk-watchdog">The watchdog write-up</a>
+    </nav>
+
+    <p class="honest">He runs on one Raspberry Pi in a cupboard. The whole deployment is <code>docker compose up -d</code>.</p>
+  </section>
+</main>
+
+<footer>
+  <p>Henk is a personal project by <a href="https://hulsman.dev">hulsman.dev</a>. Painted in Delft blue.</p>
+</footer>
+
+<script id="henk-data" type="application/json">
+{"state": "ok", "last_message": {"sent_at": "2026-09-26T17:59:00+02:00", "text": "Recurrence — same alert as this morning. rp2's node_exporter recovered in between but dropped again with the same \"connection refused\" signature.\nDiagnosis: node_exporter process on rp2 is repeatedly crashing/stopping (host itself is fine). Root cause still unconfirmed. (confidence: moderate)\nFix: SSH to rp2, restart node_exporter, but this time also check dmesg/syslog for OOM-kills or SD-card I/O errors — two occurrences in 6h means restart-and-wait isn't enough anymore.\nPickup: handoff 7sKd2PqLx9Wm — a third recurrence should be treated as a standing fault."}}
+</script>
+<script>
+(function () {
+  var tile = document.getElementById('tile');
+  var typing = document.getElementById('typing');
+  var figure = document.getElementById('figure');
+  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var LABEL = {
+    ok: figure.getAttribute('aria-label'),
+    incident: 'Henk, painted in white on Delft blue: an old man in a flat cap on a kitchen chair by the window, cup of coffee in hand. He has turned from the window to face you, and he is typing.',
+    look: 'Henk, painted in white on Delft blue: an old man in a flat cap on a kitchen chair by the window, cup of coffee in hand. He has turned from the window to look at you for a moment.'
+  };
+
+  /* ---------- frames: 15 bases, 4 boiled variants each ---------- */
+  var VARIANTS = 4;
+  var STEP = 170;
+  var GROUPS = {
+    rest:     ['R1', 'R2', 'R3'],
+    sip:      ['S1a', 'S1b', 'S2e', 'S2f'],
+    window:   ['W1a', 'W1b', 'W1c'],
+    nod:      ['N1a', 'N2a', 'N2b'],
+    incident: ['I1', 'I2']
+  };
+  var img = {};           // frame name -> <img>, created lazily by group
+  var ready = {};         // group -> true once every frame of it is decoded
+  var decoding = {};      // group -> Promise<boolean>
+  var first = figure.querySelector('img.frame');
+  img[first.dataset.frame] = first;
+
+  function rnd(a, b) { return a + Math.random() * (b - a); }
+  function variants(base) {
+    var out = [];
+    for (var k = 0; k < VARIANTS; k++) out.push(base + '-' + k);
+    return out;
+  }
+  function pool(bases) {
+    return bases.reduce(function (acc, b) { return acc.concat(variants(b)); }, []);
+  }
+  function make(name) {
+    if (img[name]) return img[name];
+    var i = new Image(896, 1200);
+    i.className = 'frame screen';
+    i.alt = '';
+    i.setAttribute('aria-hidden', 'true');
+    i.decoding = 'async';
+    i.dataset.frame = name;
+    i.src = 'frames/' + name + '.webp';
+    figure.insertBefore(i, typing);
+    img[name] = i;
+    return i;
+  }
+  function decodeOne(i) {
+    var tries = 0;
+    function attempt() {
+      return i.decode().catch(function () {
+        if (++tries >= 3) throw new Error(i.dataset.frame);
+        i.src = i.src.split('?')[0] + '?r=' + tries;
+        return attempt();
+      });
+    }
+    return attempt();
+  }
+  // decode a whole group; resolves true once every frame is in, false if one never arrives
+  function decode(group) {
+    if (!decoding[group]) {
+      decoding[group] = Promise.all(pool(GROUPS[group]).map(function (n) { return decodeOne(make(n)); }))
+        .then(function () { ready[group] = true; return true; }, function () { return false; });
+    }
+    return decoding[group];
+  }
+
+  /* ---------- the machine: one generation counter, one sleeper ----------
+     Every hold, sequence and loop captures `gen` when it starts and checks it after
+     every sleep. bump() advances gen and wakes the sleeper, so a state change
+     interrupts whatever is running before it can show another frame. */
+  var gen = 0, wake = null;
+  function sleep(ms) {
+    return new Promise(function (resolve) {
+      var t = setTimeout(function () { wake = null; resolve(); }, ms);
+      wake = function () { clearTimeout(t); wake = null; resolve(); };
+    });
+  }
+  function bump() { gen++; if (wake) wake(); return gen; }
+
+  var cur = first;
+  function show(i) {
+    if (i === cur) return;
+    cur.classList.remove('on');
+    i.classList.add('on');
+    cur = i;
+  }
+  function pick(list) {
+    var i;
+    do { i = img[list[Math.floor(Math.random() * list.length)]]; } while (i === cur && list.length > 1);
+    return i;
+  }
+  // show one boiled variant of `bases` after another for `ms`, never the same file twice in a row
+  function hold(bases, ms) {
+    var g = gen, list = pool(bases), t0 = performance.now();
+    return (function next() {
+      if (g !== gen || performance.now() - t0 >= ms) return Promise.resolve();
+      show(pick(list));
+      return sleep(STEP * rnd(0.85, 1.25)).then(next);
+    })();
+  }
+  function seq(steps) {
+    var g = gen;
+    return steps.reduce(function (p, s) {
+      return p.then(function () { if (g === gen) return hold(s[0], rnd(s[1], s[2])); });
+    }, Promise.resolve());
+  }
+  var SEQ = {
+    sip:    function () { return seq([[['S1a', 'S1b'], 400, 600], [['S2e', 'S2f'], 900, 1500], [['S1a', 'S1b'], 350, 500]]); },
+    window: function () { return seq([[['W1b'], 250, 400], [['W1a', 'W1c'], 1800, 3200], [['W1b'], 250, 400]]); },
+    nod:    function () { return seq([[['N1a'], 300, 450], [['N2a', 'N2b'], 600, 900], [['N1a'], 250, 400]]); }
+  };
+  var WEIGHT = { sip: 4, window: 3, nod: 2 };
+  function weighted() {
+    var avail = Object.keys(WEIGHT).filter(function (k) { return ready[k]; });
+    var total = avail.reduce(function (t, k) { return t + WEIGHT[k]; }, 0);
+    var r = Math.random() * total;
+    for (var i = 0; i < avail.length; i++) if ((r -= WEIGHT[avail[i]]) < 0) return avail[i];
+    return null;
+  }
+  // idle: rest hold 2.5-6 s, one weighted sequence, idle again, forever
+  function loop() {
+    var g = gen;
+    (function cycle() {
+      if (g !== gen) return;
+      hold(GROUPS.rest, rnd(2500, 6000))
+        .then(function () { if (g !== gen) return; var s = weighted(); if (s) return SEQ[s](); })
+        .then(cycle);
+    })();
+  }
+  function incidentLoop() {
+    var g = gen;
+    if (!ready.incident) {
+      decode('incident').then(function (ok) { if (ok && g === gen) incidentLoop(); });
+      return;
+    }
+    (function cycle() {
+      if (g !== gen) return;
+      hold(GROUPS.incident, 1000).then(cycle);
+    })();
+  }
+
+  /* ---------- the bubble ---------- */
+  var bubbleTimer = null;
+  function bubble(on, delay) {
+    clearTimeout(bubbleTimer);
+    if (on) {
+      typing.classList.add('show');
+      void typing.offsetWidth; // commit display:flex before the transition starts
+      bubbleTimer = setTimeout(function () { typing.classList.add('in'); }, reduced ? 0 : delay);
+    } else {
+      typing.classList.remove('in');
+      bubbleTimer = setTimeout(function () { typing.classList.remove('show'); }, reduced ? 0 : 360);
+    }
+  }
+
+  /* ---------- the look-at-you moment ----------
+     Lives in the ok state only. The timer is cleared by run(), so it never survives an
+     incident or a hidden tab; nextLook is an absolute time so hiding the tab does not
+     reset the first window. */
+  var looking = false, lookTimer = null;
+  var nextLook = performance.now() + rnd(20000, 35000);
+  function scheduleLook() {
+    clearTimeout(lookTimer);
+    if (reduced || state !== 'ok' || document.hidden) return;
+    var now = performance.now();
+    if (nextLook < now) nextLook = now + rnd(60000, 90000);
+    lookTimer = setTimeout(tryLook, nextLook - now);
+  }
+  function tryLook() {
+    if (state !== 'ok' || looking || document.hidden || reduced) return;
+    if (!ready.incident) { lookTimer = setTimeout(tryLook, 3000); return; }
+    look();
+  }
+  function look() {
+    var g = bump();
+    looking = true;
+    tile.dataset.state = 'look';
+    figure.setAttribute('aria-label', LABEL.look);
+    bubble(true, 500);
+    hold(GROUPS.incident, rnd(4000, 6000))
+      .then(function () { if (g !== gen) return; bubble(false); return sleep(380); })
+      .then(function () { if (g !== gen) return; endLook(); run(); });
+  }
+  function endLook() {
+    if (!looking) return;
+    looking = false;
+    nextLook = performance.now() + rnd(60000, 90000);
+  }
+
+  /* ---------- state ---------- */
+  var state = 'ok', started = false;
+  // (re)start whatever the current state needs; safe to call at any time
+  function run() {
+    bump();
+    clearTimeout(lookTimer);
+    endLook();
+    tile.dataset.state = state;
+    figure.setAttribute('aria-label', LABEL[state]);
+    if (state === 'incident') {
+      bubble(true, 520);
+      if (reduced) { decode('incident').then(function (ok) { if (ok && state === 'incident') show(img['I1-0']); }); return; }
+      if (document.hidden) return;
+      incidentLoop();
+    } else {
+      bubble(false);
+      if (reduced) { show(first); return; }
+      if (document.hidden) return;
+      if (ready.rest) loop();
+      scheduleLook();
+    }
+  }
+  function apply(next) {
+    next = next === 'incident' ? 'incident' : 'ok';
+    if (started && next === state) return;
+    state = next;
+    started = true;
+    run();
+  }
+
+  function fromHash() {
+    if (location.hash === '#incident') return 'incident';
+    if (location.hash === '#ok') return 'ok';
+    return null;
+  }
+  // #look forces one look-at-you moment, for screenshots
+  function hashLook() {
+    if (location.hash !== '#look' || reduced) return;
+    decode('incident').then(function (ok) {
+      if (ok && location.hash === '#look' && state === 'ok' && !looking && !document.hidden) look();
+    });
+  }
+
+  function fillMessage(data) {
+    try {
+      var m = data && data.last_message;
+      if (!m || !m.text) return;
+      document.getElementById('msg-text').textContent = m.text;
+      if (m.sent_at) {
+        // show the clock as Henk saw it, not the visitor's zone
+        var parts = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(m.sent_at);
+        if (parts) {
+          var months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+          var t = document.getElementById('msg-time');
+          t.dateTime = m.sent_at;
+          t.textContent = parseInt(parts[3], 10) + ' ' + months[parseInt(parts[2], 10) - 1] + ', ' + parts[4] + ':' + parts[5];
+        }
+      }
+    } catch (e) { /* keep the inline copy */ }
+  }
+
+  var inline = {};
+  try { inline = JSON.parse(document.getElementById('henk-data').textContent); } catch (e) {}
+
+  function settle(data) {
+    fillMessage(data);
+    apply(fromHash() || (data && data.state) || 'ok');
+  }
+
+  // the state is known at once; the frames arrive in order of need
+  apply(fromHash() || inline.state || 'ok');
+  if (!reduced) {
+    decode('rest').then(function (ok) {
+      if (!ok) return;
+      tile.dataset.frames = 'rest';
+      if (state === 'ok' && !looking) run();
+      return ['sip', 'window', 'nod', 'incident'].reduce(function (p, g) {
+        return p.then(function () { return decode(g); });
+      }, Promise.resolve());
+    }).then(function () {
+      if (ready.sip && ready.window && ready.nod && ready.incident) tile.dataset.frames = 'all';
+    });
+    hashLook();
+  }
+
+  fetch('henk-public.json', { cache: 'no-store' })
+    .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(settle)
+    .catch(function () { settle(inline); });
+
+  window.addEventListener('hashchange', function () {
+    var h = fromHash();
+    if (h) apply(h);
+    hashLook();
+  });
+
+  // nothing moves while the tab is hidden; run() returns early on hidden and restarts on return
+  document.addEventListener('visibilitychange', function () { if (started) run(); });
+})();
+</script>
+</body>
+</html>

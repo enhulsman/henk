@@ -1,0 +1,8 @@
+{
+  "state": "ok",
+  "incident": null,
+  "last_message": {
+    "sent_at": "2026-09-26T17:59:00+02:00",
+    "text": "Recurrence — same alert as this morning. rp2's node_exporter recovered in between but dropped again with the same \"connection refused\" signature.\nDiagnosis: node_exporter process on rp2 is repeatedly crashing/stopping (host itself is fine). Root cause still unconfirmed. (confidence: moderate)\nFix: SSH to rp2, restart node_exporter, but this time also check dmesg/syslog for OOM-kills or SD-card I/O errors — two occurrences in 6h means restart-and-wait isn't enough anymore.\nPickup: handoff 7sKd2PqLx9Wm — a third recurrence should be treated as a standing fault."
+  }
+}
