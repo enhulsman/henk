@@ -201,6 +201,7 @@ existing `henk_audit` volume (already in the rp5 backup allowlist).
 | `henk/tools/` | `homelab_health`, `homelab_query` (+ its reviewable `query_registry`, renderers, and the address projection), `homelab_docs` (corpus sectioniser, allowlisted index, stamp reader), `sessions_read` (two-stage topic poll, label gate, shape-constrained render; `backend_failure` holds the shared backend-failure sentences), `todo_read`, `notify`, `publish_handoff`, `store_memory`, `capture`, `inbox_read`, `remind`, `cancel_reminder`, `reminders_read` (+ deferred `taiga_read`) and the production registry |
 | `henk/replay/` | Triage recording (bounded, beside the audit log), the first-case capture script, and the owner-run replay entry point (`python -m henk.replay`: stub registry, refusing transport, null channel, reconstructed-case serving, run writer, `compare`, and `grade` with its versioned rubric and no-tool judge) |
 | `henk/app.py`, `henk/runtime.py`, `henk/__main__.py` | Composition, production wiring, entrypoint |
+| `site/page/` | The public page at henk.hulsman.dev: a static-assets Cloudflare Worker (`wrangler.toml`), its generated `public/`, and `sync-from-build.sh` (+ `test-sync.sh`), which copies a finished design build into `public/`. Design sources and builds under `site/` are untracked |
 | `deploy/session-publisher/` | The **workstation** session publisher (stdlib-only Python 3.11+, systemd user timer, example config, README) — committed here, tested by this suite, deliberately **not** in the image |
 | `config.yaml` | Non-secret settings | `.env` | Secrets (git-ignored) |
 | `~/.claude-config/bin/henk-pickup` | Pull-based CLI to fetch handoffs from any tailnet host (lives in the claude-config repo) |
@@ -770,6 +771,26 @@ Expect `False`, then `up -d henk`. Nothing is stored, so there is nothing to unw
 
 Rolling back leaves no residue beyond the named volumes; the ntfy grants and
 Tailscale node can be removed from their respective admin surfaces.
+
+## Public page (henk.hulsman.dev)
+
+The page is static: no feed, no worker code, nothing on rp5. It is deployed separately from
+Henk, to Cloudflare, by the owner's wrangler login.
+
+```bash
+site/page/test-sync.sh             # offline, no credentials
+site/page/sync-from-build.sh       # build in site/builds/b-tile-v3 -> site/page/public
+git diff --stat site/page/public   # review what will go live, commit it
+cd site/page && npx --yes wrangler@4.84.1 deploy
+```
+
+Sync makes root-relative links absolute to hulsman.dev, keeps only `state`, `incident` and
+`last_message` from the feed, and refuses to run without the untracked local publication
+check (`.githooks/local-checks.sh`). Only the custom domain serves the page
+(`workers_dev` and preview URLs are off). The chat bubble is a real, trimmed Henk message
+that the owner approved verbatim; replacing it needs the same approval. Rollback:
+`npx --yes wrangler@4.84.1 rollback` from `site/page/`. hulsman.dev/henk redirects here
+(resume-page worker).
 
 ## Cost
 

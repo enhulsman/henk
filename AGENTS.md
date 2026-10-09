@@ -70,6 +70,12 @@ When a work product is ready for review, spawn one `project-scrutinizer`
 sub-agent with `fork_turns: "none"` and give it the files to review. A review
 sub-agent does not spawn further agents.
 
+## Deploy
+
+Two targets, never one command for both. Henk himself: README "Deploy runbook (rp5)".
+The public page at henk.hulsman.dev: README "Public page (henk.hulsman.dev)"; it goes to
+Cloudflare from `site/page/`, and the owner OKs each deploy.
+
 ## Channel (user preference, 2026-07-20)
 
 **Signal-first** (FOSS/security stance; user plans to switch to Molly, a Signal client

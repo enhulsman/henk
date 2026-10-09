@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Offline test for sync-from-build.sh: builds a fixture page in a temp dir and checks
+# what lands in the deploy directory. Run: site/page/test-sync.sh
+set -uo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+SYNC="$here/sync-from-build.sh"
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+# stand-in for the repo's untracked .githooks/local-checks.sh: same contract
+# (path to a file of text as $1, non-zero exit blocks), fails on a test marker
+cat > "$TMP/checks.sh" <<'EOF2'
+#!/usr/bin/env bash
+! grep -q PRIVATE-MARKER "$1"
+EOF2
+chmod +x "$TMP/checks.sh"
+export LOCAL_CHECKS="$TMP/checks.sh"
+FAILED=0
+ok()  { printf '  PASS %s\n' "$1"; }
+bad() { printf '  FAIL %s\n' "$1"; FAILED=1; }
+
+fixture() {  # $1 = dir
+  mkdir -p "$1/frames"
+  printf 'x' > "$1/frames/R1-0.webp"; printf 'x' > "$1/ornament.webp"
+  cat > "$1/index.html" <<'EOF'
+<a class="pill" href="/blog/henk-watchdog">The watchdog write-up</a>
+<a href="https://hulsman.dev">hulsman.dev</a>
+EOF
+  cat > "$1/henk-public.json" <<'EOF'
+{"generated_at":"x","state":"ok","incident":null,"today":{"alerts_seen":212},
+ "since_launch":{"days":70},"last_message":{"sent_at":"2026-09-26T17:59:00+02:00","text":"a\nb"},
+ "incident_example":{"state":"incident"}}
+EOF
+}
+
+echo "=== a clean build syncs into the deploy dir ==="
+fixture "$TMP/build"; mkdir -p "$TMP/public"; printf 'stale' > "$TMP/public/old.webp"
+if "$SYNC" "$TMP/build" "$TMP/public" >/dev/null 2>&1; then ok "exit 0"; else bad "sync failed"; fi
+grep -q 'href="https://hulsman.dev/blog/henk-watchdog"' "$TMP/public/index.html" \
+  && ok "blog link made absolute" || bad "blog link not rewritten"
+grep -q 'href="/' "$TMP/public/index.html" && bad "a root-relative link survived" || ok "no root-relative links"
+keys=$(jq -c 'keys' "$TMP/public/henk-public.json")
+[ "$keys" = '["incident","last_message","state"]' ] && ok "feed carries only state, incident, last_message" \
+  || bad "feed keys: $keys"
+[ -f "$TMP/public/frames/R1-0.webp" ] && [ -f "$TMP/public/ornament.webp" ] && ok "frames and ornament copied" \
+  || bad "assets missing"
+[ -e "$TMP/public/old.webp" ] && bad "stale file left in deploy dir" || ok "stale files removed"
+
+echo "=== a build the local publication check rejects is refused, deploy dir untouched ==="
+fixture "$TMP/b2"; echo '<p>PRIVATE-MARKER</p>' >> "$TMP/b2/index.html"
+cp -r "$TMP/public" "$TMP/before"
+if "$SYNC" "$TMP/b2" "$TMP/public" >/dev/null 2>&1; then bad "private string accepted"; else ok "refused"; fi
+diff -r "$TMP/before" "$TMP/public" >/dev/null && ok "deploy dir unchanged" || bad "deploy dir changed on failure"
+
+echo "=== a build missing a file is refused ==="
+fixture "$TMP/b3"; rm "$TMP/b3/ornament.webp"
+if "$SYNC" "$TMP/b3" "$TMP/public" >/dev/null 2>&1; then bad "incomplete build accepted"; else ok "refused"; fi
+
+echo "=== a feed without a message is refused ==="
+fixture "$TMP/b4"; echo '{"state":"ok"}' > "$TMP/b4/henk-public.json"
+if "$SYNC" "$TMP/b4" "$TMP/public" >/dev/null 2>&1; then bad "empty feed accepted"; else ok "refused"; fi
+
+echo "=== without the local publication check, sync refuses (fails closed) ==="
+fixture "$TMP/b5"
+if LOCAL_CHECKS="$TMP/no-such-checks.sh" "$SYNC" "$TMP/b5" "$TMP/public" >/dev/null 2>&1; then
+  bad "synced without the publication check"; else ok "refused"; fi
+
+echo
+[ "$FAILED" -eq 0 ] && echo "ALL SYNC TESTS PASSED" || { echo "FAILURES ABOVE"; exit 1; }
