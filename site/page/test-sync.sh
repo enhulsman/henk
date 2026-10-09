@@ -20,8 +20,10 @@ bad() { printf '  FAIL %s\n' "$1"; FAILED=1; }
 fixture() {  # $1 = dir
   mkdir -p "$1/frames"
   printf 'x' > "$1/frames/R1-0.webp"; printf 'x' > "$1/ornament.webp"; printf 'x' > "$1/og-image.png"
+  for f in favicon.ico favicon-32.png apple-touch-icon.png; do printf 'x' > "$1/$f"; done
   cat > "$1/index.html" <<'EOF'
 <meta property="og:image" content="https://henk.hulsman.dev/og-image.png">
+<link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png">
 <a class="pill" href="/blog/henk-watchdog">The watchdog write-up</a>
 <a href="https://hulsman.dev">hulsman.dev</a>
 EOF
@@ -43,6 +45,8 @@ keys=$(jq -c 'keys' "$TMP/public/henk-public.json")
   || bad "feed keys: $keys"
 [ -f "$TMP/public/frames/R1-0.webp" ] && [ -f "$TMP/public/ornament.webp" ] && [ -f "$TMP/public/og-image.png" ] \
   && ok "frames, ornament and preview image copied" || bad "assets missing"
+[ -f "$TMP/public/favicon.ico" ] && [ -f "$TMP/public/favicon-32.png" ] && [ -f "$TMP/public/apple-touch-icon.png" ] \
+  && ok "favicons copied" || bad "assets missing"
 [ -e "$TMP/public/old.webp" ] && bad "stale file left in deploy dir" || ok "stale files removed"
 
 echo "=== a build the local publication check rejects is refused, deploy dir untouched ==="
@@ -58,6 +62,12 @@ if "$SYNC" "$TMP/b3" "$TMP/public" >/dev/null 2>&1; then bad "incomplete build a
 echo "=== a build without a preview image is refused ==="
 fixture "$TMP/b6"; rm "$TMP/b6/og-image.png"
 if "$SYNC" "$TMP/b6" "$TMP/public" >/dev/null 2>&1; then bad "build without og-image.png accepted"; else ok "refused"; fi
+
+echo "=== a build without favicons, or a page that does not link one, is refused ==="
+fixture "$TMP/b9"; rm "$TMP/b9/favicon-32.png"
+if "$SYNC" "$TMP/b9" "$TMP/public" >/dev/null 2>&1; then bad "build without favicon accepted"; else ok "refused (file)"; fi
+fixture "$TMP/b10"; sed -i '/rel="icon"/d' "$TMP/b10/index.html"
+if "$SYNC" "$TMP/b10" "$TMP/public" >/dev/null 2>&1; then bad "page without icon link accepted"; else ok "refused (link)"; fi
 
 echo "=== a page whose preview tag is missing or relative is refused ==="
 fixture "$TMP/b7"; sed -i '/og:image/d' "$TMP/b7/index.html"
