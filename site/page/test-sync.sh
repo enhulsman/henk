@@ -19,8 +19,9 @@ bad() { printf '  FAIL %s\n' "$1"; FAILED=1; }
 
 fixture() {  # $1 = dir
   mkdir -p "$1/frames"
-  printf 'x' > "$1/frames/R1-0.webp"; printf 'x' > "$1/ornament.webp"
+  printf 'x' > "$1/frames/R1-0.webp"; printf 'x' > "$1/ornament.webp"; printf 'x' > "$1/og-image.png"
   cat > "$1/index.html" <<'EOF'
+<meta property="og:image" content="https://henk.hulsman.dev/og-image.png">
 <a class="pill" href="/blog/henk-watchdog">The watchdog write-up</a>
 <a href="https://hulsman.dev">hulsman.dev</a>
 EOF
@@ -40,8 +41,8 @@ grep -q 'href="/' "$TMP/public/index.html" && bad "a root-relative link survived
 keys=$(jq -c 'keys' "$TMP/public/henk-public.json")
 [ "$keys" = '["incident","last_message","state"]' ] && ok "feed carries only state, incident, last_message" \
   || bad "feed keys: $keys"
-[ -f "$TMP/public/frames/R1-0.webp" ] && [ -f "$TMP/public/ornament.webp" ] && ok "frames and ornament copied" \
-  || bad "assets missing"
+[ -f "$TMP/public/frames/R1-0.webp" ] && [ -f "$TMP/public/ornament.webp" ] && [ -f "$TMP/public/og-image.png" ] \
+  && ok "frames, ornament and preview image copied" || bad "assets missing"
 [ -e "$TMP/public/old.webp" ] && bad "stale file left in deploy dir" || ok "stale files removed"
 
 echo "=== a build the local publication check rejects is refused, deploy dir untouched ==="
@@ -53,6 +54,16 @@ diff -r "$TMP/before" "$TMP/public" >/dev/null && ok "deploy dir unchanged" || b
 echo "=== a build missing a file is refused ==="
 fixture "$TMP/b3"; rm "$TMP/b3/ornament.webp"
 if "$SYNC" "$TMP/b3" "$TMP/public" >/dev/null 2>&1; then bad "incomplete build accepted"; else ok "refused"; fi
+
+echo "=== a build without a preview image is refused ==="
+fixture "$TMP/b6"; rm "$TMP/b6/og-image.png"
+if "$SYNC" "$TMP/b6" "$TMP/public" >/dev/null 2>&1; then bad "build without og-image.png accepted"; else ok "refused"; fi
+
+echo "=== a page whose preview tag is missing or relative is refused ==="
+fixture "$TMP/b7"; sed -i '/og:image/d' "$TMP/b7/index.html"
+if "$SYNC" "$TMP/b7" "$TMP/public" >/dev/null 2>&1; then bad "page without og:image accepted"; else ok "refused (missing)"; fi
+fixture "$TMP/b8"; sed -i 's#content="https://henk.hulsman.dev/og-image.png"#content="/og-image.png"#' "$TMP/b8/index.html"
+if "$SYNC" "$TMP/b8" "$TMP/public" >/dev/null 2>&1; then bad "relative og:image accepted"; else ok "refused (relative)"; fi
 
 echo "=== a feed without a message is refused ==="
 fixture "$TMP/b4"; echo '{"state":"ok"}' > "$TMP/b4/henk-public.json"
