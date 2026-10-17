@@ -576,7 +576,44 @@ def test_memory_and_swap_are_reported_per_container(node):
         "Highest swap: example-b (200.0 MiB), quirky_turing (50.0 MiB), "
         "example-a (10.0 MiB)." in out
     )
-    assert "includes active page cache, which is what memory pressure tracks" in out
+    assert (
+        "includes active page cache, which is what memory pressure tracks. "
+        + SWAP_VICTIM_HINT
+    ) in out
+
+
+#: The victim-versus-culprit hint (triage-quality close-out carry-forward).
+SWAP_VICTIM_HINT = (
+    "Swap held by a container shows where pages went, not who caused the "
+    "pressure: look for the cause among the working-set movers in the window "
+    "before the swap-out."
+)
+
+
+@pytest.mark.parametrize("node", ["rp5", "vps"])
+@pytest.mark.parametrize("variant", ["full", "no-swap-series", "no-health", "one-container"])
+def test_the_swap_victim_hint_rides_with_every_header(node, variant):
+    if variant == "full":
+        payloads = _container_payloads(node)
+    elif variant == "no-swap-series":
+        payloads = {**_container_payloads(node), "swap": vector()}
+    elif variant == "no-health":
+        payloads = _container_payloads(node, health=False)
+    else:
+        payloads = _container_payloads(
+            node, containers={"example-a": CONTAINERS["example-a"]})
+    out = render("container_state", {"node": node}, **payloads)
+    header = out.splitlines()[1]
+    assert header.startswith("Highest working set: ")
+    assert header.endswith(SWAP_VICTIM_HINT)
+    assert out.count(SWAP_VICTIM_HINT) == 1
+
+
+def test_the_swap_victim_hint_is_absent_without_a_header():
+    empty = {key: vector() for key in _container_payloads("vps")}
+    out = render("container_state", {"node": "vps"}, **empty)
+    assert "Highest swap" not in out
+    assert SWAP_VICTIM_HINT not in out
 
 
 def test_container_memory_carries_no_bar():

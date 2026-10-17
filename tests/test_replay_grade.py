@@ -995,3 +995,37 @@ def test_the_judge_modules_import_no_live_output():
     assert "henk.replay.grade" in loaded
     for module in FORBIDDEN:
         assert not any(m == module or m.startswith(module + ".") for m in loaded), module
+
+
+# --- A missing model or effort renders as "unknown" (triage-quality carry-forward)
+
+
+def _render_record(candidates):
+    return {
+        "grade_id": "g-example",
+        "source": {"kind": "replay", "id": "r-example"},
+        "status": grade_mod.STATUS_ERROR,
+        "rubric": {"version": "v1", "sha256": "0" * 12},
+        "judge": {"model": "claude-judge-example", "effort": "high"},
+        "seed": 7,
+        "reference_used": False,
+        "case": {},
+        "scores": None,
+        "candidates": candidates,
+    }
+
+
+def test_a_rebuilt_original_without_effort_renders_unknown_not_none(tmp_path):
+    # A rebuilt original has effort None by design (rebuild.py); the terminal shows
+    # the word "unknown", never Python's None. The grade record itself keeps null.
+    record = _render_record([
+        grade_mod._mapping_entry("A", grade_mod.ORIGINAL,
+                                 {"model": "claude-sonnet-example", "effort": None}),
+        grade_mod._mapping_entry("B", "r-example", {"model": None, "effort": "high"}),
+    ])
+    assert record["candidates"][0]["effort"] is None
+    out = grade_mod.render_grade(record, tmp_path / "g.json")
+    lines = out.splitlines()
+    assert "  A: the original (claude-sonnet-example, unknown)" in lines
+    assert "  B: run r-example (unknown, high)" in lines
+    assert "None" not in out

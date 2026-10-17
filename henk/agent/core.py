@@ -60,6 +60,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable
 from henk.agent.digest import read_digest
 from henk.agent.ending import (
     COMPLETED,
+    ERROR,
     classify_ending,
     incomplete_triage_notice,
 )
@@ -404,10 +405,23 @@ class AgentCore:
                 await self._reply(self._error_reply)
                 self._last_activity = self._clock()
                 return
+            # The same classifier as an event turn (D12): structured signals first,
+            # the "API Error" text heuristic last. An errored turn's text is never
+            # delivered; the owner gets the generic error reply instead. A refusal
+            # keeps delivering the model's own text, and an empty reply sends nothing.
+            ending = classify_ending(
+                self._session_ending(self._session), raised=False, reply=reply
+            )
             if self._acc is not None:
                 self._acc.turn_count += 1
+                # One record covers the whole owner session: a non-completed turn is
+                # recorded, and a later turn never masks an earlier error.
+                if ending.outcome != COMPLETED and self._acc.outcome != ERROR:
+                    self._acc.outcome = ending.outcome
             self._last_activity = self._clock()
-            if reply:
+            if ending.outcome == ERROR:
+                await self._reply(self._error_reply)
+            elif reply:
                 await self._reply(reply)
 
     def _working(self) -> AbstractAsyncContextManager[None]:

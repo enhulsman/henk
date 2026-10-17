@@ -665,6 +665,13 @@ def write_grade(config: Any, source: ReplaySource, record: Mapping[str, Any]) ->
     return path
 
 
+def _shown(value: Any) -> str:
+    """A candidate's model or effort as the terminal shows it: a missing value (a
+    rebuilt original has no effort by design) reads ``unknown``, never ``None``.
+    The grade record keeps the null."""
+    return "unknown" if value is None else str(value)
+
+
 def render_grade(record: Mapping[str, Any], path: Path) -> str:
     """What the owner's terminal shows for one grade. The mapping is shown here:
     only the judge is blind."""
@@ -682,7 +689,8 @@ def render_grade(record: Mapping[str, Any], path: Path) -> str:
     scores = record.get("scores")
     for entry in record["candidates"]:
         who = ("the original" if entry["kind"] == "original" else f"run {entry['run_id']}")
-        line = f"  {entry['label']}: {who} ({entry['model']}, {entry['effort']})"
+        line = (f"  {entry['label']}: {who} "
+                f"({_shown(entry['model'])}, {_shown(entry['effort'])})")
         if scores is not None:
             marks = scores[entry["label"]]
             total = sum(marks[c]["score"] for c in CRITERIA)
