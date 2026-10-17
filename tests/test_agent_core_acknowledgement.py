@@ -207,14 +207,13 @@ async def test_the_indicator_clears_after_the_error_reply():
 
 
 async def test_the_indicator_clears_when_session_setup_fails():
-    # Scenario: Indicator clears when session setup fails. The exception still
-    # reaches AgentCore.run's logger exactly as before; the bracket's `finally`
-    # is on its way.
+    # Scenario: Indicator clears when session setup fails. The failure is handled
+    # on the owner-turn error path (review 028): the owner gets the generic error
+    # reply inside the bracket, then the indicator stops, as with a failed turn.
     channel = OrderedChannel()
     core = _core(RaisingFactory(), channel)
-    with pytest.raises(RuntimeError, match="session setup failed"):
-        await asyncio.wait_for(core.process("hello"), FAIL_FAST)
-    assert channel.order == [START, STOP]
+    await asyncio.wait_for(core.process("hello"), FAIL_FAST)
+    assert channel.order == [START, ("send", DEFAULT_ERROR_REPLY), STOP]
     assert asyncio.all_tasks() == {asyncio.current_task()}, "the refresh outlived the turn"
 
 

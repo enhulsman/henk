@@ -387,7 +387,16 @@ class AgentCore:
         # because the owner's wait ends when the reply lands. The gate framing
         # stays inner and synchronous, exactly as before.
         async with self._working():
-            await self._ensure_session("owner-message")
+            # Session setup can fail (the real factory builds the SDK client in
+            # create()); the owner still gets the generic error reply, never silence.
+            try:
+                await self._ensure_session("owner-message")
+            except Exception:
+                logger.exception("owner session setup failed")
+                if self._acc is not None:
+                    self._acc.outcome = "error"
+                await self._reply(self._error_reply)
+                return
             # Composition order, outermost first: time, then memory, then what Henk
             # just sent, then what the owner said. The delivered-reminder block sits
             # closest to the owner's message because it is the context their message
@@ -406,9 +415,10 @@ class AgentCore:
                 self._last_activity = self._clock()
                 return
             # The same classifier as an event turn (D12): structured signals first,
-            # the "API Error" text heuristic last. An errored turn's text is never
-            # delivered; the owner gets the generic error reply instead. A refusal
-            # keeps delivering the model's own text, and an empty reply sends nothing.
+            # the "API Error" text heuristic after them, a refusal only after every
+            # error signal. An errored turn's text is never delivered; the owner gets
+            # the generic error reply instead. A refusal with no error signal keeps
+            # delivering the model's own text, and an empty reply sends nothing.
             ending = classify_ending(
                 self._session_ending(self._session), raised=False, reply=reply
             )

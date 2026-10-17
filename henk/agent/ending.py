@@ -4,13 +4,16 @@ The classifier reads the agent SDK's **structured signals first** and considers 
 reply text only after all of them. The first matching check decides:
 
 1. an assistant-message error in the turn: ``error``;
-2. a ``refusal`` stop reason on an assistant or the result message: ``refused``;
-3. the result message marked as an error, carrying an API error status, or
+2. the result message marked as an error, carrying an API error status, or
    reporting a terminal reason other than ``completed``: ``error``;
-4. the turn raised: ``error``;
-5. reply text that is a CLI-rendered API error (``API Error…``): ``error``;
+3. the turn raised: ``error``;
+4. reply text that is a CLI-rendered API error (``API Error…``): ``error``;
+5. a ``refusal`` stop reason on an assistant or the result message: ``refused``;
 6. empty reply text: ``no-reply``;
 7. otherwise ``completed``.
+
+Every error signal, the text heuristic included, outranks a refusal, so a turn
+carrying both never has its reply text treated as a deliverable refusal.
 
 For any ending other than ``completed`` the reply text is discarded, and an
 announceable incident gets :func:`incomplete_triage_notice` instead. The notice is
@@ -107,8 +110,6 @@ def classify_ending(
     if signals is not None:
         if signals.assistant_error:
             return _error(signals)
-        if signals.refusal:
-            return TriageEnding(REFUSED)
         if (
             signals.result_is_error
             or signals.api_error_status is not None
@@ -123,6 +124,10 @@ def classify_ending(
     text = (reply or "").strip()
     if text.startswith(_API_ERROR_PREFIX):
         return _error(signals)
+    # A refusal is checked only after every error signal: a turn that carries both
+    # is an error, so its (possibly error-rendered) text is never delivered.
+    if signals is not None and signals.refusal:
+        return TriageEnding(REFUSED)
     if not text:
         return TriageEnding(NO_REPLY)
     return TriageEnding(COMPLETED)

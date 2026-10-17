@@ -130,3 +130,71 @@ async def test_a_later_completed_turn_does_not_mask_an_earlier_error(tmp_path):
     assert sent == [DEFAULT_ERROR_REPLY, NORMAL_REPLY]
     assert record["outcome"] == ERROR
     assert record["turn_count"] == 2
+
+
+# --- Mixed signals: an error signal outranks a refusal (review 028, finding 2) ---
+
+
+@pytest.mark.parametrize("reply, signals", [
+    ("I can't help with that one.", TurnEnding(refusal=True, result_is_error=True)),
+    ("I can't help with that one.", TurnEnding(refusal=True, api_error_status=500)),
+    (API_ERROR_TEXT, TurnEnding(refusal=True)),
+])
+async def test_a_refusal_never_masks_an_error_signal(tmp_path, reply, signals):
+    sent, record = await _owner_turns(tmp_path, [(reply, signals)], ["do the thing"])
+    assert sent == [DEFAULT_ERROR_REPLY]
+    assert reply not in sent
+    assert not any("API Error" in s for s in sent)
+    assert record["outcome"] == ERROR
+
+
+# --- Session setup failure still answers the owner (review 028, finding 1) ---
+
+
+class _RaisingFactory:
+    """A factory whose create() raises the first ``failures`` times."""
+
+    def __init__(self, failures: int, script=()) -> None:
+        self._failures = failures
+        self._script = list(script)
+        self.calls = 0
+
+    def create(self):
+        self.calls += 1
+        if self.calls <= self._failures:
+            raise RuntimeError("placeholder session build failure")
+        return _OwnerSession(self._script)
+
+
+async def test_a_session_setup_failure_sends_the_error_reply(tmp_path):
+    channel = FakeChannel()
+    core = AgentCore(_RaisingFactory(failures=1), channel, clock=make_clock([0]),
+                     audit=AuditLog(tmp_path / "a.jsonl"))
+    await core.process("is everything up?")  # must not raise
+    assert channel.sent == [DEFAULT_ERROR_REPLY]
+    assert not any("placeholder session build failure" in s for s in channel.sent)
+
+
+async def test_a_session_setup_failure_completes_the_queued_turn(tmp_path):
+    import asyncio
+
+    channel = FakeChannel()
+    factory = _RaisingFactory(failures=1, script=[(NORMAL_REPLY, None)])
+    core = AgentCore(factory, channel, clock=make_clock([0]),
+                     audit=AuditLog(tmp_path / "a.jsonl"))
+    runner = asyncio.create_task(core.run())
+    try:
+        await core.submit("is everything up?")
+        await asyncio.wait_for(core._queue.join(), timeout=5)
+        assert channel.sent == [DEFAULT_ERROR_REPLY]
+        # The next owner turn builds a fresh session and is answered normally.
+        await core.submit("and now?")
+        await asyncio.wait_for(core._queue.join(), timeout=5)
+        assert channel.sent == [DEFAULT_ERROR_REPLY, NORMAL_REPLY]
+        assert factory.calls == 2
+    finally:
+        runner.cancel()
+        try:
+            await runner
+        except asyncio.CancelledError:
+            pass

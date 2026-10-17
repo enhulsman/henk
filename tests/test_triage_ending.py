@@ -189,23 +189,28 @@ GOOD = TRIAGE_REPLY
         (_signals(assistant_error="rate_limit", refusal=True, result_is_error=True,
                   api_error_status=529), True, GOOD, ERROR),
         (_signals(assistant_error="server_error"), False, GOOD, ERROR),
-        # 2. a refusal wins over a result error, a raise and the text.
+        # 2. a result-level error wins over a refusal, a raise and the text.
         (_signals(refusal=True, result_is_error=True, api_error_status=500), True,
-         GOOD, REFUSED),
-        (_signals(refusal=True), False, GOOD, REFUSED),
-        (_signals(refusal=True), False, "", REFUSED),
-        # 3. a result-level error wins over a raise and the text.
+         GOOD, ERROR),
+        (_signals(refusal=True, result_is_error=True), False, GOOD, ERROR),
+        (_signals(refusal=True, api_error_status=529), False, GOOD, ERROR),
+        (_signals(refusal=True, terminal_reason="max_turns"), False, GOOD, ERROR),
         (_signals(result_is_error=True), True, GOOD, ERROR),
         (_signals(result_is_error=True), False, GOOD, ERROR),
         (_signals(api_error_status=529), False, GOOD, ERROR),
         (_signals(terminal_reason="max_turns"), False, GOOD, ERROR),
         (_signals(terminal_reason="aborted_streaming"), False, GOOD, ERROR),
-        # 4. a raise wins over the text.
+        # 3. a raise wins over a refusal and the text.
         (None, True, GOOD, ERROR),
         (None, True, "", ERROR),
-        # 5. then the text heuristic: a CLI-rendered API error with no signal.
+        (_signals(refusal=True), True, GOOD, ERROR),
+        # 4. then the text heuristic: a CLI-rendered API error, refusal or not.
         (None, False, API_ERROR_TEXT, ERROR),
         (None, False, "  " + API_ERROR_TEXT, ERROR),
+        (_signals(refusal=True), False, API_ERROR_TEXT, ERROR),
+        # 5. a refusal, with no error signal and no API error text.
+        (_signals(refusal=True), False, GOOD, REFUSED),
+        (_signals(refusal=True), False, "", REFUSED),
         # 6. empty reply.
         (None, False, "", NO_REPLY),
         (None, False, None, NO_REPLY),
