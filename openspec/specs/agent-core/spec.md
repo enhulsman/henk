@@ -10,6 +10,8 @@ cost a model turn.
 ### Requirement: Inbound message becomes an agent turn
 The agent core SHALL run each inbound owner message as a turn of a Claude Agent SDK session and deliver the agent's final text response back through the channel adapter. Intermediate tool activity SHALL NOT be sent as separate chat messages in v1.
 
+For owner agent turns, the application SHALL use the ending precedence in the incident-triage requirement "An incomplete triage is reported, never silent". When an error signal outranks a refusal, the application SHALL discard the agent's reply text, send the generic error reply, and record the outcome as `error`. A refusal without an error SHALL retain the model's reply text; an empty reply without an error or refusal SHALL send no message.
+
 #### Scenario: Simple question answered
 - **WHEN** the owner sends "is everything up?"
 - **THEN** the agent runs a turn (invoking read-only tools as needed) and the owner receives a single reply message with the answer
@@ -17,6 +19,10 @@ The agent core SHALL run each inbound owner message as a turn of a Claude Agent 
 #### Scenario: Agent turn fails
 - **WHEN** the Agent SDK call fails (API error, credit pool exhausted, timeout)
 - **THEN** the owner receives a short error message stating the failure honestly, and the process remains alive for the next message
+
+#### Scenario: An owner-turn error outranks a refusal
+- **WHEN** an owner agent turn reports both a refusal and a result-level error
+- **THEN** the owner receives the generic error reply instead of the model's text, and the recorded outcome is `error`
 
 ### Requirement: Conversation continuity and reset
 The agent core SHALL maintain conversation context across consecutive messages so follow-ups resolve naturally, and SHALL start a fresh session when the owner sends a reset command (`/new`) or when the conversation has been idle beyond a configured window (default 60 minutes).
@@ -264,9 +270,9 @@ When owner acknowledgement is enabled, the agent core SHALL start the channel ad
 
 The bracket SHALL open after `/new` and app-side command dispatch and before the session is ensured. It SHALL enclose session setup, turn composition, the gate-framed agent turn, and the send of the reply or error reply. It SHALL close only after that send has been attempted, because the owner's wait ends when the reply lands, not when the model finishes. Opening the bracket SHALL issue the indicator's start before the session receives the turn's content, and SHALL NOT wait on the start's response.
 
-On every normal exit path — a delivered reply, an empty reply, an agent error with its error reply, or an exception from session setup — the indicator SHALL be stopped. On **cancellation** (shutdown), including a cancellation delivered while the bracket is being entered, the indicator task SHALL be cancelled and awaited, no stop SHALL be attempted over the network, and the cancellation SHALL propagate out of the turn rather than being absorbed; the channel's client-side expiry clears the indicator (channel-adapter spec). While an approval prompt raised inside the turn is pending, the indicator SHALL be suspended and SHALL resume when the approval resolves (channel-adapter spec).
+On every normal exit path — a delivered reply, an empty reply, an agent error with its error reply, or an exception from session setup — the indicator SHALL be stopped. If session setup raises, the agent core SHALL send the generic error reply to the owner before stopping the indicator and SHALL NOT send the exception text. On **cancellation** (shutdown), including a cancellation delivered while the bracket is being entered, the indicator task SHALL be cancelled and awaited, no stop SHALL be attempted over the network, and the cancellation SHALL propagate out of the turn rather than being absorbed; the channel's client-side expiry clears the indicator (channel-adapter spec). While an approval prompt raised inside the turn is pending, the indicator SHALL be suspended and SHALL resume when the approval resolves (channel-adapter spec).
 
-Owner **command** turns SHALL NOT be bracketed: they are deterministic and instant, and an indicator that appears and clears within one round trip is noise. **Event turns** are bracketed only as "Sent event triages are bracketed by the working indicator" specifies. A failure to start, refresh or stop the indicator SHALL be logged and SHALL NOT affect the turn (channel-adapter spec). When acknowledgement is disabled, owner-turn processing SHALL be unchanged from before this change.
+Owner **command** turns SHALL NOT be bracketed: they are deterministic and instant, and an indicator that appears and clears within one round trip is noise. **Event turns** are bracketed only as "Sent event triages are bracketed by the working indicator" specifies. A failure to start, refresh or stop the indicator SHALL be logged and SHALL NOT affect the turn (channel-adapter spec). When acknowledgement is disabled, no working indicator SHALL be started; owner-turn error replies and ending classification SHALL apply in either mode.
 
 #### Scenario: Indicator brackets a normal owner turn
 - **WHEN** an owner message runs as an agent turn and the reply is delivered
@@ -278,7 +284,7 @@ Owner **command** turns SHALL NOT be bracketed: they are deterministic and insta
 
 #### Scenario: Indicator clears when session setup fails
 - **WHEN** ensuring the session raises before the agent turn runs
-- **THEN** the working indicator is stopped and its refresh does not outlive the failed turn
+- **THEN** the owner receives the generic error reply rather than exception text, and the working indicator is stopped after the reply is sent so its refresh does not outlive the failed turn
 
 #### Scenario: Indicator clears on an empty reply
 - **WHEN** the agent turn completes with no reply text
@@ -300,9 +306,9 @@ Owner **command** turns SHALL NOT be bracketed: they are deterministic and insta
 - **WHEN** the owner sends `/new`
 - **THEN** no working indicator is started and the reset confirmation is sent as before
 
-#### Scenario: Disabled acknowledgement leaves owner turns unchanged
+#### Scenario: Disabled acknowledgement changes only the indicator
 - **WHEN** acknowledgement is disabled and an owner message runs as an agent turn
-- **THEN** no working indicator is started, and the content sent to the session and the reply sent to the owner are identical to before this change
+- **THEN** no working indicator is started, and the content sent to the session and the reply sent to the owner follow the same rules as when acknowledgement is enabled
 
 ### Requirement: Sent event triages are bracketed by the working indicator
 When owner acknowledgement is enabled, the agent core SHALL show the channel adapter's working indicator for every **event turn whose output will be sent to the owner** — an announceable turn, as decided by the alert cap before the turn is queued — and SHALL NOT show it for a turn the cap has made non-announceable. The owner is waiting on such a triage: the external alert has already said one is coming. A cap-suppressed triage produces no Signal message, so an indicator there would promise a message that never comes.

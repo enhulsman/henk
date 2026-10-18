@@ -234,14 +234,15 @@ times SHALL be inside the untrusted-data block.
 
 ### Requirement: An incomplete triage is reported, never silent
 After each triage turn, the application SHALL classify how the turn ended from the agent
-SDK's **structured signals, before considering any reply text**. The first matching
+SDK's structured signals and the CLI-rendered API error text heuristic. The first matching
 check, in this order, decides the ending:
 1. an assistant-message error in the turn: `error`;
-2. a refusal stop reason on an assistant or result message: `refused`;
-3. a result message marked as an error, or carrying an API error status: `error`;
-4. the turn raised: `error`;
-5. empty reply text: `no-reply`;
-6. otherwise: `completed`.
+2. a result message marked as an error, carrying an API error status, or reporting a terminal reason other than `completed`: `error`;
+3. the turn raised: `error`;
+4. reply text beginning with the CLI-rendered `API Error` prefix: `error`;
+5. a refusal stop reason on an assistant or result message: `refused`;
+6. empty reply text: `no-reply`;
+7. otherwise: `completed`.
 
 The ending SHALL be recorded as the triage record's outcome. For any ending other than
 `completed`, the reply text SHALL be discarded and SHALL NOT be delivered. Text that the
@@ -274,6 +275,10 @@ silent. Every ending other than `completed` SHALL set `triage_arc_complete: fals
 #### Scenario: A result-level API error is reported with its status
 - **WHEN** a triage turn's result message is marked as an error with an API error status of 529
 - **THEN** the ending is `error`, and the announceable notice states the triage failed with HTTP 529
+
+#### Scenario: A result-level error outranks a refusal
+- **WHEN** a triage turn carries both a refusal stop reason and a result-level error
+- **THEN** the ending is `error`, the reply text is discarded, and an announceable incident receives the incomplete-triage error notice
 
 #### Scenario: An empty reply is no longer silent
 - **WHEN** an announceable triage turn completes without any error signal and produces no reply text
