@@ -800,8 +800,8 @@ def render_container_state(plan: "QueryPlan", payloads: Mapping[str, Any]) -> st
         f"Highest working set: {_top(working_set)}. Highest swap: {_top(swap)}. "
         "Working set includes active page cache, which is what memory pressure "
         "tracks. Swap held by a container shows where pages went, not who caused "
-        "the pressure: look for the cause among the working-set movers in the "
-        "window before the swap-out.",
+        "the pressure. If a swap-out time is known from another source, compare "
+        "working-set changes around it to find the cause.",
     ]
     return "\n".join([*header, *rows, *_caveats(plan)])
 

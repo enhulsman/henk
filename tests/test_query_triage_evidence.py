@@ -585,8 +585,8 @@ def test_memory_and_swap_are_reported_per_container(node):
 #: The victim-versus-culprit hint (triage-quality close-out carry-forward).
 SWAP_VICTIM_HINT = (
     "Swap held by a container shows where pages went, not who caused the "
-    "pressure: look for the cause among the working-set movers in the window "
-    "before the swap-out."
+    "pressure. If a swap-out time is known from another source, compare "
+    "working-set changes around it to find the cause."
 )
 
 
