@@ -1,7 +1,7 @@
 ## Context
 
 Henk runs on rp5 as a non-root container with no Docker socket, no host mount beyond the
-read-only docs corpus, a `tag:henk` tailnet identity with egress to five ports and no
+read-only docs corpus, a `tag:henk` tailnet identity with egress to four ports (rp5:8080, vps:9090, vps:8089, vps:2586) and no
 inbound or SSH rules, and one ntfy token scoped per topic (secure-deployment spec). Every
 mutating tool registered to date (`store_memory`, `capture`, `remind`, `cancel_reminder`)
 writes a Henk-local store and is owner-turn-only (approval-gate spec, "Mutating tools
@@ -93,7 +93,7 @@ It cannot restart systemd units or send WoL anyway.
 
 **D (rejected).** It needs an SSH private key inside the stack ("The stack SHALL NOT
 contain SSH keys", secure-deployment; "no `~/.ssh`", AGENTS.md), a new `tag:henk` ACL
-grant to rp5:22 (today `tag:henk` has "no SSH rules" and egress to rp5 only on 8080/8000),
+grant to rp5:22 (today `tag:henk` has no SSH rules and egress to rp5 on 8080 only; the 8000 grant in the base secure-deployment spec is not deployed),
 and it is the "SSH" entry of the Never tier by name. A forced command limits what the key
 does, but not that Henk holds a key and opens an inbound session.
 
@@ -238,8 +238,7 @@ The guarantee is therefore "the model cannot choose the target", not "the alert 
 genuine". A forged notification needs a publisher credential for `henk-events` (today
 only the write-only sensor users have one) and still reaches only a bound target within
 the rate limit. Two narrowing rules apply:
-- a binding is made only from a single-alert frame (`[FIRING:1]`) that carries exactly
-  one `job` value, so a grouped notification binds nothing;
+- a binding is made only from a single-alert frame whose derived state is FIRING (`[FIRING:1]`) and that carries exactly one `job` value, so a grouped or RESOLVED notification binds nothing;
 - a `job` value may be bound only when it names exactly one rp5 target. A job name shared
   across hosts (a `node-exporter` job covering rp5 and the vps, for example) would let a
   vps outage restart a healthy rp5 container, so such a job is not bound. Apply task 0.2
@@ -334,7 +333,8 @@ framed as a recurrence and carries the prior handoff, the one that records the r
 sent with the "no recovery was confirmed" line for each item that was not verified, and
 the relapse line `(<container> went down again after Henk restarted it at <HH:MM>.)` for
 each relapsed item. Verified items get no line. Cap, cooldown and suppressed count
-stay as `evaluate` set them.
+stay as `evaluate` set them. An item's registration ends when its message is sent or
+dropped; events of its identity after that pass to the pipeline unchanged.
 
 **Restart and write order.** The held message is persisted (`held_messages`: the un-noted
 text, the item identity keys, the request ids, the turn's suppressed count, the
@@ -367,8 +367,7 @@ approval prompt, a reminder delivery or an application notice. It may wait weeks
 acceptable, because the record (handoffs) already has the detail. Order after `Pickup:`:
 the suppressed-incident note, then the action lines, then the fixed-count note.
 
-Verification writes its own `action` record (`phase: verification`, `verified: resolved |
-not-resolved`) for each item.
+Verification writes its own `action` record (`phase: verification`, `verified: resolved | not-resolved | relapsed`) for each item, a relapse included.
 
 ### D10 — Receipts
 

@@ -42,28 +42,32 @@ Each has my pick and a confidence. Nothing here is settled until you say so.
 2. **Which targets, and which are excluded as critical.** Names come from `devices/pi5.md`
    and are known to be partly wrong: the finance bot runs as `finance-automation-bot`
    (the `finance.jobs` seed), and compose stacks name containers `<project>-<service>-1`.
-   A read-only `docker ps` should settle the names before you sign this decision.
-   - Standing containers: `wordle`, `gokapi`, `filebrowser`, `node-exporter`, `cadvisor`,
-     `adguard-exporter`, `adguardhome-sync`.
-   - Per-instance containers: `finance-automation-bot`, `dawarich_app`, `dawarich_sidekiq`,
-     `registry` (your money data, your partner's location sharing, the image store).
-   - Per-instance units: `taiga-mcp`, `lighttpd`, `dawarich-watcher`, `influxdb` (it holds
-     only regenerable case-sensor data, unlike the excluded Dawarich stores), `pironman5`.
-   - **What "per-instance" does and does not protect.** Your `yes` stops a *misled* Henk.
+   Task 0.1 (read-only `docker ps`) settles the names before you sign this decision.
+   - **2a Standing containers.** Pick: `wordle`, `gokapi`, `filebrowser`, `node-exporter`,
+     `cadvisor`, `adguard-exporter`, `adguardhome-sync`. Alternative: the three exporters
+     only. Confidence: moderate (the split between standing and per-instance containers
+     is a judgement call about what you mind).
+   - **2b Per-instance containers and units.** Pick: the full list — containers
+     `finance-automation-bot`, `dawarich_app`, `dawarich_sidekiq`, `registry` (your money
+     data, your partner's location sharing, the image store); units `taiga-mcp`, `lighttpd`,
+     `dawarich-watcher`, `influxdb` (it holds only regenerable case-sensor data, unlike the
+     excluded Dawarich stores), `pironman5`. Alternative: units `taiga-mcp`, `lighttpd`
+     and `pironman5` only, because rp5 cannot tell an approved request from an unapproved
+     one. Confidence: moderate.
+
+     **What "per-instance" does and does not protect.** Your `yes` stops a *misled* Henk.
      It does not stop a *compromised* Henk container: rp5 cannot tell an approved request
      from an unapproved one (design D2), so whoever controls the container could restart
      any registered target up to rp5's own ceiling (5 per target per hour). Only put a
      target on this list if an unapproved restart would be a nuisance, not damage.
-     Option: a v1 per-instance list of `taiga-mcp`, `lighttpd` and `pironman5` only.
-   - Excluded (never registered): `gatus` (the alerting path itself), `henk`, its
+   - **2c Excluded.** Pick: never register `gatus` (the alerting path itself), `henk`, its
      `tailscale` sidecar and `signal-cli-rest-api` (a self-restart kills the turn that waits
      for the result), `dawarich_db` and `dawarich_redis` (stateful stores), `registry-ui`
      (non-functional, nothing to fix), `advent-notifier` (one-off), and the units
      `AdGuardHome`, `unbound` (tailnet DNS for every device), `cloudflared` (every public
      endpoint), `docker`, `tailscaled`, `ssh`, and `homelab-docs-pull` (a timer-driven
      one-shot: "restarting" it would run a root `git pull` now, which is not a restart).
-   Alternative: start with the three exporters only. Confidence: moderate (the split
-   between standing and per-instance containers is a judgement call about what you mind).
+     Confidence: high.
 3. **May a standing action run during an event turn (triage)?** This is the central one.
    Today every mutating tool is owner-turn-only, so triage can only flag. Options:
    - (a) Owner turns only, as today. Nothing disappears from your phone; you type
@@ -84,7 +88,7 @@ Each has my pick and a confidence. Nothing here is settled until you say so.
    rule would answer "use `/new`". In any tainted session, whatever tainted it,
    `restart_container` is limited to the incident's bound target. A session tainted by a
    tool, rather than by an incident, has no bound target, so it can restart nothing.
-   `wake_workstation` is refused there. Confidence: (b) moderate-high; 3b moderate.
+   `wake_workstation` is refused there. In that follow-up turn Henk may also restart the incident's own container again without a prompt (it is standing and bound), at most 3 times an hour; say `no restarts` if you want that off, and it becomes owner-turn-only. Confidence: (b) moderate-high; 3b moderate.
 4. **Rate limits and cool-downs.** Pick: at most **one automatic (event-turn) restart per
    container per 6 hours**; a second alert inside that window gets no restart and reaches
    you with the rate-limit line. (Today the 6-hour alert cooldown would swallow that
@@ -107,13 +111,10 @@ Each has my pick and a confidence. Nothing here is settled until you say so.
    line on the next triage message or reply to you. It never rides an approval prompt or a
    reminder. No message per fix and no new command. Alternative: a short
    "fixed" message per fix for the first two weeks, as training wheels. Confidence: moderate.
-7. **Silence needs proof.** Pick: Henk stays silent only when the alert's own **resolved**
-   event arrives within 10 minutes of a successful restart, and only when **every** alert in
-   that triage was fixed this way. If one triage covers two alerts and only one was fixed,
-   you get the message. Otherwise the triage message goes out with the "no recovery was
-   confirmed" line. A silent fix gives back its slot in the daily alert cap, and any "N
-   incidents were suppressed" count it carried moves to the next message. Confidence:
-   moderate-high.
+7. **Silence needs proof, and whether to ship silence in v1 at all.** Options:
+   - (a) **Pick:** Henk stays silent only when the alert's own **resolved** event arrives within 10 minutes of a successful restart, and only when **every** alert in that triage was fixed this way. If one triage covers two alerts and only one was fixed, you get the message. Otherwise the triage message goes out with the "no recovery was confirmed" line. A silent fix gives back its slot in the daily alert cap, and any "N incidents were suppressed" count it carried moves to the next message. This is design D9: a held message, a verification watcher, two cooldown clocks and the fixed-count note, about a third of the build.
+   - (b) No silence in v1: Henk restarts the bound container and the triage message is always sent, with `(Henk restarted <container> at <HH:MM>.)` after `Pickup:` when the restart returned `ok`. Nothing is held, dropped or counted; the cooldown, cap and suppressed-count rules stay exactly as today. Verified silence becomes a follow-up change once backlog items 1 and 4 give the event path more than the three exporters to fix. You lose nothing on your phone today (those three alerts reach you now too) and the follow-up is the D9 text as written.
+   Confidence: (a) moderate — it is the attention contract made real, but day-one coverage is three alerts; (b) is the smaller first step and the one I would take if you want this running within the week.
 
 ## New text you will read
 
