@@ -419,6 +419,23 @@ Credential: a read-only `henk-handoffs` token from `$HENK_PICKUP_TOKEN` or
 `~/.config/henk/pickup-token`. Pull-based, no daemon. Handoffs are working notes
 (retention-bounded); the `henk_audit` log is the durable record.
 
+### Owner tools
+
+If a retained handoff carried an injected instruction, stop Henk first on rp5
+(`docker compose stop henk`), then use the host's `python3` to preview the purge:
+
+```bash
+python3 deploy/henk-purge-handoffs.py /path/to/henk-store.db --message-id example-id
+python3 deploy/henk-purge-handoffs.py /path/to/henk-store.db --message-id example-id --yes
+```
+
+Repeat `--message-id` to select several ids, or use `--all` to clear all handoffs.
+Without `--yes` this only lists rows. With `--yes` it first makes a SQLite backup
+beside the database (`DB.prepurge-<UTC timestamp>`), then deletes the selected
+handoffs. Memories, inbox items and reminders are preserved. Restart Henk with
+`docker compose start henk` once recovery is complete. This is an owner-run tool,
+never an agent tool or Signal command.
+
 ### Replaying a triage — `python -m henk.replay`
 
 Every event triage leaves a bounded recording on the audit volume
