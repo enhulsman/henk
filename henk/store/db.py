@@ -22,7 +22,8 @@ Two things here are not obvious and are load-bearing:
   host is never created there. :func:`_check_reminders_columns` converts that from
   "code reads a column production does not have, silently" into a refusal to start
   that names the column. It is the enforcement of the rule, not a migration path.
-  :func:`_check_handoffs_columns` does the same for the handoff archive.
+  :func:`_check_handoffs_columns` does the same for the handoff archive, and
+  :func:`_check_table_columns` for the maintenance-window hold tables.
 """
 
 from __future__ import annotations
@@ -113,6 +114,40 @@ _SCHEMA = (
     "ON handoffs(published_at, id)",
     # The recurrence lookup by ntfy message id.
     "CREATE INDEX IF NOT EXISTS idx_handoffs_message_id ON handoffs(message_id)",
+    # Maintenance-window holds (maintenance-calendar D7, D8), COMPLETE column sets
+    # from day one, for the same no-migration reason. A window row is inserted
+    # with its window's first held event; `end` is the end as known then (the
+    # frozen end), moved only by the release's extension rule. `released_at` is set
+    # exactly once, by a guarded update. `end` is a SQL keyword, so it is quoted
+    # in every statement that names it.
+    """
+    CREATE TABLE IF NOT EXISTS hold_windows (
+        window_id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        start REAL NOT NULL,
+        "end" REAL NOT NULL,
+        released_at REAL
+    )
+    """,
+    # One row per held ntfy event, keyed on its id so a replay inserts nothing.
+    # The payload columns are what the release rebuilds the event from; they never
+    # reach the audit log (the `hold` record carries ids and times only).
+    """
+    CREATE TABLE IF NOT EXISTS held_events (
+        event_id TEXT PRIMARY KEY,
+        window_id TEXT NOT NULL,
+        identity_key TEXT NOT NULL,
+        state TEXT NOT NULL,
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        raw_json TEXT NOT NULL,
+        published_at REAL NOT NULL,
+        arrival_time REAL NOT NULL,
+        held_at REAL NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_held_events_window "
+    "ON held_events(window_id, published_at)",
 )
 
 #: Exactly the columns the statement above creates. The drift check compares the
@@ -144,6 +179,30 @@ HANDOFF_COLUMNS: tuple[str, ...] = (
     "identity_keys",
     "rule_keys",
     "nodes",
+)
+
+
+#: Exactly the columns the ``hold_windows`` statement creates, checked the same way.
+HOLD_WINDOW_COLUMNS: tuple[str, ...] = (
+    "window_id",
+    "title",
+    "start",
+    "end",
+    "released_at",
+)
+
+#: Exactly the columns the ``held_events`` statement creates, checked the same way.
+HELD_EVENT_COLUMNS: tuple[str, ...] = (
+    "event_id",
+    "window_id",
+    "identity_key",
+    "state",
+    "title",
+    "message",
+    "raw_json",
+    "published_at",
+    "arrival_time",
+    "held_at",
 )
 
 
@@ -263,6 +322,8 @@ class Store:
             # check is only useful if nothing has queried the table yet.
             _check_reminders_columns(conn)
             _check_handoffs_columns(conn)
+            _check_table_columns(conn, "hold_windows", HOLD_WINDOW_COLUMNS)
+            _check_table_columns(conn, "held_events", HELD_EVENT_COLUMNS)
         except (sqlite3.Error, OSError) as exc:
             raise StoreError(f"cannot open the store at {self._path}: {exc}") from exc
         self._conn = conn

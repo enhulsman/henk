@@ -26,7 +26,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
-from henk.agent.turns import EventTurn, EventTurnItem
+from henk.agent.turns import EventTurn, EventTurnItem, HeldRelease
 from henk.events.identity import derive_identity
 from henk.events.types import Event
 
@@ -179,7 +179,19 @@ class EventPipeline:
         self._announce_times.sort()
         self._cap_suppressed_since_announce = cap_suppressed
 
-    def evaluate(self, batch: Sequence[Event], now: float) -> BatchDecision:
+    def evaluate(
+        self,
+        batch: Sequence[Event],
+        now: float,
+        *,
+        held_release: HeldRelease | None = None,
+    ) -> BatchDecision:
+        """Cooldown, recurrence and the cap over one batch.
+
+        ``held_release`` is passed through onto the resulting turn unchanged: a
+        maintenance-window release evaluates its forwarded events here exactly like
+        live events (maintenance-calendar D8), and the turn says what it released.
+        """
         suppressions: list[SuppressionRecord] = []
         survivors: list[EventTurnItem] = []
         seen: set[str] = set()
@@ -229,6 +241,7 @@ class EventPipeline:
             items=tuple(survivors),
             announceable=announceable,
             suppressed_count=suppressed_count,
+            held_release=held_release,
         )
         return BatchDecision(event_turn=turn, suppressions=suppressions)
 

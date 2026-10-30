@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime
@@ -159,7 +160,13 @@ class EventIntake:
         self._last_report_mono = mono_clock()
         self._frames_since_report = 0
 
-    async def events(self) -> AsyncIterator[Event]:
+    async def events(
+        self,
+        *,
+        on_subscribe: Callable[[], None] | None = None,
+        on_keepalive: Callable[[], None] | None = None,
+        on_unsubscribe: Callable[[], None] | None = None,
+    ) -> AsyncIterator[Event]:
         """Yield events forever, reconnecting with backoff + ``since`` on error.
 
         The retrieval loop is desugared out of ``async for`` because that form has
@@ -167,12 +174,26 @@ class EventIntake:
         ``async for`` instead would put the scope around the consumer's ``yield``
         — raising ``CancelledError`` into the consumer rather than being handled
         here. The path of least resistance is the fatal one and *looks* compliant.
+
+        The three callbacks are how the coordinator learns intake has caught up
+        (maintenance-calendar D8). ``on_subscribe`` runs immediately before every
+        subscribe attempt, the first included. ``on_unsubscribe`` runs the moment a
+        subscription ends, however it ends, before any backoff: during the backoff
+        the next subscription's ``since=`` backlog is still unread, so the ended
+        subscription's keepalive must not count. ``on_keepalive`` runs for each frame
+        whose ``event`` is ``keepalive`` and for no other: proof of life also counts
+        message frames, so it cannot serve. ntfy sends the cached ``since=`` backlog
+        before its first keepalive (``notes/ntfy-keepalive-probe.md``), and this
+        generator only reads the next frame once the consumer has taken the
+        previous event, so when ``on_keepalive`` runs, every earlier message has
+        already been handed on. A callback that raises is logged and ignored.
         """
         connected = False
         while True:
             if connected:
                 self._last_reconnect_at = self._clock()
             connected = True
+            self._notify(on_subscribe, "on_subscribe")
             # The liveness budget is (re-)established HERE: immediately before the
             # subscribe and AFTER any backoff sleep above. Established once
             # outside this loop, every post-trip connection inherits an expired
@@ -183,61 +204,70 @@ class EventIntake:
             agen = self._stream.subscribe(since=self._last_id)
             try:
                 try:
-                    while True:
-                        remaining = self._liveness_deadline - (
-                            self._mono_clock() - self._last_proof_of_life_mono
-                        )
-                        try:
-                            # Scoped to frame RETRIEVAL only. Keyed on the budget
-                            # remaining since the last proof of life, not a full
-                            # window per retrieval: the latter restarts on `open`
-                            # frames, so it is keyed on any frame and measurably
-                            # never fires under an `open` flood.
-                            async with self._timeout_ctx(remaining):
-                                raw = await agen.__anext__()
-                        except StopAsyncIteration:
-                            # Caught INSIDE events(): this is itself an async
-                            # generator, so a StopAsyncIteration escaping its body
-                            # becomes "RuntimeError: async generator raised
-                            # StopAsyncIteration".
-                            break
-                        except TimeoutError as exc:
-                            # TimeoutError is not an EventStreamError, so the
-                            # handler below would miss it: it would escape
-                            # events(), kill the coordinator's pump task and leave
-                            # run() blocked on queue.get() forever -- the first
-                            # trip would silently kill intake. Normalise at the
-                            # point it fires, with status=None so
-                            # _is_since_rejection can never misread it and
-                            # _recoveries is untouched.
-                            raise EventStreamError(
-                                f"{LIVENESS_TRIP_MARKER}: nothing delivered in the "
-                                f"remaining {remaining:.0f}s of the "
-                                f"{self._liveness_deadline:.0f}s liveness deadline "
-                                f"[{self._liveness_summary()}]",
-                                status=None,
-                            ) from exc
+                    try:
+                        while True:
+                            remaining = self._liveness_deadline - (
+                                self._mono_clock() - self._last_proof_of_life_mono
+                            )
+                            try:
+                                # Scoped to frame RETRIEVAL only. Keyed on the budget
+                                # remaining since the last proof of life, not a full
+                                # window per retrieval: the latter restarts on `open`
+                                # frames, so it is keyed on any frame and measurably
+                                # never fires under an `open` flood.
+                                async with self._timeout_ctx(remaining):
+                                    raw = await agen.__anext__()
+                            except StopAsyncIteration:
+                                # Caught INSIDE events(): this is itself an async
+                                # generator, so a StopAsyncIteration escaping its body
+                                # becomes "RuntimeError: async generator raised
+                                # StopAsyncIteration".
+                                break
+                            except TimeoutError as exc:
+                                # TimeoutError is not an EventStreamError, so the
+                                # handler below would miss it: it would escape
+                                # events(), kill the coordinator's pump task and leave
+                                # run() blocked on queue.get() forever -- the first
+                                # trip would silently kill intake. Normalise at the
+                                # point it fires, with status=None so
+                                # _is_since_rejection can never misread it and
+                                # _recoveries is untouched.
+                                raise EventStreamError(
+                                    f"{LIVENESS_TRIP_MARKER}: nothing delivered in the "
+                                    f"remaining {remaining:.0f}s of the "
+                                    f"{self._liveness_deadline:.0f}s liveness deadline "
+                                    f"[{self._liveness_summary()}]",
+                                    status=None,
+                                ) from exc
 
-                        # Liveness accounting reads raw["event"] ONLY, and runs
-                        # BEFORE the _convert/continue guard so control frames
-                        # reach it. It must never write _last_id: ntfy control
-                        # frames carry an `id`, and writing one into the cursor is
-                        # either 400ed (retention replay + owner DM) or accepted,
-                        # silently skipping every message since.
-                        if raw.get("event") != "open":
-                            self._note_proof_of_life()
+                            # Liveness accounting reads raw["event"] ONLY, and runs
+                            # BEFORE the _convert/continue guard so control frames
+                            # reach it. It must never write _last_id: ntfy control
+                            # frames carry an `id`, and writing one into the cursor is
+                            # either 400ed (retention replay + owner DM) or accepted,
+                            # silently skipping every message since.
+                            if raw.get("event") != "open":
+                                self._note_proof_of_life()
+                            if raw.get("event") == "keepalive":
+                                self._notify(on_keepalive, "on_keepalive")
 
-                        event = self._convert(raw)
-                        if event is None:
-                            continue
-                        self._last_id = event.id or self._last_id
-                        yield event
-                        # Advance the anchor AFTER the yield returns, so consumer
-                        # latency is not charged against liveness: liveness
-                        # measures whether the stream is delivering, not how fast
-                        # Henk processes what it delivers. (Keepalives are never
-                        # yielded, so they advance it at classification above.)
-                        self._last_proof_of_life_mono = self._mono_clock()
+                            event = self._convert(raw)
+                            if event is None:
+                                continue
+                            self._last_id = event.id or self._last_id
+                            yield event
+                            # Advance the anchor AFTER the yield returns, so consumer
+                            # latency is not charged against liveness: liveness
+                            # measures whether the stream is delivering, not how fast
+                            # Henk processes what it delivers. (Keepalives are never
+                            # yielded, so they advance it at classification above.)
+                            self._last_proof_of_life_mono = self._mono_clock()
+                    finally:
+                        # The subscription has ended, however it ended (error,
+                        # liveness trip, clean end, since-rejection, close or
+                        # cancellation), and BEFORE any backoff: its keepalive
+                        # no longer says the next subscription's backlog was read.
+                        self._notify(on_unsubscribe, "on_unsubscribe")
                 except EventStreamError as exc:
                     if self._is_since_rejection(exc):
                         # The server refuses our resume point (a malformed
@@ -286,6 +316,15 @@ class EventIntake:
                 # exception already. This fires when the OUTER generator is closed,
                 # which is why the coordinator's pump must hold and close it too.
                 await agen.aclose()
+
+    @staticmethod
+    def _notify(callback: Callable[[], None] | None, name: str) -> None:
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:  # noqa: BLE001 - an observer must never kill intake
+            logger.warning("intake %s callback failed", name, exc_info=True)
 
     def _note_proof_of_life(self) -> None:
         """Record a proof-of-life frame: any frame whose ``event`` is not ``open``.
@@ -404,7 +443,22 @@ class EventIntake:
             message=str(raw.get("message", "")),
             arrival_time=self._clock(),
             raw=dict(raw),
+            published_at=_frame_time(raw.get("time")),
         )
+
+
+def _frame_time(value: Any) -> float | None:
+    """The frame's ``time`` as epoch seconds, or None when it is not usable.
+
+    ntfy sends an integer. Anything else (absent, a string, a boolean, zero or
+    negative, NaN or infinite) is None, and the hold then keys on arrival time.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds <= 0:
+        return None
+    return seconds
 
 
 class NtfyEventStream:  # pragma: no cover - deploy path (needs live ntfy + httpx)

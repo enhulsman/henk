@@ -30,6 +30,7 @@ from henk.store.handoffs import (
     HandoffStore,
     RetainedHandoff,
 )
+from henk.store.holds import HeldEvent, HoldInsert, HoldStore, HoldWindow
 from henk.store.inbox import (
     DEFAULT_PAGE_SIZE,
     DONE,
@@ -82,6 +83,10 @@ __all__ = [
     "HANDOFF_MAX_AGE_SECONDS",
     "HANDOFF_MAX_COUNT",
     "HandoffStore",
+    "HeldEvent",
+    "HoldInsert",
+    "HoldStore",
+    "HoldWindow",
     "RetainedHandoff",
     "InboxItem",
     "InboxPage",

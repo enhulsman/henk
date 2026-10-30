@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 from henk.store.db import Store
 from henk.store.handoffs import HandoffStore
+from henk.store.holds import HoldStore
 from henk.store.inbox import SqliteInboxStore
 from henk.store.memory import MemoryStore
 from henk.store.reminders import ReminderStore
@@ -25,6 +26,8 @@ class HenkStores:
 
     ``handoffs`` is the handoff archive (triage-quality D8): written only by
     ``publish_handoff`` and read only by the event-turn digest, never by a tool.
+    ``holds`` is the maintenance-window hold repository (maintenance-calendar D7),
+    written and read only by the event path, never by a tool.
     """
 
     store: Store
@@ -32,6 +35,7 @@ class HenkStores:
     inbox: SqliteInboxStore
     reminders: ReminderStore
     handoffs: HandoffStore
+    holds: HoldStore
 
 
 def build_stores(store_config, reminders_config=None) -> HenkStores:
@@ -66,4 +70,8 @@ def build_stores(store_config, reminders_config=None) -> HenkStores:
         ),
         # Bounds are module constants (D8), so the archive takes no config.
         handoffs=HandoffStore(store),
+        # Built whether or not the calendar is enabled: held rows from an earlier
+        # enabled run are still released (maintenance-calendar D8), and building it
+        # is inert, like the reminder repository.
+        holds=HoldStore(store),
     )

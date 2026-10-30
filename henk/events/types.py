@@ -23,6 +23,11 @@ class Event:
     is lost before triage; ``arrival_time`` is stamped by the intake on receipt
     (NOT the sensor's original timestamp) because debounce is measured on arrival
     so replayed backlogs collapse into one catch-up turn (event-intake spec).
+
+    ``published_at`` is the ntfy frame's ``time`` (epoch seconds), or None when the
+    frame had no usable one. The maintenance-window hold is keyed on it, so an
+    event published inside a window and delivered from the backlog after a
+    restart is still classified by when it happened (maintenance-calendar D7).
     """
 
     id: str
@@ -30,6 +35,7 @@ class Event:
     message: str
     arrival_time: float
     raw: Mapping[str, Any] = field(default_factory=dict)
+    published_at: float | None = None
 
 
 @dataclass(frozen=True)
