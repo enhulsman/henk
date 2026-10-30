@@ -142,18 +142,18 @@
 
 ## 7. Agent core and triage
 
-- [ ] 7.1 Tests from *Owner turns carry the maintenance-window note*, *A released triage
+- [x] 7.1 Tests from *Owner turns carry the maintenance-window note*, *A released triage
       says what the window held* (both line variants, singular form, incomplete-notice
       path, non-announceable sends nothing, live turns unchanged) and *Held events are
       triaged only when released*: framing, and age over 24 h.
-- [ ] 7.2 Implement:
+- [x] 7.2 Implement:
       - `release_sink` beside `_handoff_sink`, firing on the audit write's `ok` or with no
         audit configured;
       - the maintenance block in owner-turn composition, after the time header and before
         recall;
       - hold framing in the event-turn framing;
       - the release line after the suppressed-count note and on the incomplete notice.
-- [ ] 7.3 Wire the provider, release task and tools in `henk/runtime.py`. Confirm that with
+- [x] 7.3 Wire the provider, release task and tools in `henk/runtime.py`. Confirm that with
       `calendar.enabled` false and no held rows, the registry and startup are unchanged.
 
 ## 8. Review, deploy and live checks

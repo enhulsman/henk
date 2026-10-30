@@ -334,3 +334,24 @@ Orchestrator review:
 - **Accepted as recorded:** with `events.enabled` false nothing is released (there is no
   coordinator, and nothing new is held either, since `holds()` requires events); held
   rows have no retention (tiny, one row per held alert; a follow-up).
+
+## Group 7 (agent core, triage, runtime)
+
+Full notes and mutation table: `notes/apply-group7.md` (70 mutations, all killed; one
+equivalent mutant led to a redundant filter being removed, two grace-constant gaps
+closed by running the runtime tests at 45 minutes).
+
+Orchestrator review:
+- **Released windows show in the owner-turn note with the calendar off** (group 7 note 1):
+  confirmed. Release still runs after a rollback, and its outcome is what the owner may
+  ask about.
+- **The window provider is built only when `calendar.enabled` AND `events.enabled`**
+  (group 7 note 9, changed on review). With events off `holds()` is false for every
+  event, so a provider would poll Google every 5 minutes for an always-empty snapshot.
+  `calendar_upcoming` reads live and keeps working.
+- **8.4 checklist additions from group 7:** check the key is absent from the SDK CLI
+  child's environment (count matches, never print), not from the Python process's
+  `/proc/<pid>/environ` (that shows the start-up environment); startup log order
+  (snapshot load before intake subscribes); the release line in CET with end plus grace;
+  ask for the held-so-far count during the test window; `python -m henk.replay list`
+  with the calendar enabled.
