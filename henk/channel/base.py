@@ -65,12 +65,86 @@ class InboundMessage:
     channel_ref: str | None = None
 
 
+# --- Approval prompts and reactions (approval-reactions D1-D3) ---------------
+#
+# The gate hands the adapter a STRUCTURED prompt and the adapter renders it in its
+# own syntax (D1): markup, escaping and any delimiters are the adapter's, because a
+# second channel's rules would differ. The gate keeps the trust work that is not
+# syntax: every value whitespace-collapsed to one line and bounded in length.
+
+
+@dataclass(frozen=True)
+class ApprovalPrompt:
+    """A structured approval prompt; the adapter renders it in its own syntax.
+
+    ``label`` and ``tool_name`` are fixed in code (the tool's own declaration);
+    only the field values are model-chosen, and they arrive already collapsed to
+    one line and bounded by the gate.
+    """
+
+    label: str
+    tool_name: str
+    #: (schema key, bounded value), in call order.
+    fields: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class PromptOutcome:
+    """A decided prompt: ``verb`` is Approved | Denied | Cancelled | Timed out."""
+
+    verb: str
+    prompt: ApprovalPrompt
+
+
+@dataclass(frozen=True)
+class PromptSent:
+    """What ``send_prompt`` observed: the delivery outcome and an opaque reference.
+
+    ``ref`` names the sent prompt so a reaction can be matched to it and the
+    prompt edited later (D2), the second bounded encapsulation exception beside
+    ``InboundMessage.channel_ref``: neutral code compares it for equality and hands
+    it back to ``edit_prompt``, and never parses, persists, audits it or puts it
+    in a turn. ``None`` when the channel reported no reference; the prompt still
+    works by keyword, and reactions to it are ignored.
+    """
+
+    outcome: SendOutcome
+    ref: str | None = None
+    #: True when nothing was sent because the prompt, in the form it would have
+    #: been sent, does not fit one message. ``outcome`` is then ``FAILED``.
+    too_large: bool = False
+
+
+@dataclass(frozen=True)
+class InboundReaction:
+    """A reaction received from a channel, normalised to channel-neutral fields.
+
+    A type of its own rather than an ``InboundMessage`` with empty text (D3): an
+    empty-text message that slipped past a check would reach the core as a turn,
+    while a reaction reaching code that expects ``.text`` fails loudly. It carries
+    no acknowledgement reference, because a reaction is never acknowledged.
+    """
+
+    sender: str
+    emoji: str
+    #: Adapter-minted, in the same form ``send_prompt`` returns its reference;
+    #: ``None`` unless the target is Henk's own message.
+    target_ref: str | None
+    #: True when the owner took the reaction back.
+    removed: bool
+    is_group: bool = False
+
+
 @runtime_checkable
 class ChannelAdapter(Protocol):
     """The only surface the agent core sees. Any messenger implements this."""
 
-    async def messages(self) -> AsyncIterator[InboundMessage]:
-        """Yield inbound messages as they arrive. Must not raise on transport errors."""
+    async def messages(self) -> AsyncIterator[InboundMessage | InboundReaction]:
+        """Yield inbound messages and reactions as they arrive.
+
+        Must not raise on transport errors. A reaction is never yielded as a
+        message (approval-reactions D3).
+        """
         ...
 
     async def send(self, text: str) -> SendOutcome:
@@ -96,6 +170,29 @@ class ChannelAdapter(Protocol):
 
         Deliverable only to the configured owner identity; there is no recipient
         parameter, here or anywhere on this contract.
+        """
+        ...
+
+    async def send_prompt(self, prompt: ApprovalPrompt) -> PromptSent:
+        """Send one approval prompt to the owner, rendered in the adapter's syntax.
+
+        Never split (approval-reactions D2): a prompt whose form as sent exceeds
+        one message is not sent at all and reports ``FAILED`` with ``too_large``,
+        since a reaction lands on one message and an edit rewrites one. Serialized
+        with every other send and retried like a reply; at-least-once like every
+        send. Returns the outcome with an opaque reference to the sent message, or
+        none when the channel reported none. Must not raise on transport errors.
+        """
+        ...
+
+    async def edit_prompt(self, ref: str, outcome: PromptOutcome) -> bool:
+        """Edit the prompt ``ref`` names into its one-line outcome.
+
+        Rendered in the mode the prompt was sent in; serialized with every other
+        send; a single attempt, because a lost edit costs a cosmetic record and a
+        retried one costs the owner latency on every approval (D2). Reports
+        whether the channel accepted it. A reference this adapter cannot interpret
+        makes no request and returns ``False``. Must not raise on transport errors.
         """
         ...
 

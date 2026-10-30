@@ -327,6 +327,8 @@ class ReplayStub(Tool):
         self.tool_class = definition.tool_class
         self.authorization = definition.authorization
         self.turn_scope = tuple(definition.turn_scope)
+        # Registration requires a mutating tool's label (approval-reactions D6).
+        self.label = definition.label
         # Replay frames every turn with tainted REPLAY_TURN; source flags need not copy.
         self._server = server
 

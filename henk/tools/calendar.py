@@ -61,10 +61,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 logger = logging.getLogger("henk.tools.calendar")
 
-#: The gate's argument delimiters and its "approved" outcome, restated because
-#: ``henk.gate`` imports ``henk.tools`` and importing it back here is circular. A
-#: test pins both to the gate's own values (``ARGUMENT_DELIMITERS``,
-#: ``ApprovalOutcome.APPROVED``).
+#: The approval prompt's argument delimiters and the gate's "approved" outcome,
+#: restated rather than imported: ``henk.gate`` imports ``henk.tools``, so importing
+#: it back here is circular, and the delimiters belong to the channel adapter's
+#: unstyled prompt form (approval-reactions D1), which a tool must not import. A
+#: test pins both to their owners' values.
 ARGUMENT_DELIMITERS = ("<<<", ">>>")
 APPROVED_OUTCOME = "approved"
 
@@ -99,16 +100,16 @@ TITLE_MAX_CHARS = 100
 #: zero-width) are refused at execution only, so on those the schema is the more
 #: permissive of the two; execution decides.
 TITLE_SCHEMA_PATTERN = "^" + TITLE_PREFIX + r"(?: ?[^\s<>\x00-\x1f\x7f-\x9f])*$"
-#: Refused anywhere in a title. Wider than the gate's ``<<<``/``>>>``: a lone ``<``
-#: or ``>`` cannot sit next to the prompt's delimiters, and the gate's one-pass
-#: strip can never reassemble a delimiter from a title that holds neither.
+#: Refused anywhere in a title. Wider than the prompt's ``<<<``/``>>>``: a lone
+#: ``<`` or ``>`` cannot sit next to the prompt's delimiters, and the adapter's
+#: delimiter strip can never reassemble one from a title that holds neither.
 _ANGLE_BRACKETS = frozenset("<>")
 #: Unicode categories refused anywhere in a title: control (Cc), format (Cf: bidi
 #: overrides and zero-width characters, which would make the prompt read
 #: differently from what it says) and lone surrogates (Cs).
 _REFUSED_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
 
-#: Titles are rendered inside the gate's own delimiters, capped at this length.
+#: Titles are rendered inside the prompt's own delimiters, capped at this length.
 RENDERED_TITLE_MAX_CHARS = 120
 UPCOMING_MAX_EVENTS = 50
 
@@ -376,6 +377,8 @@ class CalendarCreateEventTool(Tool):
         "than 90 days ahead, and a time the clocks skip. The result says whether "
         "the event will hold alerts to Henk while it runs."
     )
+    #: Owner-facing, shown in an approval prompt (approval-reactions D6).
+    label = "Add a calendar event"
     tool_class = ToolClass.MUTATING
     authorization = AuthorizationTier.PER_INSTANCE
     turn_scope = (TurnType.OWNER,)

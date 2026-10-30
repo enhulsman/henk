@@ -101,6 +101,8 @@ class RemindTool(_ReminderToolBase):
         "resolved due time; read it back to the owner so a wrong time is caught "
         "straight away."
     )
+    #: Owner-facing, shown in an approval prompt (approval-reactions D6).
+    label = "Set a reminder"
     tool_class = ToolClass.MUTATING
     authorization = AuthorizationTier.STANDING
     turn_scope = (TurnType.OWNER,)
@@ -180,6 +182,8 @@ class CancelReminderTool(_ReminderToolBase):
         "cancelled; read it back so a wrong cancellation is caught straight away. "
         "Use reminders_read first if you do not know the id."
     )
+    #: Owner-facing, shown in an approval prompt (approval-reactions D6).
+    label = "Cancel a reminder"
     tool_class = ToolClass.MUTATING
     authorization = AuthorizationTier.STANDING
     turn_scope = (TurnType.OWNER,)

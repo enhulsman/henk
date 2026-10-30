@@ -98,6 +98,26 @@ starts until the triage message lands; a triage the alert cap suppresses shows n
 neither do commands. Typing pauses while Henk waits on an approval.
 Strangers and group messages get nothing more than before: no receipt, no typing, no reply.
 
+An approval prompt names the action in plain words, then the tool, then each value
+between `<<<` and `>>>` (the form with `signal.styled_prompts` off, the default):
+
+```
+Approval needed
+Add a calendar event (calendar_create_event)
+title: <<<Homelab: patch round>>>
+start: <<<Sat 2026-11-07 14:00>>>
+end: <<<Sat 2026-11-07 16:00>>>
+React 👍 to approve or 👎 to deny, or reply yes / no. Any other message cancels it.
+```
+
+React 👍 (any skin tone) on that prompt to approve, or 👎 to deny; typing `yes` or `no`
+works too. A reaction counts only on the prompt that is waiting right now: any other
+emoji, a reaction on an older message, or taking one back does nothing, and never turns
+into a message for Henk. Once decided, the prompt is edited into one line saying what
+happened, before the action runs: `Approved: Add a calendar event, <<<Homelab: patch
+round>>>, ...` (or `Denied`, `Cancelled`, `Timed out`). The receipt records whether you
+answered by reaction or by keyword.
+
 ### Event flow (v1.2)
 
 ```mermaid
@@ -224,6 +244,11 @@ existing `henk_audit` volume (already in the rp5 backup allowlist).
   acknowledgement (a receipt, each indicator start or refresh, and the indicator's close),
   enforced by cancelling it. Not a phase timeout and unrelated to `send_timeout_seconds`.
   Must be positive and at most 7.0, the indicator's refresh interval.
+- `signal.styled_prompts` (false) — send approval prompts and their outcome edits in
+  Signal's styled text: a bold header and each value in monospace instead of between
+  `<<<` `>>>`. Off until the live crafted-value check passes; `false` is the rollback.
+  Prompts only: replies, triage and reminders are never styled. Must be an unquoted
+  boolean, like `acknowledge_owner`.
 - `agent.model` (default `claude-sonnet-5`), `agent.effort` (`high`; `low`–`max`, or
   null for the CLI default), `agent.thinking` (`adaptive` or `disabled`),
   `agent.idle_timeout_seconds` (3600),

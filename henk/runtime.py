@@ -164,6 +164,7 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         account=config.signal.account,
         owner=config.owner.id,
         safe_length=config.signal.safe_length,
+        styled_prompts=config.signal.styled_prompts,
     )
 
     # Audit was constructed above, UNCONDITIONALLY (design D11). It used to appear

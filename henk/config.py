@@ -416,6 +416,11 @@ class SignalConfig:
     #: ``send_timeout_seconds``. At most ``TYPING_REFRESH_SECONDS``, so one hung
     #: refresh cannot push the gap between starts past the client-side expiry.
     acknowledge_timeout_seconds: float = 5.0
+    #: Send approval prompts and their outcome edits in the bridge's styled text
+    #: mode (approval-reactions D5). Off until the owner's live crafted-value check
+    #: passes (task 7.2); ``false`` is also the rollback, and sends the unstyled
+    #: delimiter form. Must be a real boolean, like ``acknowledge_owner``.
+    styled_prompts: bool = False
 
 
 @dataclass(frozen=True)
@@ -1174,6 +1179,13 @@ class Config:
                         "acknowledge_timeout_seconds",
                         SignalConfig.acknowledge_timeout_seconds,
                     )
+                ),
+                # Strict for the same reason as acknowledge_owner: a quoted
+                # "false" is truthy, so a rollback typed that way would do the
+                # opposite of what it says.
+                styled_prompts=_require_strict_bool(
+                    signal_sec.get("styled_prompts", SignalConfig.styled_prompts),
+                    "signal.styled_prompts",
                 ),
             ),
             gatus=endpoint("gatus"),

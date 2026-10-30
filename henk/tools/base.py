@@ -83,7 +83,7 @@ class Tool:
 
     Subclasses set ``name``, ``description``, ``tool_class``, ``parameters``
     (a JSON-schema dict) and implement ``_run``. A mutating subclass must also set
-    ``authorization`` and may narrow or widen ``turn_scope``. A tool whose result
+    ``authorization`` and ``label`` and may narrow or widen ``turn_scope``. A tool whose result
     can carry free text authored by someone other than the owner declares
     ``raises_taint`` on its class or instance.
     """
@@ -98,6 +98,11 @@ class Tool:
     turn_scope: tuple[TurnType, ...] = DEFAULT_TURN_SCOPE
     #: True when the result can carry free text authored by someone else.
     raises_taint: bool = False
+    #: Owner-facing label shown in approval prompts ("Add a calendar event").
+    #: Required for every mutating tool, since the kill-switch can make any of them
+    #: prompt; fixed in code on the class, never derived from model output
+    #: (approval-reactions D6). Read-only and notify-only tools need none.
+    label: str = ""
 
     async def run(self, **arguments: Any) -> ToolResult:
         return await self._run(**arguments)
@@ -131,6 +136,12 @@ class ToolRegistry:
                 raise ValueError(
                     f"mutating tool {name!r} has no valid turn scope; set "
                     "turn_scope to a non-empty tuple of TurnType members"
+                )
+            label = getattr(tool, "label", None)
+            if not isinstance(label, str) or not label.strip():
+                raise ValueError(
+                    f"mutating tool {name!r} has no owner-facing label; set label "
+                    "to the short phrase its approval prompt shows the owner"
                 )
         if name in self._tools:
             raise ValueError(f"duplicate tool name {name!r}")
