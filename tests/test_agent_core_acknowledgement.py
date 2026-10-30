@@ -48,6 +48,7 @@ from tests.conftest import (
     FakeChannel,
     FakeSessionFactory,
     handoff_stats,
+    plain_prompt_text,
 )
 from tests.test_acknowledge import FakeTime
 from tests.test_agent_core_durability import FlakyAudit
@@ -113,6 +114,11 @@ class OrderedChannel(FakeChannel):
     async def send_proactive(self, text, *, failure_notice=None):
         self.order.append(("proactive", text))
         return await super().send_proactive(text, failure_notice=failure_notice)
+
+    async def send_prompt(self, prompt):
+        # The owner sees an approval prompt as a message, so it is ordered as one.
+        self.order.append(("send", plain_prompt_text(prompt)))
+        return await super().send_prompt(prompt)
 
     async def start_working(self) -> bool:
         self.order.append(START)
@@ -797,6 +803,10 @@ class _StampedChannel(OrderedChannel):
     async def send_proactive(self, text, *, failure_notice=None):
         self.stamps.append(("proactive", self._fake.now))
         return await super().send_proactive(text, failure_notice=failure_notice)
+
+    async def send_prompt(self, prompt):
+        self.stamps.append(("send", self._fake.now))
+        return await super().send_prompt(prompt)
 
     async def start_working(self) -> bool:
         self.stamps.append(("start", self._fake.now))

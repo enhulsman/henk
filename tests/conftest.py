@@ -11,7 +11,28 @@ import httpx
 import pytest
 
 from henk.agent.session import AgentSession, SessionStats, ToolCallRecord
-from henk.channel.base import InboundMessage, SendOutcome
+from henk.channel.base import (
+    ApprovalPrompt,
+    InboundMessage,
+    PromptOutcome,
+    PromptSent,
+    SendOutcome,
+)
+
+#: The approval prompt's footer, verbatim (approval-reactions proposal and the
+#: channel-adapter delta). Shared by FakeChannel's plain rendering and the tests.
+PROMPT_FOOTER = (
+    "React 👍 to approve or 👎 to deny, or reply yes / no. "
+    "Any other message cancels it."
+)
+
+
+def plain_prompt_text(prompt: ApprovalPrompt) -> str:
+    """The unstyled prompt form, as FakeChannel shows it to ``sent``."""
+    lines = ["Approval needed", f"{prompt.label} ({prompt.tool_name})"]
+    lines += [f"{key}: <<<{value}>>>" for key, value in prompt.fields]
+    lines.append(PROMPT_FOOTER)
+    return "\n".join(lines)
 
 
 class FakeChannel:
@@ -31,6 +52,13 @@ class FakeChannel:
     ``sent`` or ``calls``: they are not messages, and every existing assertion
     over those two lists must stay exactly as it was. They always report
     accepted, for the same cooperative reason.
+
+    Approval prompts (approval-reactions): ``send_prompt`` records the structured
+    prompt in ``prompts`` and also appends its plain rendering to ``sent``, since
+    the owner sees a prompt as a message; it reports ``DELIVERED`` with the next
+    reference ``prompt-1``, ``prompt-2``, ... ``edit_prompt`` records
+    ``(ref, outcome)`` in ``edits`` only: an edit changes a message the owner
+    already has, it is not a new one. It reports accepted.
     """
 
     def __init__(self) -> None:
@@ -39,6 +67,8 @@ class FakeChannel:
         self.calls: list[tuple[str, str, str | None]] = []
         #: ("receipt", channel_ref) | ("start", None) | ("stop", None), in order.
         self.acks: list[tuple[str, str | None]] = []
+        self.prompts: list[ApprovalPrompt] = []
+        self.edits: list[tuple[str, PromptOutcome]] = []
 
     async def send(self, text: str) -> SendOutcome:
         self.sent.append(text)
@@ -51,6 +81,15 @@ class FakeChannel:
         self.sent.append(text)
         self.calls.append(("proactive", text, failure_notice))
         return SendOutcome.DELIVERED
+
+    async def send_prompt(self, prompt: ApprovalPrompt) -> PromptSent:
+        self.prompts.append(prompt)
+        self.sent.append(plain_prompt_text(prompt))
+        return PromptSent(SendOutcome.DELIVERED, f"prompt-{len(self.prompts)}")
+
+    async def edit_prompt(self, ref: str, outcome: PromptOutcome) -> bool:
+        self.edits.append((ref, outcome))
+        return True
 
     async def acknowledge(self, channel_ref: str | None) -> bool:
         self.acks.append(("receipt", channel_ref))
@@ -191,6 +230,16 @@ class FakeBridge:
     sleep and call ``receive()`` again, which replays the same script, so an
     ``App.run`` test would otherwise see its envelopes over and over and never
     settle. The default keeps every existing test's behaviour.
+
+    Sends (approval-reactions): every accepted send is recorded in ``sends`` as
+    ``(recipient, text)`` exactly as before, and in ``requests`` with its
+    ``styled`` and ``edit_timestamp`` and the timestamp it returned. A send returns
+    the next item of ``send_results`` when one is queued (returned as is, so a
+    test can hand back a string, an int or ``None`` the way a bridge response
+    might carry it), otherwise ``next_timestamp``, which then advances by one.
+    ``send_faults`` is consumed one item per call: an exception is raised (the
+    send is not recorded as accepted, but is in ``send_attempts``), ``None``
+    lets that call through.
     """
 
     def __init__(self, script: list | None = None, *, hold_open: bool = False) -> None:
@@ -204,6 +253,14 @@ class FakeBridge:
         self.ack_attempts: list[tuple[str, str]] = []
         self.ack_faults: dict[str, Exception | asyncio.Event] = {}
         self.hold_open = hold_open
+        #: One dict per accepted send: recipient, text, styled, edit_timestamp,
+        #: returned.
+        self.requests: list[dict] = []
+        #: The same dicts for every call, refused ones included.
+        self.send_attempts: list[dict] = []
+        self.send_results: list = []
+        self.send_faults: list[Exception | None] = []
+        self.next_timestamp = 1761830400000
 
     async def receive(self) -> AsyncIterator[dict]:
         for item in self._script:
@@ -213,8 +270,34 @@ class FakeBridge:
         if self.hold_open:
             await asyncio.Event().wait()
 
-    async def send(self, recipient: str, text: str) -> None:
+    async def send(
+        self,
+        recipient: str,
+        text: str,
+        *,
+        styled: bool = False,
+        edit_timestamp: int | None = None,
+    ):
+        request = {
+            "recipient": recipient,
+            "text": text,
+            "styled": styled,
+            "edit_timestamp": edit_timestamp,
+        }
+        self.send_attempts.append(dict(request))
+        if self.send_faults:
+            fault = self.send_faults.pop(0)
+            if fault is not None:
+                raise fault
+        if self.send_results:
+            returned = self.send_results.pop(0)
+        else:
+            returned = self.next_timestamp
+            self.next_timestamp += 1
+        request["returned"] = returned
         self.sends.append((recipient, text))
+        self.requests.append(request)
+        return returned
 
     async def _ack(self, operation: str, recipient: str) -> None:
         self.ack_attempts.append((operation, recipient))

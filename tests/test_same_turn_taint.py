@@ -124,6 +124,7 @@ class PerInstanceUntrustedWrite(Tool):
 
     name = "per_instance_untrusted_write"
     description = "test-only per-instance taint source"
+    label = "Write an untrusted test thing"
     tool_class = ToolClass.MUTATING
     authorization = AuthorizationTier.PER_INSTANCE
     turn_scope = (TurnType.OWNER,)

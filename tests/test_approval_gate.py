@@ -32,6 +32,7 @@ from tests.conftest import FakeChannel
 class SpyMutatingTool(Tool):
     name = "spy_mutate"
     description = "test-only mutating tool"
+    label = "Spy on a write"
     tool_class = ToolClass.MUTATING
     authorization = AuthorizationTier.PER_INSTANCE
     turn_scope = (TurnType.OWNER,)

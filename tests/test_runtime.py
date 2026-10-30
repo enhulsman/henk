@@ -246,3 +246,30 @@ async def test_owner_acknowledgement_off_wires_neither_receipt_nor_indicator():
         assert app._core._working_indicator is None
     finally:
         await client.aclose()
+
+
+async def test_styled_prompts_reach_the_apps_adapter():
+    # approval-reactions 6.2: the config switch decides how the App's own adapter
+    # sends prompts. Behavioural rather than an attribute read: the adapter's
+    # bridge is swapped for a recording double and one prompt is sent each way.
+    from henk.channel.base import ApprovalPrompt
+    from tests.conftest import FakeBridge
+
+    prompt = ApprovalPrompt(
+        label="Add a calendar event",
+        tool_name="calendar_create_event",
+        fields=(("title", "Homelab: patch round"),),
+    )
+    base = Config.load(SAMPLE, env={})
+    for styled in (True, False):
+        config = dataclasses.replace(
+            base, signal=dataclasses.replace(base.signal, styled_prompts=styled)
+        )
+        app, client = build_runtime(config)
+        try:
+            bridge = FakeBridge()
+            app._adapter._bridge = bridge
+            await app._adapter.send_prompt(prompt)
+            assert [r["styled"] for r in bridge.requests] == [styled]
+        finally:
+            await client.aclose()

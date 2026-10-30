@@ -196,6 +196,7 @@ class HandoffTool(Tool):
 class MutatingTool(Tool):
     name = "example_mutate"
     description = "placeholder per-instance mutating tool"
+    label = "Write an example thing"
     tool_class = ToolClass.MUTATING
     authorization = AuthorizationTier.PER_INSTANCE
     turn_scope = (TurnType.OWNER,)

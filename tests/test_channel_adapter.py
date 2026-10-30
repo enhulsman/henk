@@ -209,10 +209,14 @@ RECIPIENT_DENYLIST = {
 }
 
 #: Every send operation on the contract and on the Signal adapter, with the exact
-#: parameter list it is allowed to expose.
+#: parameter list it is allowed to expose. The prompt and its edit
+#: (approval-reactions, scenario *No recipient reachable through any send
+#: operation*): the structured prompt; the prompt reference and the outcome.
 SEND_OPERATIONS = {
     "send": ["text"],
     "send_proactive": ["text", "failure_notice"],
+    "send_prompt": ["prompt"],
+    "edit_prompt": ["ref", "outcome"],
 }
 
 
@@ -301,10 +305,32 @@ WIRE_FORMAT_TOKENS = [
     "/v1/receipts",
     "/v2/send",
     "/v1/receive",
+    # approval-reactions (scenario *Signal specifics stay encapsulated*): the
+    # send-edit and styled-mode request fields, the reaction envelope's fields, and
+    # the styled markup and stand-in of the rendered prompt. `**` alone cannot be
+    # scanned (every `**kwargs` would match), so the markup is named by the
+    # rendered header and the escape stand-in.
+    "edit_timestamp",
+    "text_mode",
+    "targetSentTimestamp",
+    "targetAuthor",
+    "isRemove",
+    "**Approval needed**",
+    "\u29f5",  # the stand-in itself
+    r"\u29f5",  # ...and every way to spell it in source
+    r"\u29F5",
+    r"\N{REVERSE SOLIDUS OPERATOR}",
 ]
 #: Neutral modules the scan must reach. The acknowledgement layer is the one most
 #: tempted to know the bridge's routes, which is why it is named.
-MUST_SCAN = [Path("henk/channel/acknowledge.py"), Path("henk/app.py")]
+MUST_SCAN = [
+    Path("henk/channel/acknowledge.py"),
+    Path("henk/app.py"),
+    # approval-reactions: the gate builds the prompt and must never render it.
+    Path("henk/gate/approval.py"),
+    Path("henk/channel/base.py"),
+    Path("henk/channel/allowlist.py"),
+]
 
 
 def test_signal_wire_format_stays_encapsulated():
