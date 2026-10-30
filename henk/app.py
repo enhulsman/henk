@@ -77,9 +77,12 @@ class App:
     event turns into the same serial core queue (design D5). When reminders are
     enabled a scheduler task runs alongside too — but unlike the coordinator it
     never enqueues a turn: a due reminder goes straight out through the channel
-    adapter, so delivery costs no session and cannot queue behind one. All three
-    tasks are cancelled on shutdown, and the open session is flushed to the audit
-    log.
+    adapter, so delivery costs no session and cannot queue behind one. When the
+    calendar is enabled the maintenance-window provider refreshes its snapshot in
+    its own task, and when events are enabled the hold releaser ticks in another,
+    submitting release turns through the coordinator (maintenance-calendar D6, D8).
+    Every task is cancelled on shutdown, and the open session is flushed to the
+    audit log.
 
     The tasks are deliberately independent. One of them failing must not stop the
     others: a scheduler that died would otherwise take replies and triage with it,
@@ -94,19 +97,29 @@ class App:
         *,
         coordinator: "_Runnable | None" = None,
         scheduler: "_Runnable | None" = None,
+        windows: "_Runnable | None" = None,
+        releaser: "_Runnable | None" = None,
     ) -> None:
         self._adapter = adapter
         self._dispatcher = dispatcher
         self._core = core
         self._coordinator = coordinator
         self._scheduler = scheduler
+        # The window provider. Its snapshot was loaded by the runtime before this
+        # runs (D6: before intake starts); its task only refreshes it.
+        self._windows = windows
+        self._releaser = releaser
 
     async def run(self) -> None:
         tasks = [asyncio.create_task(self._core.run())]
-        if self._coordinator is not None:
-            tasks.append(asyncio.create_task(self._coordinator.run()))
-        if self._scheduler is not None:
-            tasks.append(asyncio.create_task(self._scheduler.run()))
+        for background in (
+            self._coordinator,
+            self._scheduler,
+            self._windows,
+            self._releaser,
+        ):
+            if background is not None:
+                tasks.append(asyncio.create_task(background.run()))
         try:
             async for message in self._adapter.messages():
                 await self._dispatcher.on_inbound(message)

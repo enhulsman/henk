@@ -17,16 +17,20 @@ import httpx
 
 from henk.agent.commands import OwnerCommands
 from henk.agent.core import AgentCore
+from henk.agent.maintenance import MaintenanceNote
 from henk.agent.recall import MemoryRecall
 from henk.agent.sdk_session import SdkSessionFactory
 from henk.agent.session import CHAT_PROFILE, EVENT_PROFILE
 from henk.app import App, Dispatcher
 from henk.audit import (
     AuditLog,
+    CalendarReceipts,
+    HoldReceipts,
     MutationReceipts,
     ReminderReceipts,
     read_audit_records,
 )
+from henk.calendar.windows import MaintenanceWindows
 from henk.channel.acknowledge import OwnerAcknowledgement
 from henk.channel.allowlist import AllowlistFilter
 from henk.channel.base import ChannelAdapter, SendOutcome
@@ -38,6 +42,7 @@ from henk.channel.signal import (
 from henk.config import GOOGLE_CALENDAR_KEY_ENV, Config
 from henk.events.checkpoint import OffsetCheckpoint
 from henk.events.coordinator import EventCoordinator
+from henk.events.holds import HoldLedger
 from henk.events.incident_context import IncidentContextProvider
 from henk.events.intake import (
     SINCE_REJECTED_NOTICE,
@@ -45,13 +50,19 @@ from henk.events.intake import (
     NtfyEventStream,
 )
 from henk.events.pipeline import EventPipeline, PipelineConfig
+from henk.events.release import HoldReleaser
 from henk.gate.approval import ApprovalGate
 from henk.reminders.note import DeliveredReminderNote
 from henk.reminders.scheduler import ReminderScheduler
 from henk.reminders.timeparse import TimeResolver
 from henk.replay.recorder import TriageRecorder
 from henk.store import build_stores
-from henk.tools import build_production_registry, build_time_resolver
+from henk.tools import (
+    ApprovalReferences,
+    build_calendar_client,
+    build_production_registry,
+    build_time_resolver,
+)
 
 logger = logging.getLogger("henk.runtime")
 
@@ -116,6 +127,16 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
     # instance; a second provider would leave the tool's copy empty forever, and
     # nothing would ever be archived.
     incident_context = IncidentContextProvider()
+    # ONE calendar client, or None when `calendar.enabled` is false (maintenance-
+    # calendar D2): the two tools and the window provider share its one token
+    # cache. Building it contacts nobody. With the calendar enabled, the gate's
+    # recorder becomes the reference tap (still forwarding every decision to the
+    # same receipts), so the create tool's `calendar` record names the approval
+    # that authorized it; disabled, both stay exactly as before.
+    calendar_client = build_calendar_client(config, client)
+    calendar_references = (
+        ApprovalReferences(receipts) if calendar_client is not None else None
+    )
     registry = build_production_registry(
         config,
         client,
@@ -123,6 +144,11 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         resolver=resolver,
         reminder_receipts=reminder_receipts,
         incident_context=incident_context,
+        calendar_client=calendar_client,
+        calendar_receipts=(
+            CalendarReceipts(audit) if calendar_client is not None else None
+        ),
+        calendar_references=calendar_references,
     )
 
     # Every timeout comes from config, none from a constructor default: an
@@ -152,7 +178,7 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         adapter,
         timeout_seconds=config.agent.approval_timeout_seconds,
         demote_standing=config.gate.demote_standing,
-        recorder=receipts,
+        recorder=calendar_references if calendar_references is not None else receipts,
     )
     # Owner acknowledgement (owner-acknowledgement D1-D6): ONE object, or None when
     # `signal.acknowledge_owner` is false (the rollback; absent means true). The
@@ -218,6 +244,32 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
                 exc_info=True,
             )
 
+    # The maintenance-window provider, only when the calendar AND events are
+    # enabled, over the ONE calendar client above. With events off `holds()` is
+    # false for every event, so its snapshot would always be empty and it would poll
+    # Google for nothing; `calendar_upcoming` reads live and does not need it. Its
+    # persisted snapshot is loaded here, before the coordinator (and with it intake)
+    # exists, let alone runs (D6): a restart during a patch round holds from the
+    # first event, with Google unreachable or not.
+    windows = None
+    if calendar_client is not None and config.events.enabled:
+        windows = MaintenanceWindows(
+            calendar_client,
+            config.calendar,
+            audit_path=config.audit.path,
+            events_enabled=config.events.enabled,
+        )
+        windows.load()
+    # The hold ledger (D7/D8): built before the core, whose release sink is its
+    # `mark_released`, and handed to the coordinator and the releaser after it. ONE
+    # ledger, because its in-flight set is what closes a releasing window to new
+    # holds. Only with events enabled: holding and releasing need the pipeline.
+    ledger = (
+        HoldLedger(stores.holds, HoldReceipts(audit))
+        if config.events.enabled
+        else None
+    )
+
     core = AgentCore(
         factory,
         adapter,
@@ -279,14 +331,37 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
         working_indicator=(
             acknowledgement.working if acknowledgement is not None else None
         ),
+        # Marks a released window once its triage record is durable (D8).
+        release_sink=ledger.mark_released if ledger is not None else None,
+        # The owner-turn maintenance block (D10), and the zone the release line's
+        # HH:MM is read in.
+        maintenance=_maintenance_note(config, stores, windows),
+        owner_zone=config.owner.zone,
     )
     dispatcher = Dispatcher(
         AllowlistFilter(config.owner.id), gate, core, acknowledgement=acknowledgement
     )
 
     coordinator = (
-        _build_coordinator(config, core, audit, pipeline, checkpoint, adapter)
+        _build_coordinator(
+            config, core, audit, pipeline, checkpoint, adapter,
+            holds=ledger, windows=windows,
+        )
         if config.events.enabled
+        else None
+    )
+    # The release task (D8): whenever events are enabled, calendar on or off, so
+    # rows held before a rollback are still released (the extension check needs
+    # the provider and is skipped without it). With no held rows each tick is one
+    # read of `hold_windows` and does nothing.
+    releaser = (
+        HoldReleaser(
+            ledger,
+            coordinator,
+            grace_seconds=config.calendar.grace_minutes * 60,
+            windows=windows,
+        )
+        if coordinator is not None and ledger is not None
         else None
     )
     # The scheduler is handed `adapter` — the SAME instance the core holds, not a
@@ -310,8 +385,32 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
             core,
             coordinator=coordinator,
             scheduler=scheduler,
+            windows=windows,
+            releaser=releaser,
         ),
         client,
+    )
+
+
+def _maintenance_note(
+    config: Config, stores, windows: MaintenanceWindows | None
+) -> MaintenanceNote | None:
+    """The owner-turn maintenance block's composer, or None without an owner zone.
+
+    Built whatever ``calendar.enabled`` says: windows released from earlier holds
+    are reported after a rollback too, since release itself still runs (D8). Active
+    windows need the provider, so with the calendar off only released ones show.
+    With no rows and no provider it composes nothing, and owner turns are unchanged.
+    The zone is required by the shared renderer; the calendar cannot be enabled
+    without one, so None only on a deploy that never enabled it.
+    """
+    if config.owner.zone is None:
+        return None
+    return MaintenanceNote(
+        stores.holds,
+        zone=config.owner.zone,
+        grace_seconds=config.calendar.grace_minutes * 60,
+        windows=windows,
     )
 
 
@@ -380,6 +479,9 @@ def _build_coordinator(
     pipeline: EventPipeline,
     checkpoint: OffsetCheckpoint,
     channel: ChannelAdapter,
+    *,
+    holds: HoldLedger | None = None,
+    windows: MaintenanceWindows | None = None,
 ) -> EventCoordinator:
     ev = config.events
     stream = NtfyEventStream(
@@ -416,6 +518,15 @@ def _build_coordinator(
         liveness_deadline=ev.liveness_deadline_seconds,
         liveness_report_interval=ev.liveness_report_interval_seconds,
     )
+    # Holds (D7): classified through the ONE ledger the core's sink and the releaser
+    # use. Without a window source (calendar disabled) it still drops replays of
+    # held events but holds nothing new.
     return EventCoordinator(
-        intake, pipeline, core, debounce_seconds=ev.debounce_seconds, audit=audit
+        intake,
+        pipeline,
+        core,
+        debounce_seconds=ev.debounce_seconds,
+        audit=audit,
+        holds=holds,
+        windows=windows,
     )

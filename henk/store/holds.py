@@ -163,6 +163,23 @@ class HoldStore:
             raise StoreError(f"could not read hold windows: {exc}") from exc
         return [_window(r) for r in rows]
 
+    def released_since(self, since: float) -> list[HoldWindow]:
+        """Windows released strictly after ``since``, by start then id.
+
+        The owner-turn maintenance note's "released within the last 24 hours"
+        (agent-core delta). No index: the table holds one row per window that ever
+        held anything.
+        """
+        try:
+            rows = self._store.connection().execute(
+                f"{_WINDOW_SELECT} WHERE released_at IS NOT NULL AND released_at > ? "
+                "ORDER BY start, window_id",
+                (float(since),),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise StoreError(f"could not read hold windows: {exc}") from exc
+        return [_window(r) for r in rows]
+
     def held_events(self, window_id: str) -> list[HeldEvent]:
         """The window's held events, by publish time then arrival order."""
         try:

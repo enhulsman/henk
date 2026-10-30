@@ -15,9 +15,10 @@ payload says — the framing is defence-in-depth, not the defence.
 
 Composition order (triage-quality D7): the recall block the core read for this
 turn, then the untrusted block (each incident with its notification and receive
-times, then the related-handoff digest, D9), then the method framing (D6), then
-the recurrence note. The note points at the digest's recurrence reference by id
-and never carries handoff text.
+times, then the related-handoff digest, D9), then the method framing (D6), then,
+for a maintenance-window release only, the window note (maintenance-calendar,
+incident-triage delta), then the recurrence note. The recurrence note points at the
+digest's recurrence reference by id and never carries handoff text.
 """
 
 from __future__ import annotations
@@ -35,12 +36,14 @@ from henk.agent.markers import (
     neutralise_markers,
 )
 from henk.agent.session import HANDOFF_TOOL_NAME
-from henk.agent.turns import EventTurn, EventTurnItem
+from henk.agent.turns import EventTurn, EventTurnItem, HeldRelease
 from henk.events.types import Event
+from henk.tools.calendar import render_title
 from henk.tools.query_renderers import _stamp
 
 __all__ = [
     "PRIOR_HANDOFFS_HEADER",
+    "STALE_HOLD_SECONDS",
     "UNTRUSTED_BEGIN",
     "UNTRUSTED_END",
     "IncidentTimes",
@@ -266,6 +269,43 @@ def _recurrence_note(turn: EventTurn, digest: Digest | None) -> str | None:
     return " ".join(sentences)
 
 
+#: Above this hold age the framing says the held state may be stale (incident-triage
+#: delta: "when the hold's age exceeds 24 hours").
+STALE_HOLD_SECONDS = 24 * 3600
+
+
+def _hold_note(release: HeldRelease) -> str:
+    """The framing of a maintenance release's triage (incident-triage delta).
+
+    Three things: the alerts fired during the named planned window; they were still
+    not resolved when the window and its grace ended, which is the finding; their
+    live state must be checked before anything is concluded. Over a day old, the age
+    and possible staleness too. Times are UTC in the incident headers' format, so
+    the session compares like with like. The title is an owner-reviewed calendar
+    title, still delimited and neutralised: it sits outside the untrusted block and
+    must not be able to forge a marker.
+    """
+    title = render_title(neutralise_markers(release.title))
+    sentences = [
+        f"\nMaintenance release: the alerts in the block above fired during the planned "
+        f"maintenance window {title} (from {_render_epoch(release.start)} until its end "
+        f"plus grace at {_render_epoch(release.end_with_grace)}) and were held until it "
+        "ended.",
+        "They were still not resolved when the window and its grace ended: that is "
+        "itself the finding, because the planned work should have settled them by then.",
+        "Check each one's live state with the tools before concluding anything; what "
+        "the block shows is what was held, not what is true now.",
+    ]
+    age = release.hold_age_seconds
+    if age > STALE_HOLD_SECONDS:
+        hours = int(age // 3600)
+        sentences.append(
+            f"This hold is {hours} hours old, so the held state may be stale: rely on "
+            "the live state alone."
+        )
+    return " ".join(sentences)
+
+
 def compose_event_turn_content(
     turn: EventTurn,
     *,
@@ -278,8 +318,8 @@ def compose_event_turn_content(
     Layout (D7): ``recall`` (the rendered recall block the core read for this
     turn, or None when the store is empty or unreadable), then the delimited
     untrusted-data block (one section per incident, with its times, then the
-    related-handoff digest), then the triage-mode framing, then the recurrence
-    note.
+    related-handoff digest), then the triage-mode framing, then the maintenance
+    window note when ``turn.held_release`` is set, then the recurrence note.
 
     ``digest`` is what :func:`henk.agent.digest.read_digest` read for this turn.
     None means no archive was consulted: no digest is rendered, and the note says
@@ -299,6 +339,10 @@ def compose_event_turn_content(
         "",
         _framing(has_recall=bool(recall), tool_names=tool_names),
     ]
+    # A maintenance release's framing (incident-triage delta); a live turn has none,
+    # so its content is exactly what it was before.
+    if turn.held_release is not None:
+        parts.append(_hold_note(turn.held_release))
     note = _recurrence_note(turn, digest)
     if note is not None:
         parts.append(note)

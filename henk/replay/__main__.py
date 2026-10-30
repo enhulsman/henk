@@ -45,7 +45,10 @@ Guards, each before any model call:
 - the audit log must exist: a missing one means compose resolved the project to a
   copy of the checkout (``henk.old`` becomes ``henkold``) with empty volumes;
 - ``run`` and ``grade`` need ``CLAUDE_CONFIG_DIR``, so the bundled CLI's state
-  stays apart from the live process's.
+  stays apart from the live process's;
+- ``GOOGLE_CALENDAR_SA_KEY_B64`` is removed from the process environment as soon
+  as the configuration is read, for every command, so no CLI subprocess inherits
+  the calendar key (maintenance-calendar, secure-deployment delta).
 
 Exit codes: 0 done, 1 a grade written without scores, 2 refused (nothing was run).
 """
@@ -61,7 +64,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence, TextIO
 
-from henk.config import Config
+from henk.config import GOOGLE_CALENDAR_KEY_ENV, Config
 from henk.replay import compare as compare_mod
 from henk.replay import grade as grade_mod
 from henk.replay.case import iso
@@ -314,6 +317,11 @@ def main(
         if precheck is not None:
             precheck(args, environ)
         config = load_config()
+        # The configuration has decoded the calendar key by now (or ignored it, with
+        # the calendar off). Remove it from the process environment before any
+        # command can start the SDK's CLI subprocess, which inherits os.environ:
+        # the same rule, and the same unconditional pop, as `build_runtime`.
+        os.environ.pop(GOOGLE_CALENDAR_KEY_ENV, None)
         check_audit_log(config)
         return args.handler(config, args, clock=clock, stdout=stdout, stderr=stderr,
                             create_session=create_session or _default_create_session)

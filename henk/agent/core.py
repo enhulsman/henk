@@ -43,7 +43,12 @@ Responsibilities (v1.2):
   and cap-suppressed triages do not (owner-acknowledgement D3);
 - reset on ``/new`` and after an idle window;
 - one append-only audit record per session, flushed on session close, carrying
-  every mutating authorization decision made while it was live (design D5).
+  every mutating authorization decision made while it was live (design D5);
+- maintenance windows (maintenance-calendar D8, D10): every owner agent turn
+  carries the maintenance block, after the time header and before recall, when a
+  window is active or was released within a day; a release's triage ends with the
+  code-composed release line, after the suppressed-count note; and its window is
+  marked released through the injected sink once that triage's record is durable.
 
 Only the agent's final text reply is sent; intermediate tool activity is not.
 """
@@ -64,6 +69,7 @@ from henk.agent.ending import (
     classify_ending,
     incomplete_triage_notice,
 )
+from henk.agent.maintenance import release_line
 from henk.agent.session import (
     CHAT_PROFILE,
     HANDOFF_TOOL_NAME,
@@ -84,6 +90,8 @@ from henk.gate.approval import EXECUTING_OUTCOMES, TurnContext
 from henk.tools.base import ToolClass, TurnType
 
 if TYPE_CHECKING:
+    from zoneinfo import ZoneInfo
+
     from henk.agent.recall import RecallBlock
 
 logger = logging.getLogger("henk.agent")
@@ -202,6 +210,9 @@ class AgentCore:
         recorder: Any | None = None,
         working_indicator: Callable[[], AbstractAsyncContextManager[None]]
         | None = None,
+        release_sink: Callable[[str], Any] | None = None,
+        maintenance: Any | None = None,
+        owner_zone: "ZoneInfo | None" = None,
     ) -> None:
         self._factory = factory
         # The triage profile's factory (D11): used ONLY by `_start_event_session`.
@@ -283,6 +294,16 @@ class AgentCore:
         # acknowledgement operation itself, which is why `_Sender` is not widened.
         # None (`signal.acknowledge_owner: false`) leaves turns unchanged.
         self._working_indicator = working_indicator
+        # Called with a released window's id once that release's triage record is
+        # durable (maintenance-calendar D8): the runtime passes the hold ledger's
+        # `mark_released`. None (events disabled, unit tests) marks nothing.
+        self._release_sink = release_sink
+        # Composes the owner-turn maintenance block (agent-core delta, D10), or None
+        # when no owner zone is configured; then owner-turn composition is unchanged.
+        self._maintenance = maintenance
+        # The owner's zone for the release line's compact HH:MM. None renders UTC,
+        # labelled, for rows released after a rollback dropped owner.timezone.
+        self._owner_zone = owner_zone
         # Whether THIS session has already received its recall block. Keyed on the
         # first TURN that read it rather than session creation: an event turn that
         # injected it marks the session (triage-quality D7), and one that could not
@@ -397,12 +418,15 @@ class AgentCore:
                     self._acc.outcome = "error"
                 await self._reply(self._error_reply)
                 return
-            # Composition order, outermost first: time, then memory, then what Henk
-            # just sent, then what the owner said. The delivered-reminder block sits
-            # closest to the owner's message because it is the context their message
-            # most likely refers to.
+            # Composition order, outermost first: time, then the maintenance window
+            # (agent-core delta: after the time header, before recall), then memory,
+            # then what Henk just sent, then what the owner said. The delivered-
+            # reminder block sits closest to the owner's message because it is the
+            # context their message most likely refers to.
             content = self._with_time_header(
-                self._with_recall(self._with_deliveries(text))
+                self._with_maintenance(
+                    self._with_recall(self._with_deliveries(text))
+                )
             )
             try:
                 with self._framed_turn(TurnType.OWNER):
@@ -542,8 +566,10 @@ class AgentCore:
                     turn, ending, handoff_published=bool(handoff_id)
                 )
                 what = "incomplete-triage notice"
+            # A release's line goes last, after the suppressed-count note, on the
+            # reply and on the incomplete-triage notice alike (agent-core delta).
             await self._send_proactively(
-                self._with_suppressed_note(text, turn),
+                self._with_release_line(self._with_suppressed_note(text, turn), turn),
                 what=what,
                 failure_notice=TRIAGE_FAILURE_NOTICE,
             )
@@ -565,6 +591,18 @@ class AgentCore:
         if self._handoff_sink is not None and handoff_id:
             for item in turn.items:
                 self._handoff_sink(item.identity.key, handoff_id)
+        # Maintenance-calendar D8, "marked released at durable flush": a release's
+        # window is marked once its triage's record is written, or at once when audit
+        # is not configured (the designed no-op, which reports False above). A failed
+        # write leaves the window in flight and unreleased until the next restart,
+        # which releases it again: a duplicate triage over a lost one. The early
+        # return at the top keeps this to one call per triage.
+        if (
+            turn.held_release is not None
+            and self._release_sink is not None
+            and (ok or self._audit is None)
+        ):
+            self._mark_released(turn.held_release.window_id)
         genuine_failure = self._audit is not None and not ok
         if genuine_failure and not self._checkpoint_blocked:
             # Latch BEFORE the await so a send failure can't leave it unset.
@@ -587,6 +625,35 @@ class AgentCore:
         if self._checkpoint_blocked or self._checkpoint is None or not offset:
             return
         self._checkpoint.write(offset)
+
+    def _mark_released(self, window_id: str) -> None:
+        """Call the release sink; a failure there never stops the triage's send."""
+        try:
+            self._release_sink(window_id)  # type: ignore[misc]
+        except Exception:
+            logger.error(
+                "could not mark maintenance window %s released", window_id, exc_info=True
+            )
+
+    def _with_release_line(self, text: str, turn: EventTurn) -> str:
+        """Append a release's line (agent-core delta); live turns are unchanged.
+
+        Composed by code from the turn's :class:`HeldRelease`, never by the model.
+        A line that cannot be composed is logged and left off: the triage message
+        itself still goes out.
+        """
+        if turn.held_release is None:
+            return text
+        try:
+            line = release_line(turn.held_release, self._owner_zone)
+        except Exception:
+            logger.error(
+                "could not compose the release line for maintenance window %s",
+                turn.held_release.window_id,
+                exc_info=True,
+            )
+            return text
+        return f"{text}\n\n{line}"
 
     @staticmethod
     def _with_suppressed_note(reply: str, turn: EventTurn) -> str:
@@ -637,6 +704,30 @@ class AgentCore:
             logger.error("could not compose the current-time header", exc_info=True)
             return text
         return f"{header}\n\n{text}" if header else text
+
+    def _with_maintenance(self, text: str) -> str:
+        """Prefix the maintenance-window block, if a window is active or recent.
+
+        Composed **per turn** (agent-core delta), so "is everything ok?" at 20:45
+        reads the holds as they stand at 20:45. A failure is logged and the turn
+        proceeds without it: calendar or store trouble must never block a
+        conversation. It never touches session taint: the block holds owner-reviewed
+        titles, times and counts, never an alert's payload text. Owner turns only;
+        the event path never calls this.
+        """
+        if self._maintenance is None:
+            return text
+        try:
+            block = self._maintenance.block()
+        except Exception:
+            logger.error(
+                "could not compose the maintenance-window note for the turn",
+                exc_info=True,
+            )
+            return text
+        if not block:
+            return text
+        return f"{block}\n\n{text}"
 
     def _with_deliveries(self, text: str) -> str:
         """Prefix the delivered-reminder block, if any delivery is unsurfaced.
