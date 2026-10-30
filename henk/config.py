@@ -8,6 +8,7 @@ deployment, per design D7).
 from __future__ import annotations
 
 import dataclasses
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1542,7 +1543,7 @@ def _calendar_settings(sec: Mapping[str, Any]) -> CalendarConfig:
             "reads and writes exactly one calendar, named here; set it to the "
             "shared calendar's id, or set calendar.enabled to false."
         )
-    values = _bounded_settings("calendar", sec, CalendarConfig, _CALENDAR_SETTINGS)
+    values = _finite_calendar_settings(sec)
     for name, value in values.items():
         low, high = _CALENDAR_RANGES.get(name, (None, None))
         if low is not None and not low <= value <= high:
@@ -1567,10 +1568,41 @@ def _lenient_calendar_settings(sec: Mapping[str, Any]) -> dict[str, Any]:
     values: dict[str, Any] = {}
     for name, cast in _CALENDAR_SETTINGS:
         try:
-            values[name] = cast(sec.get(name, getattr(CalendarConfig, name)))
-        except (TypeError, ValueError):
+            values[name] = _finite(sec.get(name, getattr(CalendarConfig, name)), cast)
+        except (TypeError, ValueError, OverflowError):
             values[name] = getattr(CalendarConfig, name)
     return values
+
+
+def _finite_calendar_settings(sec: Mapping[str, Any]) -> dict[str, Any]:
+    """An enabled section's numbers, coerced, refusing anything not a finite number.
+
+    Finiteness comes BEFORE the range and positivity checks: NaN fails every
+    comparison, so ``value <= 0`` lets it through, and a NaN ``stale_after_seconds``
+    would make the window provider's age check always false, holding alerts on a
+    stale snapshot indefinitely. YAML writes these as ``.nan`` / ``.inf``.
+    """
+    values: dict[str, Any] = {}
+    for name, cast in _CALENDAR_SETTINGS:
+        raw = sec.get(name, getattr(CalendarConfig, name))
+        try:
+            values[name] = _finite(raw, cast)
+        except OverflowError:
+            raise ConfigError(
+                f"calendar.{name} must be a finite number; got {raw!r}"
+            ) from None
+        except (TypeError, ValueError):
+            raise ConfigError(
+                f"calendar.{name} must be a number; got {raw!r}"
+            ) from None
+    return values
+
+
+def _finite(raw: Any, cast: Any) -> Any:
+    """``cast(raw)`` for a finite number; OverflowError for NaN or an infinity."""
+    if not math.isfinite(float(raw)):
+        raise OverflowError
+    return cast(raw)
 
 
 def _require_owner_timezone(

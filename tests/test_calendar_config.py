@@ -494,3 +494,56 @@ def test_the_key_document_fixture_is_well_formed():
     document = key_document()
     assert json.loads(json.dumps(document))["type"] == "service_account"
     assert parse_service_account_key(key_b64()).client_email == SA_EMAIL
+
+
+# --- Non-finite settings (Codex adversarial-review follow-up) ---------------
+#
+# YAML reads `.nan`, `.inf` and `-.inf` as floats. NaN fails every comparison, so
+# `value <= 0` let it through, and a NaN `stale_after_seconds` made the window
+# provider's age check always false: a stale snapshot would hold alerts forever.
+# `int(inf)` raised OverflowError, which escaped as a crash rather than a
+# ConfigError. Every numeric calendar setting must be finite.
+
+_NUMERIC_CALENDAR_SETTINGS = (
+    "lookahead_days",
+    "refresh_seconds",
+    "grace_minutes",
+    "max_window_hours",
+    "stale_after_seconds",
+    "timeout_seconds",
+)
+
+
+def _yaml_number(text: str):
+    import yaml
+
+    return yaml.safe_load(f"value: {text}")["value"]
+
+
+@pytest.mark.parametrize("name", _NUMERIC_CALENDAR_SETTINGS)
+@pytest.mark.parametrize("text", [".nan", ".inf", "-.inf"])
+def test_non_finite_settings_refused_when_enabled(name, text):
+    value = _yaml_number(text)
+    assert isinstance(value, float)
+    with pytest.raises(ConfigError) as excinfo:
+        _load(enabled_raw(**{name: value}), env={ENV_VAR: key_b64()})
+    message = str(excinfo.value)
+    assert f"calendar.{name}" in message
+    assert "finite" in message
+
+
+@pytest.mark.parametrize("name", _NUMERIC_CALENDAR_SETTINGS)
+@pytest.mark.parametrize("text", ["nan", "inf"])
+def test_non_finite_strings_refused_when_enabled(name, text):
+    with pytest.raises(ConfigError) as excinfo:
+        _load(enabled_raw(**{name: text}), env={ENV_VAR: key_b64()})
+    assert f"calendar.{name}" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("name", _NUMERIC_CALENDAR_SETTINGS)
+@pytest.mark.parametrize("text", [".nan", ".inf", "-.inf"])
+def test_non_finite_settings_in_a_disabled_section_fall_back_to_defaults(name, text):
+    # Disabled stays inert: no refusal, no crash, and no non-finite value kept for
+    # a later flip of `enabled` to inherit unchecked.
+    config = _load(minimal_raw(enabled=False, **{name: _yaml_number(text)}), env={})
+    assert getattr(config.calendar, name) == getattr(CalendarConfig, name)
