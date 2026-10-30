@@ -83,9 +83,9 @@ class Tool:
 
     Subclasses set ``name``, ``description``, ``tool_class``, ``parameters``
     (a JSON-schema dict) and implement ``_run``. A mutating subclass must also set
-    ``authorization`` and ``label`` and may narrow or widen ``turn_scope``. A tool whose result
-    can carry free text authored by someone other than the owner declares
-    ``raises_taint`` on its class or instance.
+    ``authorization`` and ``label`` and may narrow or widen ``turn_scope``. A tool
+    whose result can carry free text authored by someone other than the owner
+    declares ``raises_taint`` on its class or instance.
     """
 
     name: str = ""

@@ -270,6 +270,25 @@ async def test_the_null_channel_refuses_and_counts():
     assert len(channel.attempts) == 2
 
 
+async def test_the_null_channel_refuses_and_counts_an_approval_prompt():
+    from henk.channel.base import ApprovalPrompt
+
+    channel = harness.NullChannel()
+    with pytest.raises(harness.ReplayIsolationError):
+        await channel.send_prompt(ApprovalPrompt("Remember a fact", "store_memory", ()))
+    assert channel.attempts == ["send_prompt"]
+
+
+async def test_the_null_channel_refuses_and_counts_a_prompt_edit():
+    from henk.channel.base import ApprovalPrompt, PromptOutcome
+
+    channel = harness.NullChannel()
+    outcome = PromptOutcome("Denied", ApprovalPrompt("Remember a fact", "store_memory", ()))
+    with pytest.raises(harness.ReplayIsolationError):
+        await channel.edit_prompt("prompt-1", outcome)
+    assert channel.attempts == ["edit_prompt"]
+
+
 def test_the_refusing_stores_refuse_every_use():
     stores = harness.RefusingStores()
     for name in ("store", "memories", "inbox", "reminders", "handoffs"):

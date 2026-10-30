@@ -1,6 +1,6 @@
 ## 0. Sequencing
 
-- [ ] 0.1 Before implementing, rebase this branch onto `main` once `chore/archive-maintenance-calendar` has merged, and confirm the MODIFIED block *Calendar tools carry a declared tier and scope* still matches the archived base text word for word apart from this change's edits.
+- [x] 0.1 Before implementing, rebase this branch onto `main` once `chore/archive-maintenance-calendar` has merged, and confirm the MODIFIED block *Calendar tools carry a declared tier and scope* still matches the archived base text word for word apart from this change's edits.
 
 ## 1. Bridge facts (read-only, before any code)
 

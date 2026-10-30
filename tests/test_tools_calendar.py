@@ -37,8 +37,8 @@ from henk.audit import AUDIT_SCHEMA_PATH, AuditLog, CalendarReceipts, MutationRe
 from henk.calendar.client import LIST_FIELDS, CalendarClient
 from henk.calendar.token import AccessTokenSource, parse_service_account_key
 from henk.channel.base import ApprovalPrompt, InboundReaction
-from henk.config import CalendarConfig
 from henk.channel.signal import UNSTYLED_DELIMITERS, render_prompt
+from henk.config import CalendarConfig
 from henk.gate.approval import (
     ApprovalGate,
     ApprovalOutcome,
@@ -68,7 +68,7 @@ from tests.calendar_fixtures import (
     STRANGER_EMAIL,
     key_b64,
 )
-from tests.conftest import FakeChannel
+from tests.conftest import FakeChannel, plain_prompt_text
 from tests.test_calendar_client import FakeGoogle, item
 
 ZONE = ZoneInfo("Europe/Amsterdam")
@@ -1307,6 +1307,7 @@ async def test_an_approved_create_is_receipted_twice_with_one_reference(
     # approval-reactions: was `channel.sent == [VERBATIM_PROMPT]`; the delta
     # replaces the quoted delimiter prompt with the structured one.
     assert channel.prompts == [CALENDAR_PROMPT]
+    assert channel.sent == [plain_prompt_text(CALENDAR_PROMPT)]
     assert google.requests == []  # nothing before the approval keyword
     gate.deliver("yes")
     assert (await decision).allow

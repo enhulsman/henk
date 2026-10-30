@@ -61,6 +61,8 @@ PROMPT_FOOTER = (
     "Any other message cancels it."
 )
 PROMPT_HEADER = "Approval needed"
+#: Shown in place of the argument lines for an action that takes none.
+NO_ARGUMENTS_LINE = "(no arguments)"
 #: Every character the styled parser treats as a marker.
 STYLE_CHARACTERS = "*`|~"
 #: Placed before a styling character to make it literal. ONE backslash in the
@@ -95,13 +97,13 @@ class SignalBridge(Protocol):
         *,
         styled: bool = False,
         edit_timestamp: int | None = None,
-    ) -> int | str | None:
+    ) -> int | None:
         """Send one message. May raise SignalBridgeError.
 
         ``styled`` selects the bridge's styled text mode, ``edit_timestamp`` makes
         the send an edit of the message sent at that timestamp, and the return
-        value is the response's sent timestamp (``None`` when the bridge reported
-        none). The adapter mints a reference from it whatever its JSON type.
+        value is the response's sent timestamp as an int (``None`` when the bridge
+        reported none). The adapter's minting still tolerates a decimal string.
         """
         ...
 
@@ -284,7 +286,7 @@ class SignalAdapter:
 
     async def _send_with_retry(
         self, text: str, *, attempts: int | None = None, styled: bool = False
-    ) -> tuple[bool, object]:
+    ) -> tuple[bool, int | None]:
         """Send one message with backoff: ``(delivered, the bridge's timestamp)``.
 
         Never styled unless asked: only approval prompts are (D5). The styled flag
@@ -480,25 +482,28 @@ def _mint_sent_ref(raw: object) -> str | None:
 
     The ONE function that mints both a prompt's reference (from the ``/v2/send``
     response) and a reaction's target reference (from ``targetSentTimestamp``), so
-    the gate's equality check cannot fail on form (approval-reactions D2). The
-    bridge reports the first as a JSON string and the second as an integer; both
-    are reduced to the same integer first. Only a positive integer, or a string of
-    ASCII digits naming one exactly, is accepted: anything else (absent, a bool, a
-    float, a sign, padding) mints nothing.
+    the gate's equality check cannot fail on form (approval-reactions D2). Both
+    are reduced to the same integer by :func:`_sent_timestamp` first.
+    """
+    value = _sent_timestamp(raw)
+    return None if value is None else str(value)
+
+
+def _sent_timestamp(raw: object) -> int | None:
+    """A sent timestamp as a positive int, whatever JSON type carried it.
+
+    The bridge reports a send response's timestamp as a JSON string and a
+    reaction's target as an integer. Only a positive integer, or a string of ASCII
+    digits naming one exactly, is accepted: anything else (absent, a bool, a
+    float, a sign, padding) is ``None``.
     """
     if isinstance(raw, bool):
         return None
     if isinstance(raw, int):
-        value = raw
-    elif isinstance(raw, str):
-        value = _parse_channel_ref(raw)
-        if value is None:
-            return None
-    else:
-        return None
-    if value <= 0:
-        return None
-    return str(value)
+        return raw if raw > 0 else None
+    if isinstance(raw, str):
+        return _parse_channel_ref(raw)
+    return None
 
 
 def _parse_channel_ref(channel_ref: object) -> int | None:
@@ -564,7 +569,8 @@ def render_prompt(prompt: ApprovalPrompt, *, styled: bool) -> str:
     A header line (bold when styled), the label with the tool name in brackets,
     one ``key: value`` line per argument in call order, and the footer. Every
     piece of content is escaped when styled, so nothing can change the styling;
-    values arrive from the gate already on one line.
+    values arrive from the gate already on one line. An action without arguments
+    says so on a line of its own.
     """
     header = f"**{PROMPT_HEADER}**" if styled else PROMPT_HEADER
     lines = [
@@ -575,6 +581,9 @@ def render_prompt(prompt: ApprovalPrompt, *, styled: bool) -> str:
         f"{_text(key, styled=styled)}: {_value(value, styled=styled)}"
         for key, value in prompt.fields
     ]
+    if not prompt.fields:
+        # Explicit rather than an empty gap between the action and the footer.
+        lines.append(NO_ARGUMENTS_LINE)
     lines.append(PROMPT_FOOTER)
     return "\n".join(lines)
 
@@ -758,5 +767,4 @@ def _response_timestamp(response) -> int | None:
         return None
     if not isinstance(body, dict):
         return None
-    ref = _mint_sent_ref(body.get("timestamp"))
-    return int(ref) if ref is not None else None
+    return _sent_timestamp(body.get("timestamp"))

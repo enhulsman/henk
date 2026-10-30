@@ -112,7 +112,8 @@ class PromptChannel(FakeChannel):
     reports; a non-delivered prompt is recorded in ``prompts`` (it was asked for)
     but never in ``sent`` (the owner never saw it). ``prompt_hold`` / ``edit_hold``
     suspend the operation until set. ``pending_at_edit`` records whether the gate
-    still held its pending slot when each edit began.
+    still held its pending slot when each edit began. ``edit_raises`` makes
+    ``edit_prompt`` raise after recording the attempt, as a broken adapter might.
     """
 
     def __init__(
@@ -123,6 +124,7 @@ class PromptChannel(FakeChannel):
         prompt_outcome: SendOutcome = SendOutcome.DELIVERED,
         too_large: bool = False,
         edit_result: bool = True,
+        edit_raises: bool = False,
     ) -> None:
         super().__init__()
         self.log = log if log is not None else []
@@ -130,6 +132,7 @@ class PromptChannel(FakeChannel):
         self.prompt_outcome = prompt_outcome
         self.too_large = too_large
         self.edit_result = edit_result
+        self.edit_raises = edit_raises
         self.prompt_hold: asyncio.Event | None = None
         self.edit_hold: asyncio.Event | None = None
         self.prompt_started = asyncio.Event()
@@ -163,6 +166,8 @@ class PromptChannel(FakeChannel):
         if self.edit_hold is not None:
             await self.edit_hold.wait()
         self.edits.append((ref, outcome))
+        if self.edit_raises:
+            raise RuntimeError("simulated edit failure")
         return self.edit_result
 
 
@@ -706,6 +711,22 @@ async def test_an_ordinary_failed_prompt_send_is_not_called_too_large():
     assert channel.edits == []
 
 
+async def test_a_failed_prompt_send_carries_its_own_reason_and_no_detail():
+    # A gate-caused cancel: its own reason, never the unrelated-message one, and
+    # no receipt detail.
+    channel = PromptChannel(prompt_outcome=SendOutcome.FAILED, refs=[None])
+    recorder = SpyRecorder()
+    gate = _gate(channel, recorder=recorder, timeout_seconds=0.1)
+    result = await asyncio.wait_for(gated_invoke(gate, LabelledTool(), dict(ARGS)), FAIL_FAST)
+    assert result.error == (
+        "delivery of the approval prompt could not be confirmed; the action was not "
+        "executed"
+    )
+    [entry] = recorder.entries
+    assert entry["outcome"] == "cancelled"
+    assert "detail" not in entry
+
+
 # =============================================================================
 # 2.2 The outcome edit
 # =============================================================================
@@ -828,6 +849,79 @@ async def test_a_failed_edit_changes_nothing(caplog):
         r.name == "henk.gate" and r.levelno >= logging.WARNING and "edit" in r.getMessage().lower()
         for r in caplog.records
     ), [r.getMessage() for r in caplog.records]
+
+
+async def test_an_edit_that_raises_changes_nothing(caplog):
+    # Scenario: A failed edit changes nothing, for an adapter that breaks its
+    # never-raise contract: the action still runs once and the receipt stands.
+    channel = PromptChannel(edit_raises=True)
+    recorder = SpyRecorder()
+    gate = _gate(channel, recorder=recorder)
+    tool = LabelledTool()
+    task = _invoke(gate, tool)
+    await _prompted(gate, channel)
+    with caplog.at_level(logging.INFO, logger="henk.gate"):
+        gate.deliver_reaction(_reaction(THUMBS_UP))
+        result = await asyncio.wait_for(task, FAIL_FAST)
+
+    assert result.ok
+    assert tool.calls == [ARGS]
+    [entry] = recorder.entries
+    assert entry["outcome"] == "approved"
+    assert entry["detail"] == "answered by reaction"
+    assert len(channel.edits) == 1
+    assert any(
+        r.name == "henk.gate" and r.levelno >= logging.WARNING and "edit" in r.getMessage().lower()
+        for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]
+
+
+@pytest.mark.parametrize(
+    "answer, outcome", [("yes", "approved"), ("no", "denied")], ids=["approved", "denied"]
+)
+async def test_cancelling_the_turn_during_the_edit_keeps_the_receipt(answer, outcome):
+    # The receipt is written at decision time, before the edit is awaited: a turn
+    # cancelled while the edit is in flight (shutdown, /new) still leaves exactly
+    # one receipt with how the owner answered, and the tool never runs.
+    channel = PromptChannel()
+    channel.edit_hold = asyncio.Event()
+    recorder = SpyRecorder()
+    gate = _gate(channel, recorder=recorder)
+    tool = LabelledTool()
+    task = _invoke(gate, tool)
+    await _prompted(gate, channel)
+    gate.deliver(answer)
+    await asyncio.wait_for(channel.edit_started.wait(), FAIL_FAST)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert tool.calls == []
+    [entry] = recorder.entries
+    assert entry["outcome"] == outcome
+    assert entry["detail"] == "answered by keyword"
+
+
+async def test_a_second_thumbs_up_before_the_slot_is_released_is_ignored():
+    # The decision is made but the gate task has not yet run to release the slot:
+    # a second 👍 (or a 👎) on the same prompt answers nothing and says so.
+    channel = PromptChannel()
+    recorder = SpyRecorder()
+    gate = _gate(channel, recorder=recorder)
+    tool = LabelledTool()
+    task = _invoke(gate, tool)
+    await _prompted(gate, channel)
+
+    assert gate.deliver_reaction(_reaction(THUMBS_UP)) is Classification.APPROVE
+    assert gate.has_pending() is True  # no yield yet: the slot is still held
+    assert gate.deliver_reaction(_reaction(THUMBS_UP)) is Classification.IGNORED
+    assert gate.deliver_reaction(_reaction(THUMBS_DOWN)) is Classification.IGNORED
+    assert (await asyncio.wait_for(task, FAIL_FAST)).ok
+    assert tool.calls == [ARGS]
+    [entry] = recorder.entries
+    assert entry["outcome"] == "approved"
+    assert entry["detail"] == "answered by reaction"
 
 
 # --- Decisions that sent no prompt edit nothing ------------------------------

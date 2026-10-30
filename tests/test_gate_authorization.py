@@ -3,7 +3,8 @@
 From specs/approval-gate: tiers are declared in code and validated at
 registration; standing executes silently but always leaves a receipt;
 per-instance keeps the prompt flow, now a structured resolved action with
-collapsed, truncated arguments that the adapter renders (approval-reactions D1); turn scope and session taint deny out-of-scope
+collapsed, truncated arguments that the adapter renders (approval-reactions
+D1); turn scope and session taint deny out-of-scope
 mutations without touching the channel; concurrency and suppressed event turns
 fail closed. Driven through a channel-adapter test double.
 """
@@ -551,13 +552,15 @@ def test_crafted_argument_cannot_alter_keyword_matching():
 
 
 def test_prompt_without_arguments_is_still_explicit():
-    # No fields, and the rendered prompt still names the action on its own line.
+    # No fields, and the rendered prompt says so on its own line, in both modes.
     prompt = _prompt_for()
     assert prompt.fields == ()
     assert prompt.label and prompt.tool_name == "per_instance_write"
-    lines = render_prompt(prompt, styled=False).splitlines()
-    assert lines[1] == "Write a test thing (per_instance_write)"
-    assert len(lines) == 3  # header, the action, the footer
+    for styled in (False, True):
+        lines = render_prompt(prompt, styled=styled).splitlines()
+        assert lines[1] == "Write a test thing (per_instance_write)"
+        assert lines[2] == "(no arguments)"
+        assert len(lines) == 4  # header, the action, "(no arguments)", the footer
 
 
 def test_non_string_argument_values_are_rendered_delimited_too():

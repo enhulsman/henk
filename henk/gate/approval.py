@@ -317,12 +317,17 @@ class ApprovalGate:
                 "not executed — resolve that one first and try again",
             )
 
-        outcome, reason, detail = await self._prompt_and_wait(
+        outcome, reason, detail, edit = await self._prompt_and_wait(
             tool, arguments, reference
         )
+        # The receipt first, at decision time: a turn cancelled while the edit is
+        # in flight must not lose it. Then the edit, still before the decision
+        # returns, so before the tool runs or the non-execution result flows back.
         decision = self._resolve(
             tool, declared_tier, outcome, reference, context, reason, detail=detail
         )
+        if edit is not None:
+            await self._record_outcome(*edit, reference)
         if decision.permits:
             self._raise_taint(tool, framed_at_start)
         return decision
@@ -380,14 +385,17 @@ class ApprovalGate:
 
     async def _prompt_and_wait(
         self, tool: Tool, arguments: dict[str, Any], reference: str
-    ) -> tuple[ApprovalOutcome, str, str | None]:
-        """Prompt, wait for the owner, then record the outcome on the prompt.
+    ) -> tuple[
+        ApprovalOutcome, str, str | None, tuple[str, PromptOutcome] | None
+    ]:
+        """Prompt and wait for the owner.
 
-        Returns the outcome with its model-facing reason and receipt detail. The
-        pending slot is released BEFORE the outcome edit is awaited (D2), so a
+        Returns the outcome with its model-facing reason and receipt detail, and
+        the outcome edit still to make (the prompt reference and the outcome line),
+        or ``None`` when there is nothing to edit. The pending slot is released
+        here, so BEFORE the caller writes the receipt and awaits the edit (D2): a
         message or reaction arriving during the edit is routed exactly as one
-        arriving after the decision; the edit still lands before this returns, so
-        before the tool runs or the non-execution result flows back.
+        arriving after the decision.
         """
         prompt = self.build_prompt(tool, arguments)
         loop = asyncio.get_running_loop()
@@ -422,23 +430,22 @@ class ApprovalGate:
                 logger.warning(
                     "approval ref=%s: the prompt does not fit one message", reference
                 )
-                return outcome, _PROMPT_TOO_LARGE_REASON, "prompt too large"
+                return outcome, _PROMPT_TOO_LARGE_REASON, "prompt too large", None
             if sent is not None:
                 logger.error(
                     "approval ref=%s could not be requested (%s)",
                     reference, sent.outcome.value,
                 )
-            return outcome, _PROMPT_NOT_SENT_REASON, None
+            return outcome, _PROMPT_NOT_SENT_REASON, None, None
 
         detail = None
         if outcome in (ApprovalOutcome.APPROVED, ApprovalOutcome.DENIED):
             if pending.answered_by is not None:
                 detail = f"answered by {pending.answered_by}"
+        edit = None
         if sent.ref is not None:
-            await self._record_outcome(
-                sent.ref, PromptOutcome(_OUTCOME_VERBS[outcome], prompt), reference
-            )
-        return outcome, _OUTCOME_REASONS.get(outcome, ""), detail
+            edit = (sent.ref, PromptOutcome(_OUTCOME_VERBS[outcome], prompt))
+        return outcome, _OUTCOME_REASONS.get(outcome, ""), detail, edit
 
     async def _record_outcome(
         self, prompt_ref: str, outcome: PromptOutcome, reference: str
@@ -534,7 +541,8 @@ class ApprovalGate:
         ``IGNORED``, in this order: nothing pending, or a pending prompt the gate
         holds no reference for (not yet returned by the channel, or none given);
         a removal, which never resolves or reverses anything; a reaction on any
-        other message; any other emoji. ``IGNORED`` never touches the pending
+        other message; a prompt already decided but whose slot is not yet
+        released (a second 👍 answers nothing); any other emoji. ``IGNORED`` never touches the pending
         approval, and a reaction is never requeued as a turn, so unlike
         :meth:`deliver` there is no requeue flag to return.
         """
@@ -547,6 +555,8 @@ class ApprovalGate:
         # parses it. `prompt_ref` is not None here, so a reaction carrying no
         # target can never match a prompt carrying none.
         if reaction.target_ref != pending.prompt_ref:
+            return Classification.IGNORED
+        if pending.future.done():
             return Classification.IGNORED
         classification = classify_reaction(reaction.emoji)
         if classification is Classification.APPROVE:
@@ -648,8 +658,8 @@ _PROMPT_TOO_LARGE_REASON = (
     "not asked; the action was not executed"
 )
 _PROMPT_NOT_SENT_REASON = (
-    "the approval prompt could not be delivered, so the owner was not asked; the "
-    "action was not executed"
+    "delivery of the approval prompt could not be confirmed; the action was not "
+    "executed"
 )
 
 #: Model-facing text for each non-executing outcome of the prompt flow. Honest

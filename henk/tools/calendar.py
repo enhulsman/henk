@@ -377,7 +377,6 @@ class CalendarCreateEventTool(Tool):
         "than 90 days ahead, and a time the clocks skip. The result says whether "
         "the event will hold alerts to Henk while it runs."
     )
-    #: Owner-facing, shown in an approval prompt (approval-reactions D6).
     label = "Add a calendar event"
     tool_class = ToolClass.MUTATING
     authorization = AuthorizationTier.PER_INSTANCE
