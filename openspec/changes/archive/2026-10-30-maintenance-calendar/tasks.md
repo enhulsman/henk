@@ -163,7 +163,7 @@
 - [x] 8.2 On rp5, probe `oauth2.googleapis.com` from the henk netns, using the same
       one-liner as the 2026-10-30 probe. If it does not return 200, add the DOCKER-USER
       egress rule first.
-- [ ] 8.3 The owner places the key, by hand, on rp5:
+- [x] 8.3 The owner places the key, by hand, on rp5:
       1. `base64 -w0 key.json > key.b64` in a mode-700 directory, with the file at mode
          600.
       2. Append `GOOGLE_CALENDAR_SA_KEY_B64=` plus that value to henk's `.env` with an
@@ -181,11 +181,16 @@
          key. Put one `Homelab: test` event on the calendar by hand first, so a count of
          zero means a problem rather than an empty calendar.
       8. Flip `calendar.enabled` and recreate the container.
-- [ ] 8.4 Live checks over Signal:
+      Done 2026-10-30; see `notes/live-checks.md`. The README's `up -d --build` failed on
+      Compose v5 and the image was built through bake; the README now says so.
+- [x] 8.4 Live checks over Signal:
       - "what homelab work is planned?";
       - one create answered `no`;
       - one answered `yes` and seen on the calendar;
       - a 10-minute test window with a test alert inside it, observing hold, release and
         the release line (or no message when it recovered).
-- [ ] 8.5 Run `/docs-update` for the Henk page (calendar, egress exception), then
+      All four passed on 2026-10-30; see `notes/live-checks.md`.
+- [x] 8.5 Run `/docs-update` for the Henk page (calendar, egress exception), then
       `openspec validate maintenance-calendar --strict` and archive.
+      Henk page updated in the homelab docs (84ba6b2, 2026-10-30). `runbook-actions` had
+      not archived (standing rule 4), so no rebase was needed.

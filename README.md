@@ -602,7 +602,8 @@ is reachable on the tailnet (see `henk-vps-setup.sh`); tokens minted.
 2. **Config + secrets:** edit `config.yaml`; `cp .env.example .env`, fill it,
    `chmod 600 .env`. Put the topic secret in `config.yaml` and the ntfy token in `.env`.
 3. **Tailscale key:** generate a pre-authorized `tag:henk` key → `TS_AUTHKEY`.
-4. **Bring up:** `docker compose up -d --build`.
+4. **Bring up:** build as in *Redeploying an existing install* below (Compose v5 cannot
+   build this image through `up --build`), then `docker compose -p henk up -d`.
 5. **Tailnet Lock:** the new node needs signing — from rp5 (a signing node):
    `tailscale lock sign <node-key>` (node key from `tailscale status` / console).
 6. **Register Signal** (see below).
@@ -628,8 +629,21 @@ cp /home/pi/henk-config-live.yaml config.yaml
 git stash drop
 cmp /home/pi/henk-config-live.yaml config.yaml && echo CONFIG-UNCHANGED && git log --oneline -1
 exit
-docker compose -p henk -f /home/pi/Coding/henk/docker-compose.yml up -d --build henk
+cd /home/pi/Coding/henk                    # as root from here
+docker compose -p henk -f docker-compose.yml build --print henk \
+  | docker buildx bake --file - --allow=network.host
+docker compose -p henk -f docker-compose.yml up -d --no-deps henk
 ```
+
+**Build through bake, not `up --build`.** Since Compose v5 every build goes through
+`docker buildx bake`, which refuses the `build.network: host` setting (needed because rp5's
+default bridge can't reach PyPI) unless the `network.host` entitlement is granted, and Compose
+has no flag or variable to grant it (`COMPOSE_BAKE=false` is ignored): `up -d --build` stops
+with `additional privileges requested: pass "--allow=network.host"`
+([docker/compose#14345](https://github.com/docker/compose/issues/14345)). The pipe above hands
+Compose's own build plan to bake with that one grant, so the image is still `henk-henk`.
+`--no-deps` leaves the tailscale and signal containers as they are. Seen on Compose v5.6.1,
+2026-10-30.
 
 **`git pull` must be typed interactively, one line at a time.** rp5's git key
 (`~/.ssh/id_ed25519_work_pi5`) is passphrase-protected, and neither `su pi -c 'git pull …'` nor
