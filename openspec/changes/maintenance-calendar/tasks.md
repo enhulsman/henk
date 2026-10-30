@@ -172,7 +172,15 @@
       4. Confirm in the GCP console that domain-wide delegation is off for the `henk`
          account.
       5. Set `calendar.calendar_id` and the creator allowlist in rp5's `config.yaml`.
-      6. Deploy per the README runbook and flip `calendar.enabled`.
+      6. Deploy per the README runbook, with `calendar.enabled` still false.
+      7. Credential test before the flip (added at the owner's request, 2026-10-30): a
+         throwaway `docker compose run --rm --no-deps -T henk python -` loads rp5's config
+         with `calendar.enabled` forced on in memory (so the exact enable-time validation
+         runs), signs in once and lists the next 14 days through Henk's own client. It is
+         read-only and prints statuses and counts only, never a title, id, email or the
+         key. Put one `Homelab: test` event on the calendar by hand first, so a count of
+         zero means a problem rather than an empty calendar.
+      8. Flip `calendar.enabled` and recreate the container.
 - [ ] 8.4 Live checks over Signal:
       - "what homelab work is planned?";
       - one create answered `no`;
