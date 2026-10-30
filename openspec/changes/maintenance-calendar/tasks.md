@@ -160,7 +160,7 @@
 
 - [x] 8.1 Full suite green. Run `/codex:adversarial-review` (new credential, new external
       write, new durability path) and record what it found and what was done about it.
-- [ ] 8.2 On rp5, probe `oauth2.googleapis.com` from the henk netns, using the same
+- [x] 8.2 On rp5, probe `oauth2.googleapis.com` from the henk netns, using the same
       one-liner as the 2026-10-30 probe. If it does not return 200, add the DOCKER-USER
       egress rule first.
 - [ ] 8.3 The owner places the key, by hand, on rp5:
