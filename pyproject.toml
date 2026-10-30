@@ -15,6 +15,11 @@ dependencies = [
     # TZPATH first — which is why the Dockerfile also empties TZPATH. See the
     # PYTHONTZPATH comment there; the two only work together.
     "tzdata>=2025.1",
+    # The calendar's service-account sign-in (maintenance-calendar D1): an RS256
+    # JWT-bearer assertion. Already in the lock and the image through `mcp`;
+    # declared directly because Henk's own code now imports it. `google-auth` is
+    # deliberately not used: a dependency tree for one grant type.
+    "pyjwt[crypto]>=2.8",
 ]
 
 [project.optional-dependencies]

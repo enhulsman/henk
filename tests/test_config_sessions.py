@@ -278,14 +278,19 @@ def test_the_staleness_default_is_the_designed_bound():
 def test_the_secret_set_is_unchanged():
     # Session awareness introduces no credential: the publisher's write token
     # lives on the workstation and Henk reads the topic with the ntfy token it
-    # already holds.
+    # already holds. The one later addition is maintenance-calendar's key (task
+    # 1.2), decoded only when the calendar is enabled; no session field joins it.
     assert {f.name for f in dataclasses.fields(Secrets)} == {
         "anthropic_credential",
         "taiga_token",
         "todo_token",
         "ntfy_token",
+        "google_calendar_key",
     }
-    assert set(inspect.signature(Secrets.from_env).parameters) == {"env"}
+    assert set(inspect.signature(Secrets.from_env).parameters) == {
+        "env",
+        "calendar_enabled",
+    }
 
 
 @pytest.mark.parametrize(

@@ -355,11 +355,14 @@ def test_an_unknown_key_in_a_new_section_is_refused_not_ignored(section, key):
 
 
 def test_secrets_from_env_is_unchanged():
+    # Triage-quality added no secret. maintenance-calendar later added one, the
+    # calendar key, which stays None unless the calendar is enabled (task 1.2).
     assert {f.name for f in dataclasses.fields(Secrets)} == {
         "anthropic_credential",
         "taiga_token",
         "todo_token",
         "ntfy_token",
+        "google_calendar_key",
     }
     env = {
         "ANTHROPIC_CREDENTIAL": "a",

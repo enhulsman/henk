@@ -5,8 +5,11 @@ suppression records for events dropped by cooldown/cap, one ``authorization``
 record per mutation decision — written at decision time, so a receipt never
 depends on a graceful session close or on event intake being enabled — and one
 ``reminder`` record per reminder lifecycle transition, written after the store
-transaction commits so the log never claims a transition the store did not make. The *application* writes
-these, never the model (design D8). The record schema is a committed JSON Schema
+transaction commits so the log never claims a transition the store did not make;
+one ``calendar`` record per confirmed calendar insert; and ``hold`` /
+``hold-release`` records for alerts held during a maintenance window, none of them
+carrying a title or payload. The *application* writes these, never the model
+(design D8). The record schema is a committed JSON Schema
 document (:mod:`henk.audit.schema`) so another project can validate its own
 records against it. Audit write failures are loud (ERROR) but never block
 message handling — availability of triage beats completeness of audit.
@@ -19,15 +22,21 @@ from henk.audit.logger import (
     AUDIT_SCHEMA_V3_PATH,
     AUDIT_SCHEMA_V4_PATH,
     AUDIT_SCHEMA_V5_PATH,
+    AUDIT_SCHEMA_V6_PATH,
     DETAIL_MAX_CHARS,
     SCHEMA_VERSION,
     AuditLog,
+    CalendarReceipts,
+    HoldReceipts,
     REMINDER_INITIATORS,
     REMINDER_TRANSITIONS,
     MutationReceipts,
     ReminderReceipts,
     approval_entry,
     authorization_record,
+    calendar_record,
+    hold_record,
+    hold_release_record,
     read_audit_records,
     reminder_record,
     session_record,
@@ -41,7 +50,10 @@ __all__ = [
     "AUDIT_SCHEMA_V3_PATH",
     "AUDIT_SCHEMA_V4_PATH",
     "AUDIT_SCHEMA_V5_PATH",
+    "AUDIT_SCHEMA_V6_PATH",
+    "CalendarReceipts",
     "DETAIL_MAX_CHARS",
+    "HoldReceipts",
     "MutationReceipts",
     "REMINDER_INITIATORS",
     "REMINDER_TRANSITIONS",
@@ -50,6 +62,9 @@ __all__ = [
     "AuditLog",
     "approval_entry",
     "authorization_record",
+    "calendar_record",
+    "hold_record",
+    "hold_release_record",
     "read_audit_records",
     "reminder_record",
     "session_record",

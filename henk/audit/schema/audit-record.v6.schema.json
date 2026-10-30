@@ -1,0 +1,643 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/enhulsman/henk/audit-record.v6.schema.json",
+  "title": "Henk audit record",
+  "description": "One record per EVENT TRIAGE (written at triage completion), per owner session, per suppressed event, per MUTATION AUTHORIZATION (written at decision time), per REMINDER LIFECYCLE TRANSITION (written after the store transaction commits), per CALENDAR WRITE (written after Google confirms the insert), per HELD EVENT (written when it is held during a maintenance window) or per RELEASED WINDOW. Schema version 6 adds three record types: `calendar`, `hold` and `hold-release`. None of them carries a title, a message or a raw payload, and each is closed to any property outside its own list, so the document itself refuses one. Version 6 renames, retypes and re-means no version-5 field or record type: `record_type` gains the three names, and `transition` gains `created` for calendar records while the reminder branch re-pins reminder records to exactly their version-5 values. A reader of version-5 records therefore reads version-6 records correctly, and cadence rehydration, which reads only event-triage session records, is unaffected by the new types. Version 5 added four optional, nullable fields to the session record: `profile`, `effort`, `recording_id` and `prior_handoff_ids`, documented the session `outcome` values and rewrote the description of `memory_hash`. Version 4 added: the `reminder` record type and the `scheduler` value for `initiated_by`, declaring the COMPLETE transition enumeration for the reminder capability, including the transitions only the delivery half writes — a schema document is a validation contract, not an inventory of what the current build emits. Version 3 added: the `authorization` record type (model-initiated decisions and owner-command receipts), the tier+outcome shape of session `approvals` entries (v2 used `decision`), the `executed` flag on `tool_calls` entries, and the session record's `memory_hash`.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "record_type"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 6
+    },
+    "record_type": {
+      "enum": [
+        "session",
+        "suppression",
+        "authorization",
+        "reminder",
+        "calendar",
+        "hold",
+        "hold-release"
+      ]
+    },
+    "at": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "description": "Unix time the record was produced (informational)."
+    },
+    "trigger": {
+      "enum": [
+        "owner-message",
+        "event"
+      ],
+      "description": "What started the session."
+    },
+    "event": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "description": "For event-triggered triages: the incidents triaged.",
+      "items": {
+        "type": "object",
+        "required": [
+          "identity_key"
+        ],
+        "properties": {
+          "identity_key": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "recurrence": {
+            "type": "boolean"
+          },
+          "event_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "tool_calls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "tool_class": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "result_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The tool's returned identifier, retained ONLY for tools whose result the application consumes — in practice `publish_handoff`, whose value becomes this record's handoff_message_id. Null for every other tool: results are not recorded, so no tool output (node addresses, note content, stored memories, captured thoughts) enters the audit log."
+          },
+          "executed": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "True when the invocation was permitted to proceed. Derived by correlating the invocation with this session's authorization records — never inferred from tool-result text. Read-only and notify-only calls are true by construction: they bypass the gate."
+          }
+        }
+      }
+    },
+    "diagnosis": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "confidence": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "high",
+        "moderate",
+        "medium",
+        "low",
+        "unknown",
+        null
+      ]
+    },
+    "handoff_message_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "triage_arc_complete": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Event-triggered sessions only; null otherwise."
+    },
+    "approvals": {
+      "type": "array",
+      "description": "Every mutating-tool authorization decision made during this session. Non-empty whenever a mutating tool was invoked. Owner-command receipts are NOT listed here: commands run outside any turn or session and live only as standalone authorization records.",
+      "items": {
+        "type": "object",
+        "required": [
+          "tool",
+          "tier",
+          "outcome"
+        ],
+        "properties": {
+          "tool": {
+            "type": "string"
+          },
+          "tier": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "standing",
+              "per-instance",
+              null
+            ],
+            "description": "The tool's DECLARED authorization tier (a tool property, so it is reported even when the kill-switch demoted its enforcement)."
+          },
+          "outcome": {
+            "enum": [
+              "authorized",
+              "approved",
+              "denied",
+              "cancelled",
+              "timeout",
+              "suppressed",
+              "out-of-scope",
+              "rejected-busy"
+            ]
+          },
+          "initiated_by": {
+            "enum": [
+              "model",
+              "owner-command"
+            ]
+          },
+          "reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "memory_hash": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Content hash of the recall block this session received, as injected. For an event-triage record it is the hash of the block that triage's event turn received (event turns receive recall), and an owner continuation inside a triage session inherits it. Null when no block was injected: an empty store, a recall that failed to read, or a session that received no recall. Makes the memory state a session saw auditable."
+    },
+    "outcome": {
+      "type": "string",
+      "description": "Session records: how the session's turn ended. `completed`: a reply was produced. `error`: the model or the SDK reported an error, or the turn raised. `refused`: the stop reason was a refusal. `no-reply`: the turn ended without error or refusal but produced no reply text. For any value other than `completed`, the reply text is discarded, not delivered. Documented rather than enumerated, so the field keeps its version-4 type."
+    },
+    "announceable": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "turn_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "model": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "usage": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "input_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cache_read_input_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Cache-read input tokens (prompt caching); additive to the uncached input_tokens."
+        }
+      }
+    },
+    "profile": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "chat",
+        "event",
+        null
+      ],
+      "description": "Session records: the profile of the session factory that created this session. `event` for an event triage and for an owner continuation inside a triage session; `chat` otherwise. Null when the writer did not name one."
+    },
+    "effort": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Session records: the reasoning effort of the session factory that created this session, as passed to the SDK. Null when the writer did not name one or the CLI default applied."
+    },
+    "recording_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Event-triage records: the id of that triage's recording (triage-replay). Null when no recording was written, and on every record that is not an event triage, owner continuations included. A reference, never recording content."
+    },
+    "prior_handoff_ids": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "integer"
+      },
+      "description": "Event-triage records: the row ids, in the local handoff archive, of the retained prior handoffs the triage's digest showed, as an empty list when none were shown. A row id rather than the handoff's published id, because a retained handoff always has a row id and may have no published id. Null on every record that is not an event triage, owner continuations included. References, never handoff text."
+    },
+    "identity_key": {
+      "type": "string",
+      "description": "Suppression and hold records: the alert identity key."
+    },
+    "reason": {
+      "type": "string"
+    },
+    "event_id": {
+      "type": "string",
+      "description": "Suppression and hold records: the ntfy event id. Calendar records: the Google Calendar event id Google returned for the insert."
+    },
+    "tool": {
+      "type": "string",
+      "description": "Authorization records: the named action. A registered tool name for model-initiated decisions; the command itself (e.g. `/forget`) for owner-command receipts."
+    },
+    "tier": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "standing",
+        "per-instance",
+        null
+      ],
+      "description": "Authorization records: the tool's declared tier. Null for owner commands — a tier is a tool property and a command is not a tool."
+    },
+    "initiated_by": {
+      "enum": [
+        "model",
+        "owner-command",
+        "scheduler"
+      ],
+      "description": "Authorization and reminder records: who initiated the action. `scheduler` is written only by the reminder-delivery half (every delivered, missed and abandoned transition); it is declared in v4 so delivery needs no new version. Calendar records: always `model`, because a calendar write is a model-initiated tool call approved by the owner."
+    },
+    "reference": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Authorization records: the gate's one-time invocation reference. Null for owner commands (no gate involvement — the gate governs model-initiated calls). Calendar records: the reference of the authorization record that approved the insert, linking the two receipts."
+    },
+    "turn_type": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "owner",
+        "event",
+        "command",
+        null
+      ],
+      "description": "Authorization records: the kind of turn the decision was made in. `command` means it ran outside any turn or session."
+    },
+    "detail": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Authorization records: a bounded summary of the effect (owner commands name what changed, e.g. how many memories were removed). Reminder records: restricted to a closed vocabulary by the reminder branch below — see its description."
+    },
+    "reminder_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Reminder records: the reminder's store id."
+    },
+    "due_at": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "description": "Reminder records: the reminder's resolved due instant, epoch seconds. The instant rather than a rendered string, because rendering depends on the currently configured zone and a receipt must not move."
+    },
+    "transition": {
+      "enum": [
+        "scheduled",
+        "cancelled",
+        "reinstated",
+        "delivered",
+        "delivered-late",
+        "missed",
+        "abandoned",
+        "created"
+      ],
+      "description": "Reminder records: the name of the LIFECYCLE TRANSITION, not the stored row status — a reinstated reminder's row status is `pending`; the reminder branch below restricts reminder records to the seven reminder values, the COMPLETE enumeration for that capability (`delivered`, `delivered-late`, `missed` and `abandoned` are written only by the reminder-delivery half). Calendar records: `created`, the only calendar transition (Henk inserts events and never updates or deletes them)."
+    },
+    "start": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(Z|[+-]\\d{2}:\\d{2})$",
+      "description": "Calendar records: the event's start exactly as sent to Google, an RFC 3339 instant with its offset. An instant rather than a rendered string, so the receipt does not move when the configured zone does."
+    },
+    "end": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(Z|[+-]\\d{2}:\\d{2})$",
+      "description": "Calendar records: the event's end exactly as sent, in the same form as `start`."
+    },
+    "state": {
+      "type": "string",
+      "description": "Hold records: the held event's state as the identity parser read it (for example `firing` or `resolved`)."
+    },
+    "window_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Hold and hold-release records: the maintenance window's id, which is the Google Calendar event id of the window's event."
+    },
+    "window_end": {
+      "type": "number",
+      "description": "Hold records: the window's end, epoch seconds, as known when the event was held (the frozen end), without the grace."
+    },
+    "published_at": {
+      "type": "number",
+      "description": "Hold records: the instant the event was published to ntfy, epoch seconds, falling back to its arrival time; the instant the hold was keyed on."
+    },
+    "held": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Hold-release records: the number of distinct alert identities held in the window. Counts are distinct identities, never notifications."
+    },
+    "recovered": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Hold-release records: the number of of those, the identities whose latest held event was resolved. Counts are distinct identities, never notifications."
+    },
+    "forwarded": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Hold-release records: the number of of those, the identities forwarded to the normal pipeline after the window; held = recovered + forwarded. Counts are distinct identities, never notifications."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "session"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "trigger",
+          "outcome",
+          "tool_calls"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "suppression"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "identity_key",
+          "reason"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "authorization"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "tool",
+          "outcome",
+          "initiated_by"
+        ],
+        "properties": {
+          "outcome": {
+            "enum": [
+              "authorized",
+              "approved",
+              "denied",
+              "cancelled",
+              "timeout",
+              "suppressed",
+              "out-of-scope",
+              "rejected-busy"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "reminder"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "reminder_id",
+          "transition",
+          "initiated_by",
+          "due_at"
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "text"
+              ]
+            },
+            {
+              "required": [
+                "reminder_text"
+              ]
+            },
+            {
+              "required": [
+                "content"
+              ]
+            }
+          ]
+        },
+        "properties": {
+          "detail": {
+            "enum": [
+              "partial",
+              null
+            ],
+            "description": "Reminder records: a CLOSED vocabulary, never free text. The only value is 'partial', marking a delivery whose send returned a partial outcome and was recorded as delivered anyway. Constrained by enum rather than by type so this property can never become a route for owner-personal reminder text into the log."
+          },
+          "transition": {
+            "enum": [
+              "scheduled",
+              "cancelled",
+              "reinstated",
+              "delivered",
+              "delivered-late",
+              "missed",
+              "abandoned"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "calendar"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "transition",
+          "event_id",
+          "start",
+          "end",
+          "initiated_by",
+          "reference"
+        ],
+        "propertyNames": {
+          "enum": [
+            "schema_version",
+            "record_type",
+            "at",
+            "transition",
+            "event_id",
+            "start",
+            "end",
+            "initiated_by",
+            "reference"
+          ]
+        },
+        "properties": {
+          "transition": {
+            "const": "created"
+          },
+          "event_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "initiated_by": {
+            "const": "model"
+          },
+          "reference": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "description": "Calendar records: one per confirmed calendar insert, written only after Google returned the event id. Closed to every property outside its list, so it can never carry the event's title. An authorization with no matching calendar record is evidence of an approved write that did not happen."
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "hold"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "identity_key",
+          "state",
+          "event_id",
+          "window_id",
+          "window_end",
+          "published_at"
+        ],
+        "propertyNames": {
+          "enum": [
+            "schema_version",
+            "record_type",
+            "at",
+            "identity_key",
+            "state",
+            "event_id",
+            "window_id",
+            "window_end",
+            "published_at"
+          ]
+        },
+        "description": "Hold records: one per event held during a maintenance window, written when it is held; a duplicate delivery of an already-held event writes none. Closed to every property outside its list, so it can never carry the event's title, message or raw payload, nor the window's title."
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "hold-release"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "window_id",
+          "held",
+          "recovered",
+          "forwarded"
+        ],
+        "propertyNames": {
+          "enum": [
+            "schema_version",
+            "record_type",
+            "at",
+            "window_id",
+            "held",
+            "recovered",
+            "forwarded"
+          ]
+        },
+        "description": "Hold-release records: exactly one per released window, written when the window is marked released. Closed to every property outside its list, so it can never carry the window's title."
+      }
+    }
+  ]
+}

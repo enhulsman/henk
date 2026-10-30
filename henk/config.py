@@ -16,6 +16,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
+from henk.calendar.token import (
+    CredentialError,
+    ServiceAccountKey,
+    parse_service_account_key,
+)
 from henk.channel.base import MAX_CODE_POINT_BYTES
 
 
@@ -455,12 +460,19 @@ class PersonalDataConfig:
     labels** — never paths — matched exactly after a whitespace strip by
     :func:`normalise_label_allowlist`, which the loader applies once so the tool's
     gate cannot re-derive the rule slightly differently.
+
+    ``calendar_creator_allowlist`` (maintenance-calendar D2) names the Google
+    accounts whose ``Homelab`` events Henk admits: the owner's and Pam's service
+    account. Henk's own events are admitted without an entry, so empty admits only
+    those. Entries are emails, stripped and case-folded by the loader; the real
+    values live in rp5's config only.
     """
 
     todo_note_allowlist: tuple[str, ...] = ()
     taiga_project_allowlist: tuple[str, ...] = ()
     docs_path_allowlist: tuple[str, ...] = ()
     session_project_allowlist: tuple[str, ...] = ()
+    calendar_creator_allowlist: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -564,6 +576,42 @@ class SessionsConfig:
     #: after a night's sleep rather than only "nothing in the last hour", and well
     #: inside the ntfy instance's 72h cache (design D9).
     lookback_seconds: int = 21600
+
+
+@dataclass(frozen=True)
+class CalendarConfig:
+    """The maintenance calendar (maintenance-calendar D11). Defaults to **disabled**.
+
+    Enabling is a deliberate two-key edit on rp5: this flag AND the
+    ``GOOGLE_CALENDAR_SA_KEY_B64`` line in ``.env``. With the flag off nothing here
+    is validated, the variable is never decoded, no calendar tool is registered and
+    no Google host is contacted.
+
+    There is deliberately **no key for a second calendar, a scope, or an account**:
+    the client builds every URL from ``calendar_id`` alone, and the scope is a
+    constant in ``henk.calendar.token``. Unknown keys are refused at load so a
+    ``calendar.scope`` typed by hand cannot read as if it did something.
+    """
+
+    enabled: bool = False
+    #: Required when enabled. The real id lives in rp5's config only.
+    calendar_id: str = ""
+    #: Whether hold windows hold alerts at all. Off keeps the tools and the
+    #: provider, and makes every surface say nothing about holding (design D9).
+    hold_alerts: bool = True
+    #: How far ahead ``calendar_upcoming`` and the provider look.
+    lookahead_days: int = 14
+    #: How often the window provider refreshes its snapshot.
+    refresh_seconds: float = 300
+    #: How long after an event's end alerts are still held. 0-240.
+    grace_minutes: int = 30
+    #: The longest event that holds alerts; longer ones are listed, never held.
+    #: 1-24, so a mistaken three-day event cannot silence Henk for three days.
+    max_window_hours: int = 8
+    #: Past this age the snapshot is ignored and nothing is held (fail open).
+    stale_after_seconds: float = 21600
+    #: Per-request timeout for the token endpoint and the Calendar API.
+    timeout_seconds: float = 10
 
 
 @dataclass(frozen=True)
@@ -720,6 +768,12 @@ class RemindersConfig:
     note_max_items: int = 10
 
 
+#: The calendar credential's variable: base64 of the service-account JSON key.
+#: ``build_runtime`` removes it from ``os.environ`` once config has decoded it, so
+#: the SDK's CLI subprocess never inherits it.
+GOOGLE_CALENDAR_KEY_ENV = "GOOGLE_CALENDAR_SA_KEY_B64"
+
+
 @dataclass(frozen=True)
 class Secrets:
     """Credentials pulled from the environment. Values may be empty in tests."""
@@ -728,15 +782,36 @@ class Secrets:
     taiga_token: str = ""
     todo_token: str = ""
     ntfy_token: str = ""
+    #: The decoded calendar key, or None when the calendar is disabled. Excluded
+    #: from ``repr`` so printing the config can never print it (D1); the key
+    #: object's own ``repr`` is redacted as well.
+    google_calendar_key: ServiceAccountKey | None = field(default=None, repr=False)
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str]) -> "Secrets":
+    def from_env(
+        cls, env: Mapping[str, str], *, calendar_enabled: bool = False
+    ) -> "Secrets":
         return cls(
             anthropic_credential=env.get("ANTHROPIC_CREDENTIAL", ""),
             taiga_token=env.get("TAIGA_TOKEN", ""),
             todo_token=env.get("TODO_TOKEN", ""),
             ntfy_token=env.get("NTFY_TOKEN", ""),
+            google_calendar_key=(
+                _calendar_key(env) if calendar_enabled else None
+            ),
         )
+
+
+def _calendar_key(env: Mapping[str, str]) -> ServiceAccountKey:
+    """Decode the calendar key, refusing startup with a value-free message."""
+    try:
+        return parse_service_account_key(env.get(GOOGLE_CALENDAR_KEY_ENV, ""))
+    except CredentialError as exc:
+        raise ConfigError(
+            f"calendar.enabled is true but {GOOGLE_CALENDAR_KEY_ENV} {exc}. Set it "
+            "to the base64 of the henk service account's JSON key (task 8.3), or "
+            "set calendar.enabled to false."
+        ) from None
 
 
 @dataclass(frozen=True)
@@ -758,6 +833,7 @@ class Config:
     homelab_query: HomelabQueryConfig = field(default_factory=HomelabQueryConfig)
     homelab_docs: HomelabDocsConfig = field(default_factory=HomelabDocsConfig)
     sessions: SessionsConfig = field(default_factory=SessionsConfig)
+    calendar: CalendarConfig = field(default_factory=CalendarConfig)
     triage_recording: TriageRecordingConfig = field(
         default_factory=TriageRecordingConfig
     )
@@ -915,6 +991,9 @@ class Config:
             session_project_allowlist=normalise_label_allowlist(
                 pd_sec.get("session_project_allowlist")
             ),
+            calendar_creator_allowlist=normalise_email_allowlist(
+                pd_sec.get("calendar_creator_allowlist")
+            ),
         )
 
         query_sec = raw.get("homelab_query", {}) or {}
@@ -946,6 +1025,8 @@ class Config:
             ),
         )
         _validate_sessions_settings(sessions)
+
+        calendar = _calendar_settings(_optional_section(raw, "calendar", CalendarConfig))
 
         triage_recording_sec = _optional_section(
             raw, "triage_recording", TriageRecordingConfig
@@ -980,7 +1061,7 @@ class Config:
         config = cls(
             owner=OwnerConfig(
                 id=require_nonempty(owner_sec, "id", "owner"),
-                timezone=_require_owner_timezone(owner_sec, reminders),
+                timezone=_require_owner_timezone(owner_sec, reminders, calendar),
             ),
             agent=AgentConfig(
                 model=chat_model,
@@ -1079,9 +1160,10 @@ class Config:
             homelab_query=homelab_query,
             homelab_docs=homelab_docs,
             sessions=sessions,
+            calendar=calendar,
             triage_recording=triage_recording,
             replay=replay,
-            secrets=Secrets.from_env(env),
+            secrets=Secrets.from_env(env, calendar_enabled=calendar.enabled),
         )
         # Post-assembly on purpose: the two values it relates deliberately live in
         # different sections (the interval describes the server, the deadline
@@ -1266,7 +1348,12 @@ def _validate_read_depth_settings(
         )
 
 
-def normalise_label_allowlist(entries: Any) -> tuple[str, ...]:
+def normalise_label_allowlist(
+    entries: Any,
+    *,
+    setting: str = "personal_data.session_project_allowlist",
+    kind: str = "project labels",
+) -> tuple[str, ...]:
     """Canonicalise a label allowlist: strip each entry, discard the empties.
 
     The ONE home for the rule, applied by the loader so every consumer — the
@@ -1289,21 +1376,33 @@ def normalise_label_allowlist(entries: Any) -> tuple[str, ...]:
     if entries is None:
         return ()
     if isinstance(entries, str) or not isinstance(entries, (list, tuple)):
-        raise ConfigError(
-            "personal_data.session_project_allowlist must be a list of project "
-            f"labels; got {entries!r}"
-        )
+        raise ConfigError(f"{setting} must be a list of {kind}; got {entries!r}")
     normalised: list[str] = []
     for entry in entries:
         if not isinstance(entry, str):
             raise ConfigError(
-                "personal_data.session_project_allowlist entries must be strings "
-                f"(project labels); got {entry!r}"
+                f"{setting} entries must be strings ({kind}); got {entry!r}"
             )
         stripped = entry.strip()
         if stripped:
             normalised.append(stripped)
     return tuple(normalised)
+
+
+def normalise_email_allowlist(entries: Any) -> tuple[str, ...]:
+    """The calendar creator allowlist: the label rule, then case-folded.
+
+    Google account emails compare case-insensitively, and the API reports them in
+    lower case; an owner who types ``Owner@...`` by hand must not end up with an
+    allowlist that silently admits nothing. Folding cannot widen the set: no two
+    Google accounts differ only in case.
+    """
+    labels = normalise_label_allowlist(
+        entries,
+        setting="personal_data.calendar_creator_allowlist",
+        kind="account emails",
+    )
+    return tuple(label.casefold() for label in labels)
 
 
 def _validate_sessions_settings(sessions: "SessionsConfig") -> None:
@@ -1355,10 +1454,95 @@ def _validate_sessions_settings(sessions: "SessionsConfig") -> None:
         )
 
 
+#: The calendar's numeric settings and their coercions, in the same table-driven
+#: shape as the sections above, so the read path and the refusals iterate one list.
+_CALENDAR_SETTINGS: tuple[tuple[str, Any], ...] = (
+    ("lookahead_days", int),
+    ("refresh_seconds", float),
+    ("grace_minutes", int),
+    ("max_window_hours", int),
+    ("stale_after_seconds", float),
+    ("timeout_seconds", float),
+)
+
+#: Inclusive bounds the spec names (maintenance-calendar D11). Every other
+#: calendar duration only has to be positive.
+_CALENDAR_RANGES: dict[str, tuple[int, int]] = {
+    "grace_minutes": (0, 240),
+    "max_window_hours": (1, 24),
+}
+
+
+def _calendar_settings(sec: Mapping[str, Any]) -> CalendarConfig:
+    """Read the calendar section, refusing what cannot mean what it says.
+
+    Only an ENABLED calendar is checked beyond its two flags (the spec scopes the
+    refusals to "while it is true"): a disabled section is inert, and enabling it
+    already needs a second, host-side edit (the key), which this check meets at
+    the same moment. Every message names the setting: the error text is all the
+    operator gets over SSH.
+    """
+    enabled = _require_strict_bool(
+        sec.get("enabled", CalendarConfig.enabled), "calendar.enabled"
+    )
+    hold_alerts = _require_strict_bool(
+        sec.get("hold_alerts", CalendarConfig.hold_alerts), "calendar.hold_alerts"
+    )
+    raw_id = sec.get("calendar_id", CalendarConfig.calendar_id)
+    calendar_id = raw_id.strip() if isinstance(raw_id, str) else ""
+    if not enabled:
+        return CalendarConfig(
+            enabled=False,
+            calendar_id=calendar_id,
+            hold_alerts=hold_alerts,
+            **_lenient_calendar_settings(sec),
+        )
+    if not calendar_id:
+        raise ConfigError(
+            "calendar.enabled is true but calendar.calendar_id is not set. Henk "
+            "reads and writes exactly one calendar, named here; set it to the "
+            "shared calendar's id, or set calendar.enabled to false."
+        )
+    values = _bounded_settings("calendar", sec, CalendarConfig, _CALENDAR_SETTINGS)
+    for name, value in values.items():
+        low, high = _CALENDAR_RANGES.get(name, (None, None))
+        if low is not None and not low <= value <= high:
+            raise ConfigError(
+                f"calendar.{name} must be between {low} and {high}; got {value!r}"
+            )
+        if low is None and value <= 0:
+            raise ConfigError(
+                f"calendar.{name} must be strictly positive; got {value!r}"
+            )
+    return CalendarConfig(
+        enabled=True, calendar_id=calendar_id, hold_alerts=hold_alerts, **values
+    )
+
+
+def _lenient_calendar_settings(sec: Mapping[str, Any]) -> dict[str, Any]:
+    """A disabled section's numbers, kept as written where they coerce.
+
+    Disabled means nothing reads them; a value that does not coerce falls back to
+    the default rather than refusing a configuration that does not use it.
+    """
+    values: dict[str, Any] = {}
+    for name, cast in _CALENDAR_SETTINGS:
+        try:
+            values[name] = cast(sec.get(name, getattr(CalendarConfig, name)))
+        except (TypeError, ValueError):
+            values[name] = getattr(CalendarConfig, name)
+    return values
+
+
 def _require_owner_timezone(
-    owner_sec: Mapping[str, Any], reminders: "RemindersConfig"
+    owner_sec: Mapping[str, Any],
+    reminders: "RemindersConfig",
+    calendar: "CalendarConfig | None" = None,
 ) -> str | None:
-    """Validate ``owner.timezone``, requiring it exactly when reminders are enabled.
+    """Validate ``owner.timezone``, requiring it when reminders or the calendar are on.
+
+    The calendar needs it for the same reason reminders do: ``calendar_create_event``
+    takes wall-clock times in the owner's zone, and every rendered time names it.
 
     Three refusals, each earned:
 
@@ -1386,6 +1570,14 @@ def _require_owner_timezone(
                 "one or two hours off. Set owner.timezone to a Region/Location "
                 "zone key (e.g. Europe/Amsterdam), or set reminders.enabled to "
                 "false."
+            )
+        if calendar is not None and calendar.enabled:
+            raise ConfigError(
+                "calendar.enabled is true but owner.timezone is not set. Calendar "
+                "events are created from wall-clock times in the owner's zone and "
+                "every listed time names it, and there is deliberately no default. "
+                "Set owner.timezone to a Region/Location zone key (e.g. "
+                "Europe/Amsterdam), or set calendar.enabled to false."
             )
         return None
     if not isinstance(value, str):

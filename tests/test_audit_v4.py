@@ -50,8 +50,9 @@ def _validate(record) -> None:
 
 def test_the_v4_document_stays_committed_and_pins_version_four():
     # Was "the current version is four". triage-quality moved the current version to
-    # 5 (tests/test_audit_v5.py pins it); the v4 document stays, under its own name.
-    assert SCHEMA_VERSION == 5
+    # 5 and maintenance-calendar to 6 (tests/test_audit_v6.py pins it); the v4
+    # document stays, under its own name.
+    assert SCHEMA_VERSION == 6
     assert AUDIT_SCHEMA_V4_PATH != AUDIT_SCHEMA_PATH
     assert AUDIT_SCHEMA_V4_PATH.name == "audit-record.v4.schema.json"
     assert V4_SCHEMA["properties"]["schema_version"]["const"] == 4
@@ -205,7 +206,20 @@ def test_the_complete_transition_enumeration_validates_before_delivery_exists():
         "missed",
         "abandoned",
     }
+    # Since v6 the top-level `transition` also admits the calendar record's
+    # `created`; the reminder branch pins reminder records to exactly this set.
+    reminder_branch = next(
+        b["then"]
+        for b in SCHEMA["allOf"]
+        if b["if"]["properties"]["record_type"]["const"] == "reminder"
+    )
+    assert set(reminder_branch["properties"]["transition"]["enum"]) == set(
+        REMINDER_TRANSITIONS
+    )
     assert set(SCHEMA["properties"]["transition"]["enum"]) == set(
+        REMINDER_TRANSITIONS
+    ) | {"created"}
+    assert set(V4_SCHEMA["properties"]["transition"]["enum"]) == set(
         REMINDER_TRANSITIONS
     )
     for transition in REMINDER_TRANSITIONS:

@@ -190,15 +190,16 @@ def test_a_failing_audit_write_is_reported_not_raised(tmp_path: Path):
     assert receipts.record(tool="capture", tier="standing", outcome="authorized")
 
 
-# --- Schema version 5 -----------------------------------------------------
+# --- Schema version 6 -----------------------------------------------------
 
 
-def test_schema_version_is_five():
+def test_schema_version_is_six():
     # The version pin, moved 3 -> 4 by reminders-core (the `reminder` record type
-    # and the `scheduler` initiator) and 4 -> 5 by triage-quality (the session
-    # record's `profile`, `effort`, `recording_id` and `prior_handoff_ids`). This
-    # assertion exists so a bump is always deliberate.
-    assert SCHEMA_VERSION == 5
+    # and the `scheduler` initiator), 4 -> 5 by triage-quality (the session
+    # record's `profile`, `effort`, `recording_id` and `prior_handoff_ids`) and
+    # 5 -> 6 by maintenance-calendar (the `calendar`, `hold` and `hold-release`
+    # record types). This assertion exists so a bump is always deliberate.
+    assert SCHEMA_VERSION == 6
 
 
 def test_v3_session_record_carries_executed_and_memory_hash():

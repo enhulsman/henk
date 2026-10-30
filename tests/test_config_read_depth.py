@@ -193,9 +193,12 @@ def test_the_corpus_allowlist_sits_with_the_other_tier_w_allowlists():
     # allowlist for the workstation session feed: the source estate mixes personal
     # and work sessions, so it is the same kind of boundary and sits in the same
     # reviewable surface rather than in the new `sessions` section. Its own tests
-    # live in `tests/test_config_sessions.py`.
+    # live in `tests/test_config_sessions.py`. Amended by `maintenance-calendar`
+    # (task 1.2) for `calendar_creator_allowlist`: the accounts whose calendar
+    # titles Henk may read, the same kind of boundary (tests/test_calendar_config.py).
     fields = {f.name for f in dataclasses.fields(PersonalDataConfig)}
     assert fields == {
+        "calendar_creator_allowlist",
         "todo_note_allowlist",
         "taiga_project_allowlist",
         "docs_path_allowlist",

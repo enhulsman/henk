@@ -40,6 +40,10 @@ from henk.events.types import Event
 
 SCHEMA = json.loads(AUDIT_SCHEMA_PATH.read_text())
 V4 = json.loads(AUDIT_SCHEMA_V4_PATH.read_text())
+#: The v5 document as shipped. The current one (SCHEMA) is v6 since
+#: maintenance-calendar; the field contracts below hold in both, and the claims
+#: that are about v5 itself are asserted against this one.
+V5_DOC = json.loads(AUDIT_SCHEMA_V5_PATH.read_text())
 
 #: The four fields v5 adds to the session record (design D16).
 V5_FIELDS = ("profile", "effort", "recording_id", "prior_handoff_ids")
@@ -71,23 +75,26 @@ def _triage(**kw):
 # --- New records declare the new version ---------------------------------
 
 
-def test_the_current_version_is_five_and_its_document_is_committed():
-    assert SCHEMA_VERSION == 5
-    assert AUDIT_SCHEMA_V5_PATH == AUDIT_SCHEMA_PATH
-    assert AUDIT_SCHEMA_PATH.name == "audit-record.v5.schema.json"
-    assert SCHEMA["properties"]["schema_version"]["const"] == 5
+def test_the_v5_document_stays_committed_and_pins_version_five():
+    # Was "the current version is five". maintenance-calendar moved the current
+    # version to 6 (tests/test_audit_v6.py pins it); the v5 document stays.
+    assert SCHEMA_VERSION == 6
+    assert AUDIT_SCHEMA_V5_PATH != AUDIT_SCHEMA_PATH
+    assert AUDIT_SCHEMA_V5_PATH.name == "audit-record.v5.schema.json"
+    assert V5_DOC["properties"]["schema_version"]["const"] == 5
 
 
 def test_new_records_declare_the_new_version_and_validate_against_its_document():
     # Scenario "New records declare the new version": every builder, not only the
-    # session record, stamps v5 and validates against the v5 document.
+    # session record, stamps the current version (v5 then, v6 since
+    # maintenance-calendar) and validates against the current document.
     for record in (
         session_record(trigger="owner-message"),
         _triage(),
         suppression_record(identity_key="gatus:svc/example-a", reason="cooldown"),
         reminder_record(reminder_id=1, due_at=1.0, transition="scheduled"),
     ):
-        assert record["schema_version"] == 5
+        assert record["schema_version"] == SCHEMA_VERSION
         _validate(record)
 
 
@@ -327,16 +334,16 @@ def test_no_v4_field_is_changed():
         return node
 
     v4_props = strip(V4["properties"])
-    v5_props = strip(SCHEMA["properties"])
+    v5_props = strip(V5_DOC["properties"])
     for name, spec in v4_props.items():
         if name == "schema_version":
             continue
         assert name in v5_props, name
         assert v5_props[name] == spec, name
     assert set(v5_props) - set(v4_props) == set(V5_FIELDS)
-    assert strip(SCHEMA["allOf"]) == strip(V4["allOf"])
-    assert SCHEMA.get("required") == V4.get("required")
-    assert SCHEMA.get("additionalProperties") == V4.get("additionalProperties")
+    assert strip(V5_DOC["allOf"]) == strip(V4["allOf"])
+    assert V5_DOC.get("required") == V4.get("required")
+    assert V5_DOC.get("additionalProperties") == V4.get("additionalProperties")
 
 
 # --- A mixed-version log rehydrates identically ---------------------------
@@ -395,7 +402,9 @@ def _v5(identity: str, at: float, *, announceable, handoff=None, **v5) -> dict:
         prior_handoff_ids=v5.get("prior_handoff_ids", [1]),
         at=at,
     )
-    _validate(record)
+    # Written by a v5 build: the builders stamp the current version since v6.
+    record["schema_version"] = 5
+    jsonschema.validate(record, V5_DOC)
     return record
 
 
@@ -412,12 +421,12 @@ def _mixed_log() -> list[dict]:
         _v5("gatus:svc/example-a", EPOCH + 2 * HOUR, announceable=False,
             handoff="hf-a-v5", recording_id=None),
         suppression_record(identity_key="gatus:svc/example-a", reason="cooldown")
-        | {"at": EPOCH + 3 * HOUR},
+        | {"at": EPOCH + 3 * HOUR, "schema_version": 5},
         _v5("gatus:svc/example-d", EPOCH + 4 * HOUR, announceable=True,
             handoff=None, prior_handoff_ids=None),
         _v4("gatus:svc/example-e", EPOCH + 5 * HOUR, announceable=False),
         session_record(trigger="owner-message", profile="event", effort="max",
-                       at=EPOCH + 5 * HOUR + 60),
+                       at=EPOCH + 5 * HOUR + 60) | {"schema_version": 5},
     ]
 
 

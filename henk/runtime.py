@@ -9,6 +9,7 @@ connecting anything.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -34,7 +35,7 @@ from henk.channel.signal import (
     SignalAdapter,
     SignalCliRestBridge,
 )
-from henk.config import Config
+from henk.config import GOOGLE_CALENDAR_KEY_ENV, Config
 from henk.events.checkpoint import OffsetCheckpoint
 from henk.events.coordinator import EventCoordinator
 from henk.events.incident_context import IncidentContextProvider
@@ -80,6 +81,12 @@ def build_runtime(config: Config) -> tuple[App, httpx.AsyncClient]:
     stream connect lazily on first receive, and the SDK session is created
     per-conversation on demand.
     """
+    # The calendar key has been decoded into `config` by now (or ignored, when the
+    # calendar is off). Remove it from the process environment before anything
+    # that can start a subprocess exists: the SDK's CLI inherits `os.environ`
+    # (sdk_session.py:335-347). Unconditional, because the rollback path keeps the
+    # `.env` line and a disabled runtime must not hand it on either (D1).
+    os.environ.pop(GOOGLE_CALENDAR_KEY_ENV, None)
     # NOTE: this shared tool client carries no explicit timeout, so it takes
     # httpx's 5s PER-PHASE default. That is the same defect the Signal bridge's
     # explicit total fixes, left in place deliberately: the tool endpoints have

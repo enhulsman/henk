@@ -41,19 +41,25 @@ logger = logging.getLogger("henk.audit")
 #: for event records, which now receive recall. No v4 field changes, so a v4 reader
 #: (in-process: `EventPipeline.rehydrate`) reads v5 records identically. The bump is
 #: still required: any structural change increments (triage-quality design D16).
-SCHEMA_VERSION = 5
+#: v6: the `calendar`, `hold` and `hold-release` record types (maintenance-calendar
+#: D5, D7, D8). Each is closed to any property outside its own list, so none can
+#: carry a title, a message or a payload. `transition` gains `created` for calendar
+#: records; the reminder branch re-pins reminder records to their v5 values. No v5
+#: field changes, and rehydration reads only event-triage session records.
+SCHEMA_VERSION = 6
 
 _SCHEMA_DIR = Path(__file__).resolve().parent / "schema"
 
 #: The current schema, matching :data:`SCHEMA_VERSION`. Historical versions stay
 #: committed so records that declare an older version still validate (audit-log
 #: spec: prior schema versions remain readable).
-AUDIT_SCHEMA_PATH = _SCHEMA_DIR / "audit-record.v5.schema.json"
+AUDIT_SCHEMA_PATH = _SCHEMA_DIR / "audit-record.v6.schema.json"
 AUDIT_SCHEMA_V1_PATH = _SCHEMA_DIR / "audit-record.v1.schema.json"
 AUDIT_SCHEMA_V2_PATH = _SCHEMA_DIR / "audit-record.v2.schema.json"
 AUDIT_SCHEMA_V3_PATH = _SCHEMA_DIR / "audit-record.v3.schema.json"
 AUDIT_SCHEMA_V4_PATH = _SCHEMA_DIR / "audit-record.v4.schema.json"
-AUDIT_SCHEMA_V5_PATH = AUDIT_SCHEMA_PATH
+AUDIT_SCHEMA_V5_PATH = _SCHEMA_DIR / "audit-record.v5.schema.json"
+AUDIT_SCHEMA_V6_PATH = AUDIT_SCHEMA_PATH
 
 #: Owner-command receipts carry a bounded effect summary — a receipt is evidence,
 #: not a transcript, and the audit log is not a place to spill free text.
@@ -204,6 +210,174 @@ class ReminderReceipts:
         if self._audit is not None:
             self._audit.write(record)  # loud but non-blocking; never raises
         return record
+
+
+def calendar_record(
+    *,
+    event_id: str,
+    start: str,
+    end: str,
+    reference: str,
+    at: float | None = None,
+) -> dict[str, Any]:
+    """Build the receipt of one confirmed calendar insert (maintenance-calendar D5).
+
+    The second half of a calendar write's two receipts: the gate's
+    ``authorization`` record says the owner approved it, this one says Google
+    created it, linked by the authorization ``reference``. Written only after
+    Google returned the event id, so an approval with no matching record is
+    evidence of a write that did not happen.
+
+    ``start`` and ``end`` are the RFC 3339 instants exactly as sent. There is no
+    title parameter, following the reminder precedent: the calendar holds the
+    content, the log holds the evidence. ``transition`` and ``initiated_by`` are
+    fixed, because Henk only ever creates, and only as a model tool call.
+    """
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "record_type": "calendar",
+        "transition": "created",
+        "event_id": event_id,
+        "start": start,
+        "end": end,
+        "initiated_by": "model",
+        "reference": reference,
+        "at": at,
+    }
+
+
+def hold_record(
+    *,
+    identity_key: str,
+    state: str,
+    event_id: str,
+    window_id: str,
+    window_end: float,
+    published_at: float,
+    at: float | None = None,
+) -> dict[str, Any]:
+    """Build the record of one event held during a maintenance window.
+
+    Identity, state and ids only: no title, message or raw payload, and not the
+    window's title. The held row in the store keeps the payload for release; the
+    log, which gets read and pasted around, does not (audit-log spec).
+    ``window_end`` is the window's end as frozen when its first event was held.
+    """
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "record_type": "hold",
+        "identity_key": identity_key,
+        "state": state,
+        "event_id": event_id,
+        "window_id": window_id,
+        "window_end": float(window_end),
+        "published_at": float(published_at),
+        "at": at,
+    }
+
+
+def hold_release_record(
+    *,
+    window_id: str,
+    held: int,
+    recovered: int,
+    forwarded: int,
+    at: float | None = None,
+) -> dict[str, Any]:
+    """Build the one record of a released window: counts of distinct identities.
+
+    Every held identity is either recovered (its latest held event resolved) or
+    forwarded to the pipeline, so the counts must add up; a release that cannot
+    say where an identity went is refused here rather than written.
+    """
+    counts = (int(held), int(recovered), int(forwarded))
+    if min(counts) < 0 or counts[0] != counts[1] + counts[2]:
+        raise ValueError(
+            "hold-release counts must be non-negative and held = recovered + "
+            f"forwarded; got held={held}, recovered={recovered}, "
+            f"forwarded={forwarded}"
+        )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "record_type": "hold-release",
+        "window_id": window_id,
+        "held": counts[0],
+        "recovered": counts[1],
+        "forwarded": counts[2],
+        "at": at,
+    }
+
+
+class CalendarReceipts:
+    """Appends the ``calendar`` record of a confirmed insert. Never raises.
+
+    The create tool calls :meth:`created` only after Google confirmed the insert;
+    a refused or failed insert calls nothing (audit-log spec). Returns whether the
+    record was written, True when audit is not configured (the designed no-op).
+    """
+
+    def __init__(self, audit: "AuditLog | None") -> None:
+        self._audit = audit
+
+    def created(self, *, event_id: str, start: str, end: str, reference: str) -> bool:
+        record = calendar_record(
+            event_id=event_id, start=start, end=end, reference=reference
+        )
+        if self._audit is None:
+            return True
+        return self._audit.write(record)  # loud but non-blocking; never raises
+
+
+class HoldReceipts:
+    """Appends ``hold`` and ``hold-release`` records. Never raises.
+
+    The caller owns uniqueness: a ``hold`` is written only for a held row that was
+    newly inserted, and a ``hold-release`` only by the guarded update that marked
+    the window released, so a duplicate delivery or a second release writes
+    nothing. Both methods return whether the record was written, so a failed
+    ``hold`` record can be logged loud while the hold stands (event-intake spec).
+    """
+
+    def __init__(self, audit: "AuditLog | None") -> None:
+        self._audit = audit
+
+    def held(
+        self,
+        *,
+        identity_key: str,
+        state: str,
+        event_id: str,
+        window_id: str,
+        window_end: float,
+        published_at: float,
+    ) -> bool:
+        return self._write(
+            hold_record(
+                identity_key=identity_key,
+                state=state,
+                event_id=event_id,
+                window_id=window_id,
+                window_end=window_end,
+                published_at=published_at,
+            )
+        )
+
+    def released(
+        self, *, window_id: str, held: int, recovered: int, forwarded: int
+    ) -> bool:
+        return self._write(
+            hold_release_record(
+                window_id=window_id,
+                held=held,
+                recovered=recovered,
+                forwarded=forwarded,
+            )
+        )
+
+    def _write(self, record: dict[str, Any]) -> bool:
+        if self._audit is None:
+            return True
+        return self._audit.write(record)
 
 
 def _bounded(detail: str | None) -> str | None:
