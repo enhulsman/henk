@@ -28,6 +28,14 @@ ENV PYTHONTZPATH=""
 # the floor under it.
 ENV TZ=UTC
 
+# The OS trust store, refreshed on every build rather than taken from whenever the
+# base image was last pulled. Henk's own HTTPS uses certifi, but `truststore` (via
+# mcp) and any command-line tool read this store, and a cached base image kept the
+# compromised eMudhra emSign G3 root trusted (20250419; fixed in 20250419+deb13u1).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends --only-upgrade ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
 RUN useradd --create-home --uid 10001 henk
 WORKDIR /app
 
