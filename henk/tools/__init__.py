@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 import httpx
 
+from henk.calendar.client import CalendarClient
+from henk.calendar.token import AccessTokenSource
 from henk.config import Config
 from henk.reminders.timeparse import TimeResolver
 from henk.store import HenkStores, build_stores
@@ -16,6 +19,12 @@ from henk.tools.base import (
     ToolRegistry,
     ToolResult,
     TurnType,
+)
+from henk.tools.calendar import (
+    CALENDAR_TOOL_NAMES,
+    ApprovalReferences,
+    CalendarCreateEventTool,
+    CalendarUpcomingTool,
 )
 from henk.tools.capture import CaptureTool, InboxReadTool
 from henk.tools.homelab_docs import HomelabDocsTool
@@ -33,6 +42,9 @@ from henk.tools.reminders import (
 from henk.tools.sessions_read import SessionsReadTool
 from henk.tools.taiga_read import TaigaReadTool
 from henk.tools.todo_read import TodoReadTool
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from henk.audit import CalendarReceipts
 
 __all__ = [
     "AuthorizationTier",
@@ -56,6 +68,11 @@ __all__ = [
     "CancelReminderTool",
     "RemindersReadTool",
     "RemindTool",
+    "CALENDAR_TOOL_NAMES",
+    "ApprovalReferences",
+    "CalendarCreateEventTool",
+    "CalendarUpcomingTool",
+    "build_calendar_client",
     "build_time_resolver",
     "build_production_registry",
 ]
@@ -85,6 +102,39 @@ def build_time_resolver(config: Config) -> TimeResolver | None:
     )
 
 
+def build_calendar_client(
+    config: Config, client: httpx.AsyncClient
+) -> CalendarClient | None:
+    """The one calendar client the tools AND the window provider share, or None.
+
+    One instance, because it carries the one access-token cache: two clients would
+    each sign in, and a 401 seen by one would not refresh the other. Constructing
+    it contacts nobody; the first call signs in. ``config.secrets.google_calendar_key``
+    and ``config.owner.timezone`` are guaranteed here: config load refuses
+    ``calendar.enabled`` without either.
+    """
+    if not config.calendar.enabled:
+        return None
+    key = config.secrets.google_calendar_key
+    zone = config.owner.timezone
+    if key is None or zone is None:  # pragma: no cover - config load refuses this
+        raise ValueError(
+            "the calendar is enabled without its key or owner.timezone; config "
+            "load should have refused this"
+        )
+    tokens = AccessTokenSource(
+        key, client, timeout=config.calendar.timeout_seconds
+    )
+    return CalendarClient(
+        client,
+        tokens,
+        calendar_id=config.calendar.calendar_id,
+        time_zone=zone,
+        creator_allowlist=config.personal_data.calendar_creator_allowlist,
+        timeout=config.calendar.timeout_seconds,
+    )
+
+
 def build_production_registry(
     config: Config,
     client: httpx.AsyncClient,
@@ -93,6 +143,9 @@ def build_production_registry(
     resolver: TimeResolver | None = None,
     reminder_receipts=None,
     incident_context=None,
+    calendar_client: CalendarClient | None = None,
+    calendar_receipts: "CalendarReceipts | None" = None,
+    calendar_references: ApprovalReferences | None = None,
 ) -> ToolRegistry:
     """The production toolset: reads, notify-class sends, and the durable writes.
 
@@ -139,6 +192,21 @@ def build_production_registry(
     read account scoped to personal projects) that does not exist yet. It MUST NOT be
     registered until that project-id filter is implemented. Its class and tests are
     kept for that follow-up.
+
+    ``calendar_upcoming`` and ``calendar_create_event`` register ONLY when
+    ``calendar.enabled`` (maintenance-calendar), last, and with the flag off the
+    registry is the pre-change one and no Google host is contacted. Like the
+    resolver, ``calendar_client`` should be passed by any caller that also uses it
+    itself — the runtime does, because the window provider must share the one
+    token cache — and is built from config when omitted (construction contacts
+    nobody, so the replay's refusing transport is fine). ``calendar_receipts``
+    writes the ``calendar`` record after a confirmed insert, and
+    ``calendar_references`` is the tap on the gate's recorder that hands the create
+    tool its approval's reference; the runtime passes both. With receipts and no
+    references, the create tool refuses rather than write an unlinkable record.
+    An empty ``personal_data.calendar_creator_allowlist`` admits only the events
+    Henk created, which is safe but probably not intended, so it logs the same kind
+    of startup WARNING ``todo_read`` does.
     """
     stores = stores or build_stores(config.store, config.reminders)
     registry = ToolRegistry()
@@ -276,4 +344,31 @@ def build_production_registry(
                 "surface nothing"
             )
         registry.register(sessions_read)
+    if config.calendar.enabled:
+        calendar_client = calendar_client or build_calendar_client(config, client)
+        zone = config.owner.zone
+        if not config.personal_data.calendar_creator_allowlist:
+            logger.warning(
+                "calendar tools registered with an empty creator allowlist "
+                "(personal_data.calendar_creator_allowlist); only events Henk "
+                "created are admitted"
+            )
+        registry.register(
+            CalendarUpcomingTool(
+                calendar_client,
+                calendar=config.calendar,
+                zone=zone,
+                events_enabled=config.events.enabled,
+            )
+        )
+        registry.register(
+            CalendarCreateEventTool(
+                calendar_client,
+                calendar=config.calendar,
+                zone=zone,
+                events_enabled=config.events.enabled,
+                receipts=calendar_receipts,
+                references=calendar_references,
+            )
+        )
     return registry

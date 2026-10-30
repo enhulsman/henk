@@ -133,6 +133,23 @@ SESSIONS_TOOL_SUMMARIES: tuple[tuple[str, str], ...] = (
     ),
 )
 
+#: Appended when `calendar.enabled` (maintenance-calendar). Same contract as the
+#: groups above: with the flag off the prompt is byte-identical to the one before
+#: this capability existed. Last, because the registry registers the two last.
+CALENDAR_TOOL_SUMMARIES: tuple[tuple[str, str], ...] = (
+    (
+        "calendar_upcoming",
+        "the Homelab maintenance planned on the owner's calendar: titles and "
+        "times only, with maintenance windows marked. The result states the "
+        "period it covers.",
+    ),
+    (
+        "calendar_create_event",
+        "put one Homelab item on the owner's calendar; the owner approves every "
+        "call before anything is written.",
+    ),
+)
+
 #: The v1 owner command set, and the reminder commands that join it when enabled.
 BASE_OWNER_COMMANDS = (
     "/new (fresh conversation), /remember, /forget, /memories, /capture, /inbox, "
@@ -153,6 +170,8 @@ COUNT_WORDS = {
     11: "eleven",
     12: "twelve",
     13: "thirteen",
+    14: "fourteen",
+    15: "fifteen",
 }
 
 
@@ -162,6 +181,7 @@ def build_system_prompt(
     homelab_query_enabled: bool = False,
     homelab_docs_enabled: bool = False,
     sessions_enabled: bool = False,
+    calendar_enabled: bool = False,
 ) -> str:
     """Compose the session system prompt from one source of truth.
 
@@ -183,6 +203,7 @@ def build_system_prompt(
         + (QUERY_TOOL_SUMMARIES if homelab_query_enabled else ())
         + (DOCS_TOOL_SUMMARIES if homelab_docs_enabled else ())
         + (SESSIONS_TOOL_SUMMARIES if sessions_enabled else ())
+        + (CALENDAR_TOOL_SUMMARIES if calendar_enabled else ())
     )
     count = COUNT_WORDS[len(summaries)]
     # With reminders on, "no scheduling" would be a lie: `remind` schedules a
@@ -191,9 +212,10 @@ def build_system_prompt(
     # documentation files off a read-only mount. It reads them by section id from
     # its own index and cannot be handed a path, which is what the tool line says —
     # but "no files" beside a tool that reads files is the kind of small untruth
-    # the model then has to reconcile.
+    # the model then has to reconcile. Putting an event on the calendar is
+    # scheduling too, so the calendar drops the same word.
     excluded_terms = (
-        ([] if reminders_enabled else ["scheduling"])
+        ([] if reminders_enabled or calendar_enabled else ["scheduling"])
         + ["cron", "workflows", "web"]
         + ([] if homelab_docs_enabled else ["files"])
         + ["shell"]
@@ -227,6 +249,21 @@ def build_system_prompt(
         if reminders_enabled
         else ""
     )
+    # Owner decision 4 (maintenance-calendar): calendar events are created only at
+    # the owner's request, never proposed in a message of Henk's own. The gate
+    # already refuses the tool in triage and in any session an incident touched;
+    # saying so here keeps the model from trying and then explaining a refusal.
+    calendar_notes = (
+        "Calendar events are created only at the owner's request: call "
+        "calendar_create_event only when the owner asked for that event in this "
+        "conversation, or agreed to a suggestion you made in it. Never send a "
+        "message just to suggest a calendar item, and never while triaging an "
+        "incident. The owner approves every call before anything is written, and "
+        "the approval prompt shows the title, start and end exactly as you gave "
+        "them, so give the weekday that matches the date.\n\n"
+        if calendar_enabled
+        else ""
+    )
     return (
         "You are Henk, the owner's personal homelab assistant, reached over "
         "Signal.\n\n"
@@ -242,6 +279,7 @@ def build_system_prompt(
         "for that reason, say so plainly and tell the owner they can use "
         f"{taint_remedy} themselves.\n\n"
         f"{reminder_notes}"
+        f"{calendar_notes}"
         "The owner also has commands that run without you and cost no tokens: "
         f"{commands}. Point at them when they are the "
         "faster path.\n\n"
@@ -1099,6 +1137,7 @@ class Config:
                         homelab_query_enabled=homelab_query.enabled,
                         homelab_docs_enabled=homelab_docs.enabled,
                         sessions_enabled=sessions.enabled,
+                        calendar_enabled=calendar.enabled,
                     ),
                 ),
             ),
