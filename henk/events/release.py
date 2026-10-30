@@ -22,6 +22,11 @@ extension check is skipped). Each tick, for each unreleased window not in flight
    marks the window released once that triage's record is durable. A release with
    no turn (all recovered, or every forwarded identity cooled down) marks itself
    at once.
+
+A window that holds an identity an in-flight release is triaging waits until that
+release is marked (Codex review): that identity's cooldown is armed only in memory
+until then, and must not close this window for good if the process dies first.
+Windows sharing no identity are not held up by it.
 """
 
 from __future__ import annotations
@@ -123,6 +128,18 @@ class HoldReleaser:
         if self._extended(window, rows, now):
             return
         if not (self._coordinator.caught_up or self._fallback_due(due, now)):
+            return
+        shared = self._ledger.in_flight_identities() & {r.identity_key for r in rows}
+        if shared:
+            # Another window's release is triaging one of these identities and its
+            # record is not durable yet; releasing now would meet a cooldown armed
+            # only in memory and could mark this window released with its alert
+            # untriaged, for good, if the process dies before that flush.
+            logger.info(
+                "maintenance window %s waits for an in-flight release of %s",
+                window.window_id,
+                ", ".join(sorted(shared)),
+            )
             return
         groups = group_held(rows)
         release = HeldRelease(

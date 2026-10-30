@@ -818,3 +818,111 @@ async def test_an_ended_subscription_blocks_release_until_the_next_keepalive(tmp
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+# --- Codex follow-up: two windows that hold the same identity -------------------
+
+W1 = MaintenanceWindow(id="w1", title="Homelab: first", start=at("20:00"), end=at("21:00"))
+W2 = MaintenanceWindow(id="w2", title="Homelab: second", start=at("21:30"), end=at("22:30"))
+
+
+async def _two_windows_holding(rig, *, w2_identity: str = "svc/a", w2_state="firing"):
+    rig.clock.now = at("20:40")
+    await _hold(rig, alert("a1", "svc/a", published=at("20:40"), message="triggered old"))
+    rig.clock.now = at("21:45")
+    await _hold(rig, alert("x2", w2_identity, state=w2_state, published=at("21:45"),
+                           message=None if w2_state != "firing" else "triggered new"))
+    assert [r.event_id for r in rig.holds.held_events("w1")] == ["a1"]
+    assert [r.event_id for r in rig.holds.held_events("w2")] == ["x2"]
+
+
+async def test_a_window_sharing_an_identity_with_an_in_flight_release_waits(tmp_path):
+    # An outage spans W1 and W2, both holding identity A. Releasing W1 arms A's
+    # cooldown in memory before W1's triage is durable; W2 must not be released
+    # (and suppressed) on that undurable cooldown. A crash before W1's flush
+    # then releases both again, never leaving W2 closed with its alert untriaged.
+    checkpoint_path = tmp_path / "offset"
+    OffsetCheckpoint(checkpoint_path).write("e0")
+    rig = build(tmp_path, windows=FakeWindows(W1, W2))
+    await _two_windows_holding(rig)
+    rig.clock.now = at("23:00")  # both due
+    rig.caught_up()
+    await rig.releaser.tick()
+    (turn,) = rig.core.turns
+    assert turn.held_release.window_id == "w1"
+    assert rig.window_row("w2").released_at is None
+    assert rig.ledger.in_flight == frozenset({"w1"})
+    await rig.releaser.tick()  # still waiting while W1 is in flight
+    assert len(rig.core.turns) == 1
+    assert rig.records("hold-release") == []
+
+    # Killed before W1's triage record is written; rebuilt over the same files.
+    sink = {}
+    core2 = AgentCore(
+        EventSessionFactory(),
+        FakeChannel(),
+        audit=AuditLog(tmp_path / "core.jsonl"),
+        checkpoint=OffsetCheckpoint(checkpoint_path),
+        release_sink=lambda window_id: sink["ledger"].mark_released(window_id),
+    )
+    rig2 = restart(rig, core=core2)
+    sink["ledger"] = rig2.ledger
+    assert rig2.window_row("w1").released_at is None
+    assert rig2.window_row("w2").released_at is None
+    rig2.caught_up()
+    await rig2.releaser.tick()
+    (queued,) = list(core2._queue._queue)
+    assert queued.held_release.window_id == "w1"
+    assert [i.event.id for i in queued.items] == ["a1"]
+    assert rig2.window_row("w2").released_at is None
+
+    await _drain(core2)  # W1's triage is durable; the sink marks W1 released
+    assert rig2.window_row("w1").released_at is not None
+    assert rig2.window_row("w2").released_at is None
+
+    await rig2.releaser.tick()  # now W2 meets W1's durable cooldown, as live
+    assert core2._queue.empty()
+    assert [r["event_id"] for r in rig2.records("suppression")] == ["x2"]
+    assert _release_records(rig2) == [
+        {"window_id": "w1", "held": 1, "recovered": 0, "forwarded": 1},
+        {"window_id": "w2", "held": 1, "recovered": 0, "forwarded": 1},
+    ]
+    assert checkpoint_path.read_bytes() == b"e0"
+
+
+async def test_windows_without_a_shared_identity_release_in_the_same_tick(tmp_path):
+    rig = build(tmp_path, windows=FakeWindows(W1, W2))
+    await _two_windows_holding(rig, w2_identity="svc/b")
+    rig.clock.now = at("23:00")
+    rig.caught_up()
+    await rig.releaser.tick()
+    assert [t.held_release.window_id for t in rig.core.turns] == ["w1", "w2"]
+    assert rig.ledger.in_flight == frozenset({"w1", "w2"})
+
+
+async def test_a_shared_identity_that_recovered_in_the_later_window_also_waits(tmp_path):
+    # W2 holds A only as recovered, so it would forward nothing; it still waits
+    # for W1, whose triage of A is not yet durable (any held identity in common).
+    rig = build(tmp_path, windows=FakeWindows(W1, W2))
+    await _two_windows_holding(rig, w2_state="resolved")
+    rig.clock.now = at("23:00")
+    rig.caught_up()
+    await rig.releaser.tick()
+    assert [t.held_release.window_id for t in rig.core.turns] == ["w1"]
+    assert rig.window_row("w2").released_at is None
+    assert rig.ledger.mark_released("w1") is True
+    await rig.releaser.tick()
+    assert rig.window_row("w2").released_at is not None
+    assert len(rig.core.turns) == 1
+
+
+async def test_a_stuck_release_does_not_stall_an_unrelated_window(tmp_path):
+    rig = build(tmp_path, windows=FakeWindows(W1, W2))
+    await _two_windows_holding(rig, w2_identity="svc/b")
+    rig.clock.now = W1.end + GRACE
+    rig.caught_up()
+    await rig.releaser.tick()  # W1 goes in flight and its flush never comes
+    assert rig.ledger.in_flight == frozenset({"w1"})
+    rig.clock.now = at("23:00")
+    await rig.releaser.tick()
+    assert [t.held_release.window_id for t in rig.core.turns] == ["w1", "w2"]

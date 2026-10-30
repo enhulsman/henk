@@ -124,10 +124,11 @@ class HoldLedger:
         self._receipts = receipts
         self._clock = clock
         # Windows whose release turn has been submitted and whose triage record is
-        # not yet durable. Process-local on purpose: after a restart such a window
-        # is unreleased and is released again (D8: a duplicate triage over a lost
-        # one).
-        self._in_flight: set[str] = set()
+        # not yet durable, each with the identity keys that turn triages (whose
+        # cooldown `evaluate` armed in memory only). Process-local on purpose: after
+        # a restart such a window is unreleased and is released again (D8: a
+        # duplicate triage over a lost one).
+        self._in_flight: dict[str, frozenset[str]] = {}
 
     @property
     def store(self) -> HoldStore:
@@ -136,6 +137,10 @@ class HoldLedger:
     @property
     def in_flight(self) -> frozenset[str]:
         return frozenset(self._in_flight)
+
+    def in_flight_identities(self) -> frozenset[str]:
+        """Identity keys triaged by an in-flight release, over all such windows."""
+        return frozenset().union(*self._in_flight.values())
 
     # --- holding (D7) ---------------------------------------------------------
 
@@ -220,10 +225,15 @@ class HoldLedger:
 
     # --- releasing (D8) -------------------------------------------------------
 
-    def begin_release(self, window_id: str) -> None:
+    def begin_release(self, window_id: str, identity_keys: Iterable[str] = ()) -> None:
         """The window's release turn is being submitted: closed to new holds, and
-        not released again by this process until :meth:`mark_released`."""
-        self._in_flight.add(window_id)
+        not released again by this process until :meth:`mark_released`.
+
+        ``identity_keys`` are the identities that turn triages. Until it is marked,
+        no other window holding any of them is released (see
+        :meth:`HoldReleaser.tick`): their cooldown is armed only in memory.
+        """
+        self._in_flight[window_id] = frozenset(identity_keys)
 
     def mark_released(self, window_id: str) -> bool:
         """Mark the window released and write its one ``hold-release`` record.
@@ -246,7 +256,7 @@ class HoldLedger:
                 exc_info=True,
             )
             return False
-        self._in_flight.discard(window_id)
+        self._in_flight.pop(window_id, None)
         if rows is None:
             return False
         groups = group_held(rows)

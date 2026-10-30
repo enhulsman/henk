@@ -263,7 +263,9 @@ class EventCoordinator:
             return False
         turn = replace(decision.event_turn, offset=None)
         if self._holds is not None:
-            self._holds.begin_release(held_release.window_id)
+            self._holds.begin_release(
+                held_release.window_id, (item.identity.key for item in turn.items)
+            )
         await self._core.submit_event(turn)
         return True
 
