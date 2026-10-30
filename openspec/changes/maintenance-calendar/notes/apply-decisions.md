@@ -313,3 +313,24 @@ Orchestrator review:
 - **Group 7 carries:** runtime wiring (one shared `CalendarClient`, the tap as the gate's
   recorder, `CalendarReceipts`), replay's key handling, the provider's `load()` before
   intake and a third background task in `App`.
+
+## Group 6 (hold and release)
+
+Full notes and mutation table: `notes/apply-group6.md` (62 + 4 mutations, all killed on
+the final code; one equivalent mutant led to a dead branch being removed, two real gaps
+closed).
+
+Orchestrator review:
+- **Caught-up now also resets when a subscription ends** (`on_unsubscribe`, fired from a
+  `finally` around intake's frame loop), not only at the next subscribe. Without it a
+  release could fire during the reconnect backoff, before the reconnect's `since=`
+  backlog, and page the owner for an identity whose `resolved` was still unread. The
+  half-open gap before the liveness deadline remains, undetectable by design.
+- **Pre-existing defect fixed:** `EventCoordinator.run` discarded the batch
+  `Debouncer.feed` returns when an event arrives more than `debounce_seconds` (arrival
+  wall clock) after its batch opened, which needs queue lag or a forward clock step
+  while the loop's monotonic deadline has not passed. Those alerts were never
+  dispatched. Live in production today; fixed by this change's deploy.
+- **Accepted as recorded:** with `events.enabled` false nothing is released (there is no
+  coordinator, and nothing new is held either, since `holds()` requires events); held
+  rows have no retention (tiny, one row per held alert; a follow-up).

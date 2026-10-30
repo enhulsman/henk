@@ -104,20 +104,20 @@
       never message bodies. Record the result in `notes/ntfy-keepalive-probe.md`. If the
       probe disagrees with design D8, the caught-up rule follows the probe (a full
       keepalive interval with no message frame after subscribe).
-- [ ] 6.1 Tests from *Events published inside an open maintenance window are held*:
+- [x] 6.1 Tests from *Events published inside an open maintenance window are held*:
       - publish-time keying;
       - mixed batch;
       - held-only and duplicate-only batches advance;
       - fail-open on a storage failure;
       - late event for a released window, and event during an in-flight release;
       - no cooldown armed.
-- [ ] 6.2 Implement holding:
+- [x] 6.2 Implement holding:
       - `hold_windows` and `held_events` tables in `henk/store/db.py`, with a repository;
       - the classification in `EventCoordinator.dispatch_batch` ahead of
         `pipeline.evaluate`, never returning early;
       - publish time from the ntfy frame's `time`;
       - arrival time stored.
-- [ ] 6.3 Tests from *Held events are released after the window, the grace, and intake
+- [x] 6.3 Tests from *Held events are released after the window, the grace, and intake
       catch-up*:
       - recovered sends nothing;
       - a still-firing alert is forwarded once;
@@ -129,7 +129,7 @@
       - extension defers, a moved window does not;
       - cooldown and cap apply;
       - release with the calendar disabled.
-- [ ] 6.4 Implement release:
+- [x] 6.4 Implement release:
       - intake `on_keepalive` callback, reset per subscribe and separate from proof of
         life;
       - debounce batch and `dispatch_in_progress` on the coordinator instance, the latter
