@@ -22,6 +22,10 @@ tools gated on an account it cannot reproduce, so the closed toolset now also pa
 ``tools=[]`` (``--tools ""``: enable no built-in), which needs no enumeration. The
 list stays as the second layer. The subscription-only case is verified on the phone
 at deploy, not here.
+
+Re-taken 2026-10-30 for SDK 0.2.175 (CLI 2.1.314), the bump that drops the
+compromised eMudhra emSign G3 roots from the CLI's bundled trust store: the same 27
+built-ins, none added or removed.
 """
 
 from __future__ import annotations
@@ -40,8 +44,8 @@ from henk.agent.sdk_session import (
 )
 from henk.tools.base import ToolRegistry
 
-SNAPSHOT_SDK = "0.2.160"
-SNAPSHOT_CLI = "2.1.283"
+SNAPSHOT_SDK = "0.2.175"
+SNAPSHOT_CLI = "2.1.314"
 SNAPSHOT_BUILTINS = frozenset(
     {
         "AskUserQuestion",
