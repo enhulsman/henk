@@ -348,7 +348,7 @@ predicate, so neither ever claims a hold that will not happen.
 
 ### D10. Owner-turn maintenance note
 
-When a window is active, or one ended within the last 24 hours, the owner turn gains a
+When a window is active, or one was released within the last 24 hours, the owner turn gains a
 delimited data block between the time header and the recall block:
 
 ```

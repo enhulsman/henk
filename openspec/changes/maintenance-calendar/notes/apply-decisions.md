@@ -289,3 +289,27 @@ Line numbers cite the working tree at the time of writing.
 - **`Secrets` repr of the other tokens:** out of scope; a follow-up, not this change.
 - **Task 6.0:** probe run by the owner on rp5, agrees with D8
   (`notes/ntfy-keepalive-probe.md`).
+- **D10 "ended" vs agent-core "released" (from group 5):** the spec governs. The
+  owner-turn note covers active windows plus windows *released* within 24 h, taken from
+  `hold_windows.released_at` with their counts; `MaintenanceWindows.ended_within` is not
+  used for it (the snapshot only reaches back ~8.5 h). A window that held nothing is never
+  released and gets no "ended" note. Design D10's wording aligned to the spec.
+
+## Groups 3 and 5 (run in parallel)
+
+Full notes and mutation tables: `notes/apply-group3.md` (78 + 3 mutations; 6 first-run
+survivors were test gaps, all closed) and `notes/apply-group5.md` (49 mutations, 46
+killed; 3 equivalent, 2 gaps closed, one of them a real defect in `refresh()`).
+
+Orchestrator review:
+- **Title schema pattern made lookaround-free** before commit (group 3 notes 4 and 9):
+  `^Homelab(?: ?[^\s<>\x00-\x1f\x7f-\x9f])*$`, and execution refuses any `<` or `>`.
+  A JSON Schema engine without lookaround support can no longer reject the tool, and the
+  gate's one-pass delimiter strip cannot be reached through this tool. Stricter than the
+  spec's "no `<<<` or `>>>`".
+- **Approval reference reaches the tool through `ApprovalReferences`**, a tap on the
+  gate's recorder (no gate change, per design). Verified end to end through the real gate
+  in `test_an_approved_create_is_receipted_twice_with_one_reference`.
+- **Group 7 carries:** runtime wiring (one shared `CalendarClient`, the tap as the gate's
+  recorder, `CalendarReceipts`), replay's key handling, the provider's `load()` before
+  intake and a third background task in `App`.

@@ -54,21 +54,21 @@
 
 ## 3. Tools
 
-- [ ] 3.1 Tests from *calendar_upcoming lists the next 14 days, titles and times only*,
+- [x] 3.1 Tests from *calendar_upcoming lists the next 14 days, titles and times only*,
       with times from `render_instant`.
-- [ ] 3.2 `CalendarUpcomingTool` in `henk/tools/calendar.py`.
-- [ ] 3.3 Tests from *calendar_create_event writes exactly what the owner approved* and
+- [x] 3.2 `CalendarUpcomingTool` in `henk/tools/calendar.py`.
+- [x] 3.3 Tests from *calendar_create_event writes exactly what the owner approved* and
       *Calendar tools carry a declared tier and scope*. Cover:
       - the verbatim prompt via `ApprovalGate.format_prompt`;
       - `_render_argument` is the identity on every accepted title;
       - the weekday check under a non-English locale;
       - extra argument refused;
       - result text with and without the hold sentence.
-- [ ] 3.4 `CalendarCreateEventTool` (mutating, per-instance, owner-only), with
+- [x] 3.4 `CalendarCreateEventTool` (mutating, per-instance, owner-only), with
       parameter-schema patterns and execution-time validation using the fixed `WEEKDAYS`
       table. Register both tools in `build_production_registry` behind
       `calendar.enabled`, with the empty-allowlist WARNING.
-- [ ] 3.5 The system-prompt rule (events only at the owner's request), with the test from
+- [x] 3.5 The system-prompt rule (events only at the owner's request), with the test from
       *Henk does not propose calendar events on his own initiative*.
 
 ## 4. Audit records
@@ -90,10 +90,10 @@
 
 ## 5. Window provider
 
-- [ ] 5.1 Tests from *Maintenance windows come from a persisted, fail-open snapshot*: grace
+- [x] 5.1 Tests from *Maintenance windows come from a persisted, fail-open snapshot*: grace
       edge, restart load, stale fail-open with one WARNING, failed refresh keeps the
       snapshot.
-- [ ] 5.2 `henk/calendar/windows.py`: refresh loop, atomic snapshot beside the audit log,
+- [x] 5.2 `henk/calendar/windows.py`: refresh loop, atomic snapshot beside the audit log,
       load at startup before intake, `active(t)`.
 
 ## 6. Hold and release
