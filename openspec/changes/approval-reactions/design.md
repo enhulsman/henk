@@ -92,7 +92,8 @@ and an edit would rewrite one chunk of several.
 
 `edit_prompt` is `/v2/send` with `edit_timestamp = ref`, one attempt, under the send
 lock, never raising, rendered in the mode the prompt was actually sent in (the adapter
-remembers, per reference, whether the prompt fell back). The gate releases the pending
+uses the configured mode, which cannot change while a prompt is pending because
+configuration loads at start and a pending approval does not survive a restart). The gate releases the pending
 slot first, then awaits the edit after the decision and before returning, so a message
 that arrives during the edit is routed exactly as one arriving after the decision,
 never classified against an approval that is already decided, so the
@@ -173,25 +174,25 @@ React 👍 to approve or 👎 to deny, or reply yes / no. Any other message canc
 
 Outcome line: `**<verb>**: <label>, `<v1>`, `<v2>`, ...` (values only, in call order).
 
-Every value, key, label and tool name has the styling characters `\ * ~ | `` ` ``
-escaped before it is placed in markup. A character the bridge cannot render literally
-in styled mode (a backslash, unless task 1.1 and the live check in 7.2 prove its escape
-works) is replaced by the visible stand-in `⧵` (U+29F5), so a value ending in a
-backslash can never escape its own closing backtick. The escape sequence is one constant; the exact
+Every value, key, label and tool name has the styling characters `* ~ | `` ` ``
+escaped with one backslash before it is placed in markup (the parser's escape is a single
+`\` character in the decoded string; "two backslashes" in the bridge doc is the JSON
+source form). A backslash cannot be escaped: the parser swallows any backslash that
+precedes a styling character, so `\\` before a backtick still escapes the backtick. Every
+backslash in content is therefore replaced by the visible stand-in `⧵` (U+29F5), so a
+value ending in a backslash can never escape its own closing backtick. The escape sequence is one constant; the exact
 backslash count the bridge expects ("prefix it with two backslashes" is ambiguous between
 the JSON source and the decoded string) is settled by the escaping unit tests plus the
 live check in task 7.2, with a crafted value. Delimiters `<<<` `>>>` are still stripped
 from values in both modes, so the fallback stays sound.
 
-Fallback: if the bridge refuses the styled send with an HTTP 4xx, the adapter re-sends
-the same prompt unstyled (same header, label line and footer, every value inside
-`<<<` `>>>`) as one further attempt, and logs the refusal. This needs the bridge client
-to tell a refusal from a transport error: `SignalCliRestBridge.send` today turns every
-failure into one `SignalBridgeError`, which `_send_chunk` retries. A subclass,
-`SignalBridgeRefused`, raised on a 4xx and never retried, carries the distinction, and
-it is tested against the real client class with a mocked HTTP layer, not only against
-`FakeBridge`. A transport
-error does not trigger the fallback (it may have been delivered). `signal.styled_prompts`
+Fallback: configuration only. An automatic fallback on a refused styled send was
+specified and then dropped after reading the deployed bridge (0.101, `notes/bridge-facts.md`):
+its style parser cannot fail (an unclosed marker just disappears from the text), and the
+`/v2/send` handler answers every signal-cli failure, network trouble included, with HTTP
+400. A 400 therefore cannot single out styling, and treating it as a styling refusal
+would stop retrying ordinary transient failures. Styled sends keep today's retry rules.
+`signal.styled_prompts`
 (default `false` until the live check in task 7.2 passes; task 7.4 flips the code
 default to `true`) selects the styled form for prompts and edits alike.
 
@@ -229,7 +230,7 @@ because this change restates the anti-forgery guarantee.
 ## Risks / Trade-offs
 
 - [Molly or a future Signal client draws styles or edits differently] → Unstyled
-  fallback by config; edits degrade to a second message on clients without edit support
+  form by config; edits degrade to a second message on clients without edit support
   (Signal's own behaviour); the owner checks rendering at deploy (task 7.2).
 - [The bridge's escaping differs from its doc] → One constant, a live crafted-value
   check before enabling; until then `styled_prompts: false` is the safe default for the

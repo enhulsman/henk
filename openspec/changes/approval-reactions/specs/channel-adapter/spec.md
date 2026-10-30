@@ -87,8 +87,8 @@ The wait is deliberately unbounded by any hold timer or chunk cap — both were 
 
 ## ADDED Requirements
 
-### Requirement: Approval prompts are one styled message with an unstyled fallback
-The Signal adapter SHALL render an approval prompt as one styled message: a bold `Approval needed` header line; a line with the label followed by the tool name in brackets; one line per argument as `<key>: <value>` with the value in monospace; and the footer line `React 👍 to approve or 👎 to deny, or reply yes / no. Any other message cancels it.` It SHALL render a prompt outcome as one line: the bold outcome word, a colon, the label, and each argument value in monospace, separated by commas. Every styling character in a value, key, label or tool name SHALL be escaped so no content can change the message's styling; a character the bridge's styled mode cannot render literally (a backslash, unless the live check proves it escapable) SHALL be replaced in styled text by the visible stand-in `⧵` (U+29F5); and the delimiter sequences `<<<` and `>>>` SHALL be stripped from values in every mode. When configuration disables styled prompts, or when the bridge refuses the styled send with a client error, the adapter SHALL send the same prompt unstyled, every value wrapped in `<<<` `>>>`, with the same header, label line and footer; a refusal SHALL be logged, SHALL NOT be retried, and the unstyled send SHALL be one further attempt. The bridge client SHALL report a client-error refusal distinctly from a transport error, and a transport error SHALL NOT trigger the fallback. Styled text SHALL be used for approval prompts and their outcome edits only.
+### Requirement: Approval prompts are one styled message, unstyled by configuration
+The Signal adapter SHALL render an approval prompt as one styled message: a bold `Approval needed` header line; a line with the label followed by the tool name in brackets; one line per argument as `<key>: <value>` with the value in monospace; and the footer line `React 👍 to approve or 👎 to deny, or reply yes / no. Any other message cancels it.` It SHALL render a prompt outcome as one line: the bold outcome word, a colon, the label, and each argument value in monospace, separated by commas. Every styling character in a value, key, label or tool name SHALL be escaped so no content can change the message's styling; a backslash, which the bridge's styled mode cannot render literally before a styling character, SHALL be replaced in styled text by the visible stand-in `⧵` (U+29F5); and the delimiter sequences `<<<` and `>>>` SHALL be stripped from values in every mode. When configuration disables styled prompts, the adapter SHALL send the same prompt and its outcome edit unstyled, every value wrapped in `<<<` `>>>`, with the same header, label line and footer. A styled send SHALL follow the same retry rules as every other send; there is no automatic fallback, because the bridge's style parser cannot reject a message and the bridge reports every send failure with the same status, so no response can single out styling as the cause. Styled text SHALL be used for approval prompts and their outcome edits only.
 
 #### Scenario: Styled prompt
 - **WHEN** styled prompts are enabled and the gate sends a prompt for `calendar_create_event` with title `Homelab: patch round`
@@ -102,9 +102,9 @@ The Signal adapter SHALL render an approval prompt as one styled message: a bold
 - **WHEN** a prompt value ends in a backslash
 - **THEN** the styled text carries the stand-in `⧵` in its place and the value's monospace span closes where it should
 
-#### Scenario: Refused styled send falls back
-- **WHEN** the real bridge client receives an HTTP client error for the styled prompt send
-- **THEN** it reports a refusal rather than a transport error, the adapter does not retry it, logs it, and sends the prompt once unstyled with `<<<` `>>>` around each value, and the later outcome edit is unstyled too
+#### Scenario: A failed styled send is retried like any send
+- **WHEN** the bridge answers a styled prompt send with an error
+- **THEN** the adapter retries it within the reply retry budget, still styled, and a prompt that is never acknowledged resolves the approval as `cancelled` exactly as today
 
 #### Scenario: Styling disabled by configuration
 - **WHEN** styled prompts are disabled in configuration

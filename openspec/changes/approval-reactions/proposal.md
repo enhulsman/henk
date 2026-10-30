@@ -60,8 +60,9 @@ only; the `<<< >>>` markers go.
 
 **A correction to what I told you.** I said Henk can check that the styling showed up.
 He cannot: Signal reports that it accepted the message, not how your phone drew it.
-What he can do: if the bridge refuses the styled message, he sends the same prompt in
-the old `<<< >>>` form, and a config switch turns styling on or off. Styling starts off:
+What he can do: a config switch turns styling on or off. (I also planned an automatic
+switch to the old form when the bridge refuses a styled message; reading the bridge's
+code showed it never refuses one for its styling, so that part is gone.) Styling starts off:
 the first deploy brings reactions, edits and labels with the old `<<< >>>` values, and
 styling is switched on only after a live check with deliberately awkward titles (stars,
 backticks, a trailing backslash) shows them literally. A backslash, which Signal's
@@ -92,8 +93,8 @@ be pending.
   per-tool label with the technical name in brackets, one line per argument with the
   value in monospace, and a footer naming both ways to answer.
 - Styling characters inside argument values are escaped so a value cannot restyle
-  itself. If the bridge refuses the styled send, the prompt is re-sent unstyled with
-  today's `<<< >>>` delimiters. A config switch forces the unstyled form.
+  itself. A config switch selects the unstyled form with today's `<<< >>>`
+  delimiters.
 - The owner's 👍 (any skin tone) on the pending prompt approves; 👎 denies. Any other
   reaction, any reaction on another message, and any reaction removal are ignored and
   never cancel the pending approval. The owner-only allowlist applies to reactions.
@@ -122,7 +123,7 @@ None.
   single-message bound, and the receipt detail.
 - `channel-adapter`: a prompt send that returns a reference, an edit of that prompt,
   inbound reactions normalised to channel-neutral events under the same owner-only
-  allowlist, and the styled-with-fallback rendering.
+  allowlist, and the styled rendering with its configuration switch.
 
 ## Impact
 
