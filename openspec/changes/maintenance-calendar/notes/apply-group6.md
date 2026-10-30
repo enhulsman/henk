@@ -335,3 +335,69 @@ killed). History, all closed before the final run:
 `pytest -q`: 4261 passed, 11 skipped, 12 deselected (baseline 4153 + these 108). New
 files pass the pre-commit hook's pattern layer and `.githooks/local-checks.sh` over the
 added lines, and `gitleaks dir` reports nothing in them.
+
+## Codex follow-up (adversarial review, after 34b8b24 / 2788a6b)
+
+**Finding.** An outage spanning two windows W1 and W2 that both hold identity A: the
+tick releases W1, whose `evaluate` arms A's cooldown in memory before W1's triage is
+durable; W2 then meets that cooldown, produces no turn and is marked released at once.
+If the process dies before W1's audit flush, W1 is released again after restart but
+W2 stays closed for good, so W2's newer A payload never reaches triage (previously
+`henk/events/release.py:137-143`).
+
+**Fix (orchestrator's choice).** A window is not considered for release on a tick
+while an in-flight release triages an identity that this window holds.
+- `HoldLedger._in_flight` is now a map from window id to the identity keys its
+  release turn triages (`henk/events/holds.py:131`). It is set by
+  `begin_release(window_id, identity_keys)` (`:228`), called from
+  `EventCoordinator.submit_release` with the turn's items (`coordinator.py:266`), and
+  dropped by `mark_released` (`holds.py:259`). The union is `in_flight_identities()`
+  (`:141`); `in_flight` still returns the window ids.
+- `HoldReleaser._consider` waits when that union meets this window's held identity
+  keys (`release.py:132-143`), logging the shared keys.
+- Windows sharing no identity release as before, in the same tick, so a stuck
+  in-flight window (failed flush, kept until restart) does not stall unrelated ones.
+- Once W1 is marked (durable), W2 is evaluated on a later tick: its A meets W1's now
+  durable cooldown and gets a `suppression` record, the live-path semantics.
+
+**Decision (easiest to undo).** The comparison uses all of this window's **held**
+identities, not only those it would forward. A W2 that holds A only as recovered also
+waits; it would forward nothing, so waiting costs one tick and keeps the rule simple.
+The in-flight side uses the identities the release **turn** carries, i.e. exactly the
+ones whose cooldown `evaluate` armed (a forwarded identity that was already cooling
+down is not in the turn and arms nothing new).
+
+**Tests (red before the fix, then green).**
+- `test_event_release.py::test_a_window_sharing_an_identity_with_an_in_flight_release_waits`:
+  the two-window regression. Both due; one tick submits W1 only and W2 stays
+  unreleased; a "crash" before W1's flush (fresh runtime over the same SQLite file and
+  checkpoint, real `AgentCore` with `release_sink`) releases W1 again with W2 still
+  unreleased; after W1's triage flushes and the sink marks it, the next tick releases
+  W2 with A suppressed (one `suppression` record, one `hold-release` per window);
+  checkpoint bytes unchanged.
+- `test_a_shared_identity_that_recovered_in_the_later_window_also_waits` (the decision
+  above).
+- `test_windows_without_a_shared_identity_release_in_the_same_tick` and
+  `test_a_stuck_release_does_not_stall_an_unrelated_window` (no over-blocking).
+
+**Mutations** (same harness; all killed):
+
+| # | Mutation | Result |
+|---|---|---|
+| 67 | drop the shared-identity wait | killed: `test_a_window_sharing_an_identity_with_an_in_flight_release_waits` |
+| 68 | key the wait on window id instead of identity | killed: same |
+| 69 | in-flight release records no identities | killed: same |
+| 70 | compare only identities this window would forward | killed: `test_a_shared_identity_that_recovered_in_the_later_window_also_waits` |
+| 71 | marking released keeps the identities blocking | killed: `test_recovered_alerts_send_nothing` |
+
+Rows 39, 41 and 42 were re-pointed at the dictionary API (`begin_release(` call,
+`_in_flight.pop`) and are still killed. Full table rerun on the final code: **70 of
+71 killed**. The survivor is row 40 (*tick ignores the in-flight set*), now **provably
+equivalent**: an in-flight window's recorded identities are a non-empty subset of its
+own held identities (a turn has at least one item, and its keys come from the same
+`derive_identity` used at hold time, in the same process), so the shared-identity wait
+always blocks it as well. The explicit in-flight skip (`release.py:111-112`) stays as
+the clearer first guard.
+
+Full suite after the follow-up: `pytest -q` 4426 passed, 11 skipped, 12 deselected
+(this includes group 7's tests and another agent's concurrent calendar-config work).
