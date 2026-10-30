@@ -21,6 +21,7 @@ method takes an id.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
@@ -43,6 +44,59 @@ PAGE_SIZE = 250
 MAX_PAGES = 4
 #: Case-sensitive, and a prefix: ``homelab patch`` and ``My Homelab`` are not admitted.
 TITLE_PREFIX = "Homelab"
+
+
+#: What a calendar id becomes in a log line.
+REDACTED_CALENDAR = "<calendar>"
+
+
+class CalendarIdRedactor(logging.Filter):
+    """Rewrites ``/calendars/<id>/`` to ``/calendars/<calendar>/`` in httpx's lines.
+
+    httpx logs every request at INFO with its full URL, and Henk runs at INFO, so
+    without this every calendar call would put the configured id into rp5's logs,
+    and from there into any diagnostics pasted elsewhere. Only that path segment is
+    rewritten, in its raw and percent-encoded forms; the method, host, query and
+    status stay, and a line without the segment is left exactly as it was.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._segments: dict[str, str] = {}
+
+    def add(self, calendar_id: str) -> None:
+        if not calendar_id:
+            return
+        for form in {calendar_id, quote(calendar_id, safe="")}:
+            self._segments[f"/calendars/{form}/"] = f"/calendars/{REDACTED_CALENDAR}/"
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(self._redact(arg) for arg in record.args)
+        if isinstance(record.msg, str):
+            record.msg = self._redact(record.msg)
+        return True
+
+    def _redact(self, value: Any) -> Any:
+        if not isinstance(value, (str, httpx.URL)):
+            return value
+        text = str(value)
+        if not any(segment in text for segment in self._segments):
+            return value  # untouched, type included
+        for segment, replacement in self._segments.items():
+            text = text.replace(segment, replacement)
+        return text
+
+
+_REDACTOR = CalendarIdRedactor()
+
+
+def redact_calendar_id_in_logs(calendar_id: str) -> None:
+    """Install the redactor on the ``httpx`` logger (once) and teach it this id."""
+    _REDACTOR.add(calendar_id)
+    httpx_logger = logging.getLogger("httpx")
+    if _REDACTOR not in httpx_logger.filters:
+        httpx_logger.addFilter(_REDACTOR)
 
 
 class CalendarError(Exception):
@@ -205,6 +259,7 @@ class CalendarClient:
         self._http = http
         self._tokens = tokens
         self._events_url = f"{CALENDAR_API_BASE}/{quote(calendar_id, safe='')}/events"
+        redact_calendar_id_in_logs(calendar_id)
         self._zone = ZoneInfo(time_zone)
         self._allowlist = tuple(creator_allowlist)
         self._timeout = timeout
