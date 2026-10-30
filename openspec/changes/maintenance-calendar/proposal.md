@@ -71,7 +71,7 @@ Build decisions I have made, reported in case you want one reversed:
   renderer as reminders, and the second sentence appears only when the event will
   actually hold alerts:
   ```
-  Created "Homelab: patch round", Sat 7 Nov at 20:00 CET until Sat 7 Nov at 22:00 CET. Alerts to Henk are held until Sat 7 Nov at 22:30 CET.
+  Created "Homelab: patch round", Saturday 7 November at 20:00 CET until Saturday 7 November at 22:00 CET. Alerts to Henk are held until Saturday 7 November at 22:30 CET.
   ```
   The event lands with no description and no attendees, so nobody gets an invitation.
 - **Quiet during maintenance.** From a window's start to 30 minutes after its end, Gatus

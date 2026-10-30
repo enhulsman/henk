@@ -70,7 +70,7 @@ An admitted event SHALL be a **hold window** exactly when `calendar.enabled`, `c
 
 #### Scenario: Planned work is listed in the owner's zone
 - **WHEN** the owner's zone is `Europe/Amsterdam`, holding is on, and the calendar holds an admitted event from 2026-11-07T19:00Z to 21:00Z titled `Homelab: patch round`
-- **THEN** the result contains `Sat 7 Nov at 20:00 CET – Sat 7 Nov at 22:00 CET <<<Homelab: patch round>>> (holds alerts)`
+- **THEN** the result contains `Saturday 7 November at 20:00 CET – Saturday 7 November at 22:00 CET <<<Homelab: patch round>>> (holds alerts)`
 
 #### Scenario: Unreachable calendar is not "nothing planned"
 - **WHEN** the Calendar API request times out
@@ -85,7 +85,7 @@ An admitted event SHALL be a **hold window** exactly when `calendar.enabled`, `c
 
 #### Scenario: Approved event created verbatim
 - **WHEN** the owner approves `calendar_create_event` with `title` `Homelab: patch round`, `start` `Sat 2026-11-07 20:00`, `end` `Sat 2026-11-07 22:00`, holding on and grace 30
-- **THEN** exactly one event is inserted on the configured calendar with summary `Homelab: patch round`, start `2026-11-07T20:00:00+01:00` and end `2026-11-07T22:00:00+01:00` with time zone `Europe/Amsterdam`, the body's keys are exactly `summary`, `start` and `end`, the request carries `sendUpdates=none`, and the result is `Created "Homelab: patch round", Sat 7 Nov at 20:00 CET until Sat 7 Nov at 22:00 CET. Alerts to Henk are held until Sat 7 Nov at 22:30 CET.`
+- **THEN** exactly one event is inserted on the configured calendar with summary `Homelab: patch round`, start `2026-11-07T20:00:00+01:00` and end `2026-11-07T22:00:00+01:00` with time zone `Europe/Amsterdam`, the body's keys are exactly `summary`, `start` and `end`, the request carries `sendUpdates=none`, and the result is `Created "Homelab: patch round", Saturday 7 November at 20:00 CET until Saturday 7 November at 22:00 CET. Alerts to Henk are held until Saturday 7 November at 22:30 CET.`
 
 #### Scenario: Denied event never written
 - **WHEN** the owner replies `no` to the approval prompt

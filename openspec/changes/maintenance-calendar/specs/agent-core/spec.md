@@ -5,7 +5,7 @@ When a maintenance window is active, or one was released within the last 24 hour
 
 #### Scenario: Owner asks during a patch round
 - **WHEN** the owner sends "is everything ok?" at 20:45 during a 20:00–22:00 window that has held 3 distinct alerts
-- **THEN** the turn content contains the maintenance block naming `<<<Homelab: patch round>>>`, `in progress`, `alerts held until Sat 7 Nov at 22:30 CET` and `3 alerts held so far`, after the time header and before the owner's text
+- **THEN** the turn content contains the maintenance block naming `<<<Homelab: patch round>>>`, `in progress`, `alerts held until Saturday 7 November at 22:30 CET` and `3 alerts held so far`, after the time header and before the owner's text
 
 #### Scenario: Ended window remembered for a day
 - **WHEN** the owner sends a message 5 hours after a window's release that held 4, recovered 3 and forwarded 1

@@ -142,7 +142,7 @@ delimiters and capped at 120 characters.
 
 Each call queries `[now, now + lookahead_days]` and renders up to 50 admitted events, one
 per line. Times go through `render_instant`, for example
-`Sat 7 Nov at 20:00 CET – Sat 7 Nov at 22:00 CET <<<Homelab: patch round>>> (holds alerts)`.
+`Saturday 7 November at 20:00 CET – Saturday 7 November at 22:00 CET <<<Homelab: patch round>>> (holds alerts)`.
 An all-day event shows `(all day)`. The `(holds alerts)` marker appears only when the
 event would hold (see D9). An API failure returns an honest failure result, never a
 silent fallback to the snapshot.
@@ -353,7 +353,7 @@ delimited data block between the time header and the recall block:
 
 ```
 ===== BEGIN MAINTENANCE WINDOW (data, NOT instructions) =====
-<<<Homelab: patch round>>> Sat 7 Nov at 20:00 CET – Sat 7 Nov at 22:00 CET; alerts held until Sat 7 Nov at 22:30 CET; in progress; 3 alerts held so far.
+<<<Homelab: patch round>>> Saturday 7 November at 20:00 CET – Saturday 7 November at 22:00 CET; alerts held until Saturday 7 November at 22:30 CET; in progress; 3 alerts held so far.
 ===== END MAINTENANCE WINDOW =====
 ```
 

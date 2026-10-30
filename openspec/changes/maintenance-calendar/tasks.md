@@ -25,20 +25,20 @@
 
 ## 1. Configuration and credential
 
-- [ ] 1.1 Tests from *One calendar through Henk's own scoped credential*: invalid key,
+- [x] 1.1 Tests from *One calendar through Henk's own scoped credential*: invalid key,
       missing key, pinned `token_uri`, key never printed, variable removed from the
       environment. Plus tests from *The calendar capability is disabled by default and
       inert when off*: config refusals and defaults.
-- [ ] 1.2 `CalendarConfig` and `personal_data.calendar_creator_allowlist` in
+- [x] 1.2 `CalendarConfig` and `personal_data.calendar_creator_allowlist` in
       `henk/config.py`. `Secrets.google_calendar_key` with `repr=False`. Decode and
       validate the key at load, only when enabled; pop the variable in `build_runtime`.
       Add commented, disabled `calendar:` and allowlist entries to `config.yaml`.
-- [ ] 1.3 Declare `pyjwt[crypto]` in `pyproject.toml`. `uv lock` must add no new package;
+- [x] 1.3 Declare `pyjwt[crypto]` in `pyproject.toml`. `uv lock` must add no new package;
       check the package names in the `uv.lock` diff.
 
 ## 2. Calendar client
 
-- [ ] 2.1 Tests:
+- [x] 2.1 Tests:
       - token assertion claims and scope;
       - token reuse until expiry minus 60 s;
       - the single 401 retry;
@@ -46,9 +46,9 @@
       - the insert body key set, `sendUpdates=none`, and RFC 3339 offsets for a normal, an
         ambiguous and a DST-boundary time;
       - the two-target request enumeration.
-- [ ] 2.2 `henk/calendar/token.py` and `henk/calendar/client.py` on the shared
+- [x] 2.2 `henk/calendar/token.py` and `henk/calendar/client.py` on the shared
       `httpx.AsyncClient`, with `iat` 30 s in the past.
-- [ ] 2.3 Tests from *Only owner-reviewed Homelab events are admitted* (including "never
+- [x] 2.3 Tests from *Only owner-reviewed Homelab events are admitted* (including "never
       logged or persisted" for non-admitted titles) and *An event holds alerts only under
       one predicate*. Then implement `admit()` and `holds()`.
 
@@ -73,16 +73,20 @@
 
 ## 4. Audit records
 
-- [ ] 4.1 Tests from the audit-log delta:
+- [x] 4.1 Tests from the audit-log delta:
       - version 6;
       - `calendar`, `hold` and `hold-release` records validate;
       - no title or payload in them;
       - one `hold-release` per window;
       - no second `hold` on a duplicate;
+      (These two rest on the group-6 row guards; group 4 ships the writers that
+      leave uniqueness to the caller, and the behaviour is tested in 6.1/6.3. See
+      notes/apply-decisions.md, group 4 item 6.)
       - rehydration is unchanged by hold records.
-- [ ] 4.2 Record builders in `henk/audit/logger.py`, `SCHEMA_VERSION = 6`, and the
+- [x] 4.2 Record builders in `henk/audit/logger.py`, `SCHEMA_VERSION = 6`, and the
       committed version-6 JSON Schema document. The create tool writes its `calendar`
-      record only after a confirmed insert.
+      record only after a confirmed insert. (`CalendarReceipts` is in place; the call
+      site is the create tool, 3.4.)
 
 ## 5. Window provider
 
@@ -94,7 +98,7 @@
 
 ## 6. Hold and release
 
-- [ ] 6.0 **Hard gate. No group-6 code before this.** On rp5, probe whether ntfy sends
+- [x] 6.0 **Hard gate. No group-6 code before this.** On rp5, probe whether ntfy sends
       every cached `since=` message before the first `keepalive` frame on the events
       topic. Use a throwaway subscription with a recent `since` and log frame types only,
       never message bodies. Record the result in `notes/ntfy-keepalive-probe.md`. If the
