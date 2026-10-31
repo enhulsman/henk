@@ -37,6 +37,10 @@ signal:
   # Whole-operation bound on each acknowledgement, enforced by cancellation; not
   # a phase timeout, unrelated to send_timeout_seconds. At most 7.0 (the refresh).
   acknowledge_timeout_seconds: 5.0
+  # Approval prompts and their outcome edits in Signal's styled text (bold header,
+  # monospace values). Off until the live crafted-value check; `false` sends the
+  # unstyled `<<< >>>` form and is the rollback.
+  styled_prompts: false
 
 agent:
   model: "claude-sonnet-5"

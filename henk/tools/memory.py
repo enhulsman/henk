@@ -33,6 +33,7 @@ class StoreMemoryTool(Tool):
         "anything the owner said in passing. One fact per call, phrased so it "
         "still makes sense months from now."
     )
+    label = "Remember a fact"
     tool_class = ToolClass.MUTATING
     authorization = AuthorizationTier.STANDING
     turn_scope = (TurnType.OWNER,)

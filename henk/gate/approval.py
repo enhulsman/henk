@@ -5,7 +5,8 @@ permission model (design D4/D10):
 
 **Axis 1 — the named action's authorization tier.** ``standing`` executes without
 prompting; ``per-instance`` suspends the invocation, sends the owner a
-resolve-then-confirm prompt, and resumes only on an explicit approval keyword.
+resolve-then-confirm prompt, and resumes only on an explicit approval: a typed
+keyword, or the owner's 👍 on that very prompt (approval-reactions D4).
 The third tier, ``never``, is the absence of registration and is enforced
 upstream by the closed-toolset boundary. Configuration can *demote* standing to
 per-instance globally (the kill-switch) and can never widen anything.
@@ -26,6 +27,12 @@ the reverse.
 
 Read-only and notify-only invocations bypass prompts and receipts, but can raise
 taint when the registered tool declares itself a source.
+
+The gate never renders a prompt (approval-reactions D1). It hands the channel a
+structured :class:`ApprovalPrompt` (the tool's code-fixed label and name, and each
+argument collapsed to one line and bounded) and the adapter renders that in its own
+syntax. Once the approval is decided, the gate asks the adapter to edit the prompt
+into a one-line record of the outcome (D2).
 """
 
 from __future__ import annotations
@@ -37,6 +44,13 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Protocol
 
+from henk.channel.base import (
+    ApprovalPrompt,
+    InboundReaction,
+    PromptOutcome,
+    PromptSent,
+    SendOutcome,
+)
 from henk.tools.base import AuthorizationTier, Tool, ToolClass, ToolResult, TurnType
 
 logger = logging.getLogger("henk.gate")
@@ -46,14 +60,21 @@ DENY_KEYWORDS = frozenset({"no", "deny"})
 
 DEFAULT_TIMEOUT_SECONDS = 300.0
 
-#: Explicit delimiters around every model-chosen argument value in an approval
-#: prompt. The prompt states a RESOLVED ACTION, so no argument may be interpolated
-#: raw: an undelimited value could pose as prompt text (design D7).
-ARGUMENT_DELIMITERS = ("<<<", ">>>")
-
-#: Bound on a rendered argument value. A prompt is an owner interruption; it must
-#: stay readable on a phone and must not become a channel for a wall of text.
+#: Bound on an argument value handed to the adapter. A prompt is an owner
+#: interruption; it must stay readable on a phone and must not become a channel
+#: for a wall of text.
 ARGUMENT_MAX_CHARS = 200
+
+#: The reactions that answer a pending prompt, after normalisation (D4).
+APPROVE_REACTION = "\U0001F44D"  # thumbs up
+DENY_REACTION = "\U0001F44E"  # thumbs down
+#: Dropped before matching, so every skin tone and the emoji-presentation form of
+#: a thumb count: the Fitzpatrick modifiers U+1F3FB..U+1F3FF and variation
+#: selector 16 (U+FE0F). Nothing else is dropped, so a doubled thumb or a thumb
+#: next to another emoji never matches.
+_REACTION_MODIFIERS = frozenset(
+    [chr(code) for code in range(0x1F3FB, 0x1F400)] + ["\uFE0F"]
+)
 
 
 class ApprovalOutcome(str, Enum):
@@ -87,10 +108,18 @@ class Classification(str, Enum):
     APPROVE = "approve"
     DENY = "deny"
     UNRELATED = "unrelated"
+    #: A reaction that answers nothing: it leaves the pending approval untouched
+    #: and never becomes a turn (approval-reactions D4). Unlike a typed unrelated
+    #: message it does not cancel, by owner decision.
+    IGNORED = "ignored"
 
 
 class _Sender(Protocol):
-    async def send(self, text: str) -> None: ...
+    """The slice of the channel adapter the gate uses."""
+
+    async def send_prompt(self, prompt: ApprovalPrompt) -> PromptSent: ...
+
+    async def edit_prompt(self, ref: str, outcome: PromptOutcome) -> bool: ...
 
 
 class DecisionRecorder(Protocol):
@@ -152,6 +181,14 @@ class _Pending:
     arguments: dict[str, Any]
     reference: str
     future: "asyncio.Future[ApprovalOutcome]"
+    #: The adapter's opaque reference to the sent prompt, stored when
+    #: ``send_prompt`` returns. Until then (and for a prompt the channel gave no
+    #: reference) every reaction is ignored (D4 race): compared for equality only.
+    prompt_ref: str | None = None
+    #: "reaction" or "keyword": set in the same step as ``future.set_result`` and
+    #: only while the future is not done, so the first answer decides the outcome
+    #: and the receipt detail alike (D4, D7).
+    answered_by: str | None = None
 
 
 class ApprovalGate:
@@ -259,6 +296,19 @@ class ApprovalGate:
                 "could be requested; the action was not executed",
             )
 
+        undeclared = _undeclared_key(tool, arguments)
+        if undeclared is not None:
+            # D8: a key reaches the prompt as its own text, so only the tool's
+            # declared parameter names may. Refused before anything is sent, with
+            # its own reason: the unrelated-message one would have the model tell
+            # the owner about a message they never sent.
+            return self._resolve(
+                tool, declared_tier, ApprovalOutcome.CANCELLED, reference, context,
+                f'"{_bound_argument(undeclared)}" is not a parameter of {tool.name}; '
+                "nothing was asked and the action was not executed",
+                detail="undeclared argument",
+            )
+
         if self._pending is not None:
             return self._resolve(
                 tool, declared_tier, ApprovalOutcome.REJECTED_BUSY, reference,
@@ -267,11 +317,17 @@ class ApprovalGate:
                 "not executed — resolve that one first and try again",
             )
 
-        outcome = await self._prompt_and_wait(tool, arguments, reference)
-        decision = self._resolve(
-            tool, declared_tier, outcome, reference, context,
-            _OUTCOME_REASONS.get(outcome, ""),
+        outcome, reason, detail, edit = await self._prompt_and_wait(
+            tool, arguments, reference
         )
+        # The receipt first, at decision time: a turn cancelled while the edit is
+        # in flight must not lose it. Then the edit, still before the decision
+        # returns, so before the tool runs or the non-execution result flows back.
+        decision = self._resolve(
+            tool, declared_tier, outcome, reference, context, reason, detail=detail
+        )
+        if edit is not None:
+            await self._record_outcome(*edit, reference)
         if decision.permits:
             self._raise_taint(tool, framed_at_start)
         return decision
@@ -329,24 +385,90 @@ class ApprovalGate:
 
     async def _prompt_and_wait(
         self, tool: Tool, arguments: dict[str, Any], reference: str
-    ) -> ApprovalOutcome:
+    ) -> tuple[
+        ApprovalOutcome, str, str | None, tuple[str, PromptOutcome] | None
+    ]:
+        """Prompt and wait for the owner.
+
+        Returns the outcome with its model-facing reason and receipt detail, and
+        the outcome edit still to make (the prompt reference and the outcome line),
+        or ``None`` when there is nothing to edit. The pending slot is released
+        here, so BEFORE the caller writes the receipt and awaits the edit (D2): a
+        message or reaction arriving during the edit is routed exactly as one
+        arriving after the decision.
+        """
+        prompt = self.build_prompt(tool, arguments)
         loop = asyncio.get_running_loop()
         future: "asyncio.Future[ApprovalOutcome]" = loop.create_future()
-        self._pending = _Pending(tool.name, dict(arguments), reference, future)
+        pending = _Pending(tool.name, dict(arguments), reference, future)
+        self._pending = pending
         logger.info("approval pending ref=%s tool=%s", reference, tool.name)
+        sent: PromptSent | None = None
         try:
-            await self._channel.send(self.format_prompt(tool.name, arguments))
-            return await asyncio.wait_for(future, self._timeout)
-        except asyncio.TimeoutError:
-            logger.info("approval ref=%s timed out", reference)
-            return ApprovalOutcome.TIMEOUT
-        except Exception:
-            # A channel failure must not leave the invocation in limbo: fail closed.
-            logger.error("approval ref=%s could not be requested", reference,
-                         exc_info=True)
-            return ApprovalOutcome.CANCELLED
+            try:
+                sent = await self._channel.send_prompt(prompt)
+            except Exception:
+                # The contract says send_prompt never raises; a channel that does
+                # must still not leave the invocation in limbo: fail closed.
+                logger.error("approval ref=%s could not be requested", reference,
+                             exc_info=True)
+            if sent is None or sent.outcome is not SendOutcome.DELIVERED:
+                outcome = ApprovalOutcome.CANCELLED
+            else:
+                pending.prompt_ref = sent.ref
+                try:
+                    outcome = await asyncio.wait_for(future, self._timeout)
+                except asyncio.TimeoutError:
+                    logger.info("approval ref=%s timed out", reference)
+                    outcome = ApprovalOutcome.TIMEOUT
         finally:
             self._pending = None
+
+        if sent is None or sent.outcome is not SendOutcome.DELIVERED:
+            # Nothing the owner saw, so nothing to edit.
+            if sent is not None and sent.too_large:
+                logger.warning(
+                    "approval ref=%s: the prompt does not fit one message", reference
+                )
+                return outcome, _PROMPT_TOO_LARGE_REASON, "prompt too large", None
+            if sent is not None:
+                logger.error(
+                    "approval ref=%s could not be requested (%s)",
+                    reference, sent.outcome.value,
+                )
+            return outcome, _PROMPT_NOT_SENT_REASON, None, None
+
+        detail = None
+        if outcome in (ApprovalOutcome.APPROVED, ApprovalOutcome.DENIED):
+            if pending.answered_by is not None:
+                detail = f"answered by {pending.answered_by}"
+        edit = None
+        if sent.ref is not None:
+            edit = (sent.ref, PromptOutcome(_OUTCOME_VERBS[outcome], prompt))
+        return outcome, _OUTCOME_REASONS.get(outcome, ""), detail, edit
+
+    async def _record_outcome(
+        self, prompt_ref: str, outcome: PromptOutcome, reference: str
+    ) -> None:
+        """Edit the decided prompt into its outcome line: one best-effort attempt.
+
+        Its failure is logged and changes nothing: not the decision, not the
+        execution, not the receipt (D2). The prompt reference itself is never
+        logged; the approval reference names the prompt well enough.
+        """
+        try:
+            accepted = await self._channel.edit_prompt(prompt_ref, outcome)
+        except Exception:
+            logger.warning(
+                "approval ref=%s: the prompt edit to %r failed",
+                reference, outcome.verb, exc_info=True,
+            )
+            return
+        if not accepted:
+            logger.warning(
+                "approval ref=%s: the prompt edit to %r was not accepted",
+                reference, outcome.verb,
+            )
 
     def _resolve(
         self,
@@ -400,56 +522,145 @@ class ApprovalGate:
             return Classification.UNRELATED, True
 
         classification = self.classify(text)
-        future = self._pending.future
+        pending = self._pending
         if classification is Classification.APPROVE:
-            if not future.done():
-                future.set_result(ApprovalOutcome.APPROVED)
+            self._answer(pending, ApprovalOutcome.APPROVED, "keyword")
             return classification, False
         if classification is Classification.DENY:
-            if not future.done():
-                future.set_result(ApprovalOutcome.DENIED)
+            self._answer(pending, ApprovalOutcome.DENIED, "keyword")
             return classification, False
         # Unrelated: fail closed, then let the message be handled as a new turn.
-        if not future.done():
-            future.set_result(ApprovalOutcome.CANCELLED)
+        self._answer(pending, ApprovalOutcome.CANCELLED, None)
         return classification, True
 
-    # --- prompt rendering (resolve-then-confirm, design D7) ---------------
+    def deliver_reaction(self, reaction: InboundReaction) -> Classification:
+        """Route an owner reaction that passed the allowlist (approval-reactions D4).
+
+        A reaction answers only the prompt that is pending right now, and only
+        when it is the owner's 👍 or 👎 on that very message. Every other case is
+        ``IGNORED``, in this order: nothing pending, or a pending prompt the gate
+        holds no reference for (not yet returned by the channel, or none given);
+        a removal, which never resolves or reverses anything; a reaction on any
+        other message; a prompt already decided but whose slot is not yet
+        released (a second 👍 answers nothing); any other emoji. ``IGNORED`` never touches the pending
+        approval, and a reaction is never requeued as a turn, so unlike
+        :meth:`deliver` there is no requeue flag to return.
+        """
+        pending = self._pending
+        if pending is None or pending.prompt_ref is None:
+            return Classification.IGNORED
+        if reaction.removed:
+            return Classification.IGNORED
+        # Equality only: the reference is the adapter's, and neutral code never
+        # parses it. `prompt_ref` is not None here, so a reaction carrying no
+        # target can never match a prompt carrying none.
+        if reaction.target_ref != pending.prompt_ref:
+            return Classification.IGNORED
+        if pending.future.done():
+            return Classification.IGNORED
+        classification = classify_reaction(reaction.emoji)
+        if classification is Classification.APPROVE:
+            self._answer(pending, ApprovalOutcome.APPROVED, "reaction")
+        elif classification is Classification.DENY:
+            self._answer(pending, ApprovalOutcome.DENIED, "reaction")
+        return classification
 
     @staticmethod
-    def format_prompt(tool_name: str, arguments: dict[str, Any]) -> str:
-        """Render the RESOLVED ACTION for confirmation.
+    def _answer(
+        pending: _Pending, outcome: ApprovalOutcome, answered_by: str | None
+    ) -> None:
+        """Resolve ``pending`` unless an earlier answer already did: first wins.
 
-        The tool name and each argument value get their own line, every value
-        inside :data:`ARGUMENT_DELIMITERS`, whitespace-collapsed so a crafted
-        multi-line value cannot forge extra prompt structure, delimiter sequences
-        stripped so it cannot close its own quoting, and truncated to
-        :data:`ARGUMENT_MAX_CHARS`. Authorization is never derived from content:
-        the keyword match runs on the owner's own reply, not on anything here.
+        How it was answered is recorded in the same step as the result and under
+        the same condition, so a later answer can change neither (D4, D7).
         """
-        lines = [f"  tool: `{tool_name}`"]
-        for key, value in arguments.items():
-            lines.append(f"  {key}: {_render_argument(value)}")
-        body = "\n".join(lines) if arguments else f"{lines[0]}\n  (no arguments)"
-        return (
-            "Approval needed. Resolved action:\n"
-            f"{body}\n\n"
-            "Reply `yes` to approve or `no` to deny. Anything else cancels it."
+        if pending.future.done():
+            return
+        pending.answered_by = answered_by
+        pending.future.set_result(outcome)
+
+    # --- the structured prompt (resolve-then-confirm, approval-reactions D1) --
+
+    @staticmethod
+    def build_prompt(tool: Tool, arguments: dict[str, Any]) -> ApprovalPrompt:
+        """The RESOLVED ACTION, handed to the adapter to render in its own syntax.
+
+        The label and tool name come from the tool's code. Each argument keeps
+        its key (already checked against the declared parameters, D8) and call
+        order, and its value is collapsed to one line and bounded by
+        :func:`_bound_argument`, so a crafted value cannot forge prompt lines in
+        any adapter's rendering. Keeping that value visibly bounded (markup,
+        escaping, delimiters) is the adapter's job. Authorization is never derived
+        from content: matching runs on the owner's own reply or reaction, never
+        on anything here.
+        """
+        return ApprovalPrompt(
+            label=tool.label,
+            tool_name=tool.name,
+            fields=tuple(
+                (str(key), _bound_argument(value)) for key, value in arguments.items()
+            ),
         )
 
 
-def _render_argument(value: Any) -> str:
-    open_delim, close_delim = ARGUMENT_DELIMITERS
+def classify_reaction(emoji: str) -> Classification:
+    """👍 approves and 👎 denies in any skin tone; anything else is ``IGNORED``."""
+    bare = "".join(char for char in emoji if char not in _REACTION_MODIFIERS)
+    if bare == APPROVE_REACTION:
+        return Classification.APPROVE
+    if bare == DENY_REACTION:
+        return Classification.DENY
+    return Classification.IGNORED
+
+
+def _bound_argument(value: Any) -> str:
+    """One argument value (or an echoed key) as one bounded line of text.
+
+    Collapses ALL whitespace, newlines included, to single spaces: a multi-line
+    value is the one shape that could otherwise impersonate prompt lines in any
+    rendering. A non-string value is shown as its ``repr``.
+    """
     text = value if isinstance(value, str) else repr(value)
-    # Collapse ALL whitespace (newlines included) to single spaces: a multi-line
-    # value is the one shape that could otherwise impersonate prompt lines.
     flat = " ".join(str(text).split())
-    flat = flat.replace(open_delim, "").replace(close_delim, "")
     if len(flat) > ARGUMENT_MAX_CHARS:
         omitted = len(flat) - ARGUMENT_MAX_CHARS
         flat = f"{flat[:ARGUMENT_MAX_CHARS]}… (truncated, {omitted} more chars)"
-    return f"{open_delim}{flat}{close_delim}"
+    return flat
 
+
+def _undeclared_key(tool: Tool, arguments: dict[str, Any]) -> Any | None:
+    """The first argument key that is not one of the tool's declared parameters.
+
+    Exact match against ``parameters["properties"]``: a case variant is a
+    different key. A tool that declares no properties accepts no key at all.
+    """
+    properties = (tool.parameters or {}).get("properties")
+    declared = set(properties) if isinstance(properties, dict) else set()
+    for key in arguments:
+        if key not in declared:
+            return key
+    return None
+
+
+#: The outcome line's opening word for each decided prompt: the owner's words.
+_OUTCOME_VERBS = {
+    ApprovalOutcome.APPROVED: "Approved",
+    ApprovalOutcome.DENIED: "Denied",
+    ApprovalOutcome.CANCELLED: "Cancelled",
+    ApprovalOutcome.TIMEOUT: "Timed out",
+}
+
+#: The cancels the gate causes itself carry their own reason, never the
+#: unrelated-message one below, which would have the model tell the owner about
+#: a message they never sent (D8).
+_PROMPT_TOO_LARGE_REASON = (
+    "the action is too large to show in one approval prompt, so the owner was "
+    "not asked; the action was not executed"
+)
+_PROMPT_NOT_SENT_REASON = (
+    "delivery of the approval prompt could not be confirmed; the action was not "
+    "executed"
+)
 
 #: Model-facing text for each non-executing outcome of the prompt flow. Honest
 #: about what happened: a cancellation is not a denial, and neither executed.

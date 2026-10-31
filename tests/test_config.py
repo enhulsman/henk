@@ -369,6 +369,42 @@ def test_a_blank_acknowledge_owner_from_yaml_is_refused(tmp_path):
         Config.load(path, env={})
 
 
+# --- signal.styled_prompts (approval-reactions, task 6.2) ------------------
+#
+# Off by default until the owner's live crafted-value check (task 7.2) passes;
+# the same strict-bool rule as `acknowledge_owner`, for the same reason: a quoted
+# "false" is truthy, and a rollback typed that way would do the opposite.
+
+
+def test_styled_prompts_is_off_when_the_key_is_absent():
+    raw = _signal_raw()
+    assert "styled_prompts" not in raw["signal"]
+    assert Config.from_dict(raw, env={}).signal.styled_prompts is False
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_an_explicit_styled_prompts_is_honoured(value):
+    signal = Config.from_dict(_signal_raw(styled_prompts=value), env={}).signal
+    assert signal.styled_prompts is value
+
+
+@pytest.mark.parametrize("bad", ["false", "true", 1, 0, None, "yes"], ids=repr)
+def test_a_non_boolean_styled_prompts_is_refused(bad):
+    with pytest.raises(ConfigError) as excinfo:
+        Config.from_dict(_signal_raw(styled_prompts=bad), env={})
+    assert "signal.styled_prompts" in str(excinfo.value)
+
+
+def test_the_sample_config_declares_styled_prompts_off():
+    # Declared explicitly in config.yaml so the switch is discoverable, and off
+    # until task 7.4 flips the default after the live check.
+    import yaml
+
+    raw = yaml.safe_load(SAMPLE.read_text())
+    assert raw["signal"]["styled_prompts"] is False
+    assert Config.load(SAMPLE, env={}).signal.styled_prompts is False
+
+
 @pytest.mark.parametrize(
     "bad", [0, 0.0, -1, -0.5, "soon", "5", None, True, False, 7.5, 8, 60], ids=repr
 )

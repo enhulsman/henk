@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from henk.channel.base import SendOutcome
+from henk.channel.base import PromptSent, SendOutcome
 from henk.config import RemindersConfig
 from henk.events.pipeline import EventPipeline, PipelineConfig
 from henk.events.types import Event
@@ -39,6 +39,7 @@ from henk.store.reminders import (
     ReminderStore,
 )
 from henk.tools.base import AuthorizationTier, Tool, ToolClass, ToolResult, TurnType
+from tests.conftest import plain_prompt_text
 from tests.test_reminders_scheduler import (
     CRASH_LIMIT,
     GRACE,
@@ -208,6 +209,14 @@ class _GateChannel:
         self.proactive.append(text)
         return SendOutcome.DELIVERED
 
+    async def send_prompt(self, prompt) -> PromptSent:
+        # An approval prompt is a reply to the owner's turn, recorded as one.
+        self.replies.append(plain_prompt_text(prompt))
+        return PromptSent(SendOutcome.DELIVERED, f"prompt-{len(self.replies)}")
+
+    async def edit_prompt(self, ref, outcome) -> bool:
+        return True
+
 
 class _Recorder:
     def __init__(self) -> None:
@@ -223,9 +232,10 @@ class _MutatingTool(Tool):
 
     name = "capture"
     description = "capture something"
+    label = "Add to your inbox"
     tool_class = ToolClass.MUTATING
     authorization = AuthorizationTier.PER_INSTANCE
-    parameters: dict = {}
+    parameters: dict = {"type": "object", "properties": {"text": {"type": "string"}}}
 
     async def _run(self, **arguments) -> ToolResult:
         return ToolResult(ok=True, content="done")

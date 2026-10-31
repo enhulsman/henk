@@ -375,7 +375,8 @@ async def test_the_kill_switch_demotes_both_reminder_tools(bench, tool_attr):
     channel, gate = _gate(demote_standing=True)
     gate.enter_turn(TurnContext(turn_type=TurnType.OWNER, tainted=False))
     tool = getattr(bench, tool_attr)
-    decision = await gate.authorize(tool, {"text": "x", "when": "+2h"})
+    args = {"text": "x", "when": "+2h"} if tool_attr == "remind" else {"reminder_id": 1}
+    decision = await gate.authorize(tool, args)
     # Prompted, and it times out unanswered — so the effect never occurs.
     assert len(channel.sent) == 1
     assert "Approval needed" in channel.sent[0]

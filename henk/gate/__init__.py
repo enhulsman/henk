@@ -1,7 +1,6 @@
 """The authorization gate: tier + turn scope, fail closed, receipt always."""
 
 from henk.gate.approval import (
-    ARGUMENT_DELIMITERS,
     ARGUMENT_MAX_CHARS,
     EXECUTING_OUTCOMES,
     ApprovalGate,
@@ -14,7 +13,6 @@ from henk.gate.approval import (
 )
 
 __all__ = [
-    "ARGUMENT_DELIMITERS",
     "ARGUMENT_MAX_CHARS",
     "ApprovalGate",
     "ApprovalOutcome",

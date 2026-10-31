@@ -47,6 +47,7 @@ class CaptureTool(Tool):
         "keeping for later, or asks you to note something down. One thought per "
         "call, in the owner's own words where possible."
     )
+    label = "Add to your inbox"
     tool_class = ToolClass.MUTATING
     authorization = AuthorizationTier.STANDING
     turn_scope = (TurnType.OWNER,)

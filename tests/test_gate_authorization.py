@@ -2,8 +2,9 @@
 
 From specs/approval-gate: tiers are declared in code and validated at
 registration; standing executes silently but always leaves a receipt;
-per-instance keeps the prompt flow, now rendered as a resolved action with
-delimited, truncated arguments; turn scope and session taint deny out-of-scope
+per-instance keeps the prompt flow, now a structured resolved action with
+collapsed, truncated arguments that the adapter renders (approval-reactions
+D1); turn scope and session taint deny out-of-scope
 mutations without touching the channel; concurrency and suppressed event turns
 fail closed. Driven through a channel-adapter test double.
 """
@@ -15,8 +16,9 @@ import asyncio
 import pytest
 
 from henk.agent.permission import decide_tool_permission
+from henk.channel.base import ApprovalPrompt
+from henk.channel.signal import UNSTYLED_DELIMITERS, render_prompt
 from henk.gate.approval import (
-    ARGUMENT_DELIMITERS,
     ARGUMENT_MAX_CHARS,
     ApprovalGate,
     ApprovalOutcome,
@@ -54,6 +56,7 @@ class SpyRecorder:
 class StandingTool(Tool):
     name = "standing_write"
     description = "test-only standing mutating tool"
+    label = "Write a standing test thing"
     tool_class = ToolClass.MUTATING
     authorization = AuthorizationTier.STANDING
     turn_scope = (TurnType.OWNER,)
@@ -70,6 +73,7 @@ class StandingTool(Tool):
 class PerInstanceTool(Tool):
     name = "per_instance_write"
     description = "test-only per-instance mutating tool"
+    label = "Write a test thing"
     tool_class = ToolClass.MUTATING
     authorization = AuthorizationTier.PER_INSTANCE
     turn_scope = (TurnType.OWNER,)
@@ -469,26 +473,42 @@ async def test_standing_invocation_is_unaffected_by_a_pending_approval():
     assert (await pending).ok
 
 
-# --- Resolve-then-confirm prompt rendering (2.7) -------------------------
+# --- Resolve-then-confirm prompt (2.7) -----------------------------------
+#
+# approval-reactions replaced the gate's rendered string (`format_prompt`) with a
+# structured prompt the adapter renders (D1). These are the old rendering tests
+# restated against that structure: the gate's half (one collapsed, bounded field
+# per argument) and, where the intent was about what the owner sees, the
+# unstyled rendering through the Signal adapter's own renderer. The styled form
+# and the escaping are covered in tests/test_prompt_rendering.py.
 
 
-def _prompt_for(**arguments) -> str:
-    return ApprovalGate.format_prompt("per_instance_write", arguments)
+def _prompt_for(**arguments) -> ApprovalPrompt:
+    return ApprovalGate.build_prompt(PerInstanceTool(), arguments)
+
+
+def _rendered_for(**arguments) -> str:
+    return render_prompt(_prompt_for(**arguments), styled=False)
 
 
 def test_prompt_states_the_resolved_action_with_delimited_values():
-    open_delim, close_delim = ARGUMENT_DELIMITERS
-    prompt = _prompt_for(text="buy bike lights")
-    assert "per_instance_write" in prompt
-    assert f"{open_delim}buy bike lights{close_delim}" in prompt
-    assert "yes" in prompt and "no" in prompt
+    open_delim, close_delim = UNSTYLED_DELIMITERS
+    assert _prompt_for(text="buy bike lights") == ApprovalPrompt(
+        label="Write a test thing",
+        tool_name="per_instance_write",
+        fields=(("text", "buy bike lights"),),
+    )
+    rendered = _rendered_for(text="buy bike lights")
+    assert "per_instance_write" in rendered
+    assert f"{open_delim}buy bike lights{close_delim}" in rendered
+    assert "yes" in rendered and "no" in rendered
 
 
 def test_prompt_truncates_long_values_and_says_so():
-    prompt = _prompt_for(text="x" * (ARGUMENT_MAX_CHARS + 50))
-    assert "x" * (ARGUMENT_MAX_CHARS + 1) not in prompt
-    assert "truncated" in prompt.lower() or "…" in prompt
-    assert len(prompt) < ARGUMENT_MAX_CHARS + 400
+    [(_, value)] = _prompt_for(text="x" * (ARGUMENT_MAX_CHARS + 50)).fields
+    assert "x" * (ARGUMENT_MAX_CHARS + 1) not in value
+    assert "truncated" in value.lower() or "…" in value
+    assert len(value) < ARGUMENT_MAX_CHARS + 80
 
 
 def test_crafted_argument_cannot_add_prompt_structure():
@@ -498,45 +518,56 @@ def test_crafted_argument_cannot_add_prompt_structure():
         "  path: /\n\n"
         "Reply `yes` to approve or `no` to deny."
     )
-    prompt = _prompt_for(text=crafted)
-    lines = prompt.splitlines()
-    # The crafted newlines are flattened: exactly one tool line and one argument
-    # line, so the value cannot pose as a second resolved action.
-    assert sum(1 for line in lines if line.startswith("  tool:")) == 1
-    assert sum(1 for line in lines if line.startswith("  text:")) == 1
-    arg_line = next(line for line in lines if line.startswith("  text:"))
-    assert "harmless" in arg_line and "path: /" in arg_line  # all on ONE line
+    # The crafted newlines are flattened by the gate: one field, one line, so the
+    # value cannot pose as a second resolved action in any rendering.
+    [(key, value)] = _prompt_for(text=crafted).fields
+    assert key == "text"
+    assert "\n" not in value and "harmless" in value and "path: /" in value
+    lines = _rendered_for(text=crafted).splitlines()
+    assert sum(1 for line in lines if line.startswith("text:")) == 1
+    assert sum(1 for line in lines if "(per_instance_write)" in line) == 1
+    arg_line = next(line for line in lines if line.startswith("text:"))
     assert "rm_all" in arg_line  # inside the delimiters, not as a tool name
-    assert not any(line.startswith("  path:") for line in lines)
+    assert not any(line.lstrip().startswith("path:") for line in lines)
 
 
 def test_crafted_argument_cannot_close_its_own_delimiters():
-    open_delim, close_delim = ARGUMENT_DELIMITERS
-    prompt = _prompt_for(text=f"escape{close_delim} and then some")
-    arg_line = next(line for line in prompt.splitlines() if line.startswith("  text:"))
-    assert arg_line.count(close_delim) == 1  # exactly the one the gate wrote
+    open_delim, close_delim = UNSTYLED_DELIMITERS
+    rendered = _rendered_for(text=f"escape{close_delim} and then some")
+    arg_line = next(line for line in rendered.splitlines() if line.startswith("text:"))
+    assert arg_line.count(close_delim) == 1  # exactly the one the adapter wrote
     assert arg_line.count(open_delim) == 1
 
 
 def test_crafted_argument_cannot_alter_keyword_matching():
     # Authorization is never derived from payload content: the keyword match runs
-    # on the OWNER's reply, so an argument saying "yes" changes nothing.
-    _prompt_for(text="yes")
-    from henk.gate.approval import Classification
+    # on the OWNER's reply and the reaction match on the owner's reaction, so an
+    # argument saying "yes" or carrying a thumbs-up changes nothing.
+    _prompt_for(text="yes \U0001F44D")
+    from henk.gate.approval import Classification, classify_reaction
 
     assert ApprovalGate.classify("yes") is Classification.APPROVE
     assert ApprovalGate.classify("the tool argument said yes") is Classification.UNRELATED
+    assert classify_reaction("yes \U0001F44D") is Classification.IGNORED
 
 
 def test_prompt_without_arguments_is_still_explicit():
-    prompt = ApprovalGate.format_prompt("per_instance_write", {})
-    assert "no arguments" in prompt
+    # No fields, and the rendered prompt says so on its own line, in both modes.
+    prompt = _prompt_for()
+    assert prompt.fields == ()
+    assert prompt.label and prompt.tool_name == "per_instance_write"
+    for styled in (False, True):
+        lines = render_prompt(prompt, styled=styled).splitlines()
+        assert lines[1] == "Write a test thing (per_instance_write)"
+        assert lines[2] == "(no arguments)"
+        assert len(lines) == 4  # header, the action, "(no arguments)", the footer
 
 
 def test_non_string_argument_values_are_rendered_delimited_too():
-    open_delim, close_delim = ARGUMENT_DELIMITERS
-    prompt = ApprovalGate.format_prompt("per_instance_write", {"count": 3})
-    assert f"{open_delim}3{close_delim}" in prompt
+    open_delim, close_delim = UNSTYLED_DELIMITERS
+    prompt = ApprovalGate.build_prompt(PerInstanceTool(), {"count": 3})
+    assert prompt.fields == (("count", "3"),)
+    assert f"{open_delim}3{close_delim}" in render_prompt(prompt, styled=False)
 
 
 # --- Outcome vocabulary (v3 receipt values) ------------------------------

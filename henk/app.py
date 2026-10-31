@@ -14,6 +14,10 @@ allowlist, the gate, and the core are unwired islands (scrutiny C3). The
    one line where "this message passed the check" is a fact; after routing,
    because the receipt is awaited inside the receive loop, and a hung one must
    delay at most the *next* message, never the one it acknowledges.
+
+A reaction takes the same allowlist and then goes to the gate and nowhere else
+(approval-reactions D3, D4): it is never queued as a turn, whether or not an
+approval is pending, and it gets no read receipt.
 """
 
 from __future__ import annotations
@@ -24,14 +28,15 @@ import logging
 from henk.agent.core import AgentCore
 from henk.channel.acknowledge import OwnerAcknowledgement
 from henk.channel.allowlist import AllowlistFilter
-from henk.channel.base import ChannelAdapter, InboundMessage
+from henk.channel.base import ChannelAdapter, InboundMessage, InboundReaction
 from henk.gate.approval import ApprovalGate, Classification
 
 logger = logging.getLogger("henk.app")
 
 
 class Dispatcher:
-    """Routes an allowed inbound message to either the gate or the core queue."""
+    """Routes an allowed inbound message to either the gate or the core queue,
+    and an allowed reaction to the gate only."""
 
     def __init__(
         self,
@@ -49,9 +54,16 @@ class Dispatcher:
         # routing is exactly as before.
         self._acknowledgement = acknowledgement
 
-    async def on_inbound(self, message: InboundMessage) -> None:
+    async def on_inbound(self, message: InboundMessage | InboundReaction) -> None:
         if not self._allowlist.allows(message):
             return  # stranger / group: dropped silently, already logged
+        if isinstance(message, InboundReaction):
+            # The gate decides whether it answers the pending prompt; with nothing
+            # pending it is ignored there. Never `core.submit`: a reaction is not a
+            # turn. No receipt: the spec acknowledges messages only.
+            classification = self._gate.deliver_reaction(message)
+            logger.info("owner reaction classified as %s", classification)
+            return
         if self._gate.has_pending():
             # Classify against the pending approval before normal queueing.
             classification, requeue = self._gate.deliver(message.text)

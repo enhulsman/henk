@@ -114,6 +114,14 @@ class NullChannel:
         self.attempts.append("send_proactive")
         raise ReplayIsolationError("a replay sends nothing over the channel")
 
+    async def send_prompt(self, prompt: Any) -> Any:
+        self.attempts.append("send_prompt")
+        raise ReplayIsolationError("a replay sends nothing over the channel")
+
+    async def edit_prompt(self, ref: str, outcome: Any) -> Any:
+        self.attempts.append("edit_prompt")
+        raise ReplayIsolationError("a replay sends nothing over the channel")
+
 
 class _RefusedRepository:
     def __init__(self, name: str) -> None:
@@ -327,6 +335,8 @@ class ReplayStub(Tool):
         self.tool_class = definition.tool_class
         self.authorization = definition.authorization
         self.turn_scope = tuple(definition.turn_scope)
+        # Registration requires a mutating tool's label (approval-reactions D6).
+        self.label = definition.label
         # Replay frames every turn with tainted REPLAY_TURN; source flags need not copy.
         self._server = server
 

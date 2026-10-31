@@ -36,12 +36,14 @@ from henk.agent.permission import decide_tool_permission
 from henk.audit import AUDIT_SCHEMA_PATH, AuditLog, CalendarReceipts, MutationReceipts
 from henk.calendar.client import LIST_FIELDS, CalendarClient
 from henk.calendar.token import AccessTokenSource, parse_service_account_key
+from henk.channel.base import ApprovalPrompt, InboundReaction
+from henk.channel.signal import UNSTYLED_DELIMITERS, render_prompt
 from henk.config import CalendarConfig
 from henk.gate.approval import (
     ApprovalGate,
     ApprovalOutcome,
     TurnContext,
-    _render_argument,
+    _bound_argument,
 )
 from henk.reminders.timeparse import WEEKDAYS
 from henk.tools.base import AuthorizationTier, ToolClass, ToolRegistry, TurnType
@@ -66,7 +68,7 @@ from tests.calendar_fixtures import (
     STRANGER_EMAIL,
     key_b64,
 )
-from tests.conftest import FakeChannel
+from tests.conftest import FakeChannel, plain_prompt_text
 from tests.test_calendar_client import FakeGoogle, item
 
 ZONE = ZoneInfo("Europe/Amsterdam")
@@ -74,20 +76,34 @@ ZONE = ZoneInfo("Europe/Amsterdam")
 #: Saturday, after the October DST change.
 NOW = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc).timestamp()
 
+#: approval-reactions: the scenario's prompt as the owner sees it with styled
+#: prompts off (the default until the live check): the adapter's unstyled form.
 VERBATIM_PROMPT = (
-    "Approval needed. Resolved action:\n"
-    "  tool: `calendar_create_event`\n"
-    "  title: <<<Homelab: patch round>>>\n"
-    "  start: <<<Sat 2026-11-07 20:00>>>\n"
-    "  end: <<<Sat 2026-11-07 22:00>>>\n"
-    "\n"
-    "Reply `yes` to approve or `no` to deny. Anything else cancels it."
+    "Approval needed\n"
+    "Add a calendar event (calendar_create_event)\n"
+    "title: <<<Homelab: patch round>>>\n"
+    "start: <<<Sat 2026-11-07 20:00>>>\n"
+    "end: <<<Sat 2026-11-07 22:00>>>\n"
+    "React \U0001F44D to approve or \U0001F44E to deny, or reply yes / no. "
+    "Any other message cancels it."
 )
 SCENARIO_ARGS = {
     "title": "Homelab: patch round",
     "start": "Sat 2026-11-07 20:00",
     "end": "Sat 2026-11-07 22:00",
 }
+#: approval-reactions: the modified scenario *Approval prompt shows the resolved
+#: event*. The gate hands the adapter ONE structured prompt; rendering is the
+#: adapter's (tests/test_prompt_rendering.py has the owner-facing text).
+CALENDAR_PROMPT = ApprovalPrompt(
+    label="Add a calendar event",
+    tool_name="calendar_create_event",
+    fields=(
+        ("title", "Homelab: patch round"),
+        ("start", "Sat 2026-11-07 20:00"),
+        ("end", "Sat 2026-11-07 22:00"),
+    ),
+)
 SCENARIO_RESULT = (
     'Created "Homelab: patch round", Saturday 7 November at 20:00 CET until '
     "Saturday 7 November at 22:00 CET. Alerts to Henk are held until Saturday "
@@ -1124,9 +1140,9 @@ def test_the_latest_approval_wins_so_a_stale_one_cannot_poison_later_links():
 
 def test_the_restated_gate_constants_are_the_gates_own():
     # Restated in the tool module because importing henk.gate there is circular.
-    from henk.gate.approval import ARGUMENT_DELIMITERS
-
-    assert calendar_module.ARGUMENT_DELIMITERS == ARGUMENT_DELIMITERS
+    # approval-reactions: the delimiters moved from the gate to the adapter's
+    # unstyled prompt form (D1), so the restated pair is pinned there now.
+    assert calendar_module.ARGUMENT_DELIMITERS == UNSTYLED_DELIMITERS
     assert calendar_module.APPROVED_OUTCOME == ApprovalOutcome.APPROVED.value
 
 
@@ -1135,8 +1151,19 @@ def test_the_restated_gate_constants_are_the_gates_own():
 # =============================================================================
 
 
-def test_the_approval_prompt_is_verbatim():
-    assert ApprovalGate.format_prompt(CREATE_TOOL_NAME, dict(SCENARIO_ARGS)) == VERBATIM_PROMPT
+def test_the_approval_prompt_is_verbatim(client, clock):
+    # approval-reactions: the gate builds the structured prompt, the adapter
+    # renders it; both halves are pinned, the rendering in its unstyled form.
+    prompt = ApprovalGate.build_prompt(create(client, clock), dict(SCENARIO_ARGS))
+    assert prompt == CALENDAR_PROMPT
+    assert render_prompt(prompt, styled=False) == VERBATIM_PROMPT
+
+
+def _shown_unstyled(value: str) -> str:
+    """``value`` through the gate's bound and the adapter's unstyled rendering."""
+    prompt = ApprovalPrompt("Add a calendar event", CREATE_TOOL_NAME,
+                            (("title", _bound_argument(value)),))
+    return render_prompt(prompt, styled=False).split("\n")[2][len("title: "):]
 
 
 _SAFE = "abcxyzABCXYZ0189:-_.,()/!?#&@é ß"
@@ -1160,11 +1187,14 @@ def _candidates(count: int, seed: int) -> list[str]:
 
 
 def test_render_argument_is_the_identity_on_every_accepted_title():
+    # approval-reactions: the gate's bound and the adapter's delimiting together
+    # are the identity on every title execution accepts.
     accepted = 0
     for title in _candidates(20000, seed=20261107):
         if title_problem(title) is None:
             accepted += 1
-            assert _render_argument(title) == f"<<<{title}>>>", repr(title)
+            assert _bound_argument(title) == title, repr(title)
+            assert _shown_unstyled(title) == f"<<<{title}>>>", repr(title)
     # Not vacuous: a healthy share of candidates was accepted.
     assert accepted > 2000
 
@@ -1232,7 +1262,8 @@ def test_render_argument_is_the_identity_on_every_accepted_wall_time():
         stamp = datetime(2026, 1, 1) + timedelta(days=day, minutes=37 * day)
         value = f"{SHORT_WEEKDAYS[stamp.weekday()]} {stamp:%Y-%m-%d %H:%M}"
         assert re.fullmatch(SPEC_WALL_PATTERN, value)
-        assert _render_argument(value) == f"<<<{value}>>>"
+        assert _bound_argument(value) == value
+        assert _shown_unstyled(value) == f"<<<{value}>>>"
 
 
 # =============================================================================
@@ -1273,7 +1304,10 @@ async def test_an_approved_create_is_receipted_twice_with_one_reference(
         decide_tool_permission(registry, gate, "mcp__henk__calendar_create_event", SCENARIO_ARGS)
     )
     await _until_pending(gate)
-    assert channel.sent == [VERBATIM_PROMPT]
+    # approval-reactions: was `channel.sent == [VERBATIM_PROMPT]`; the delta
+    # replaces the quoted delimiter prompt with the structured one.
+    assert channel.prompts == [CALENDAR_PROMPT]
+    assert channel.sent == [plain_prompt_text(CALENDAR_PROMPT)]
     assert google.requests == []  # nothing before the approval keyword
     gate.deliver("yes")
     assert (await decision).allow
@@ -1289,6 +1323,43 @@ async def test_an_approved_create_is_receipted_twice_with_one_reference(
     assert calendar["reference"] == authorization["reference"]
     assert calendar["event_id"] == "evt-placeholder-1"
     assert "patch round" not in json.dumps(calendar)
+
+
+async def test_an_approval_by_reaction_is_receipted_as_per_instance(
+    google, client, clock, tmp_path
+):
+    # approval-reactions: scenario *Approval receipted as per-instance*, reaction
+    # half. The owner reacts 👍 on the prompt instead of typing yes; the record is
+    # the same, plus how the owner answered, and the prompt is edited to its outcome.
+    audit_path = tmp_path / "audit.jsonl"
+    registry, gate, channel, tool = _wired(
+        client, clock, audit_path, context=TurnContext(turn_type=TurnType.OWNER)
+    )
+    decision = asyncio.create_task(
+        decide_tool_permission(registry, gate, "mcp__henk__calendar_create_event", SCENARIO_ARGS)
+    )
+    await _until_pending(gate)
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert channel.prompts == [CALENDAR_PROMPT]
+    gate.deliver_reaction(
+        InboundReaction(
+            sender="+31600000000", emoji="\U0001F44D", target_ref="prompt-1", removed=False
+        )
+    )
+    assert (await asyncio.wait_for(decision, 2.0)).allow
+    assert google.requests == []  # the edit and the decision come before the insert
+    assert [(ref, outcome.verb) for ref, outcome in channel.edits] == [("prompt-1", "Approved")]
+    result = await tool.run(**SCENARIO_ARGS)
+    assert result.ok, result.error
+
+    (authorization,) = _records(audit_path, "authorization")
+    assert authorization["tool"] == "calendar_create_event"
+    assert authorization["tier"] == "per-instance"
+    assert authorization["outcome"] == "approved"
+    assert authorization["detail"] == "answered by reaction"
+    (calendar,) = _records(audit_path, "calendar")
+    assert calendar["reference"] == authorization["reference"]
 
 
 async def test_a_failed_insert_after_approval_leaves_the_asymmetry_visible(
