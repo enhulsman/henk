@@ -379,6 +379,41 @@ async def test_a_reaction_after_a_timeout_is_ignored():
     assert channel.edits == edits_before
 
 
+async def test_a_prompt_sent_without_a_reference_is_logged(caplog):
+    # Live on rp5 2026-10-31 a prompt went out without a reference and nothing
+    # said so: reactions were ignored and the edit skipped in silence. The gate
+    # warns, naming the approval reference and never the channel's.
+    channel = PromptChannel(refs=[None])
+    gate = _gate(channel, recorder=SpyRecorder())
+    tool = LabelledTool()
+    with caplog.at_level(logging.INFO, logger="henk.gate"):
+        task = _invoke(gate, tool)
+        await _prompted(gate, channel)
+        gate.deliver("yes")
+        assert (await asyncio.wait_for(task, FAIL_FAST)).ok
+    warnings = [
+        r.getMessage() for r in caplog.records
+        if r.name == "henk.gate" and r.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1, warnings
+    assert "no reference" in warnings[0] and "appr-" in warnings[0]
+
+
+async def test_a_prompt_sent_with_a_reference_logs_no_warning(caplog):
+    channel = PromptChannel()
+    gate = _gate(channel, recorder=SpyRecorder())
+    tool = LabelledTool()
+    with caplog.at_level(logging.INFO, logger="henk.gate"):
+        task = _invoke(gate, tool)
+        await _prompted(gate, channel)
+        gate.deliver("yes")
+        assert (await asyncio.wait_for(task, FAIL_FAST)).ok
+    assert not [
+        r for r in caplog.records
+        if r.name == "henk.gate" and r.levelno >= logging.WARNING
+    ]
+
+
 @pytest.mark.parametrize("target", [None, "prompt-1"], ids=["no-target", "some-target"])
 async def test_a_prompt_sent_without_a_reference_ignores_every_reaction(target):
     # D2/D4: no ref from the channel means reactions to that prompt are ignored,

@@ -7,8 +7,12 @@ Read 2026-10-30 from the deployed bridge and its source at the matching tag.
 `src/api/api.go`, `src/client/client.go`, `src/datastructs/datastructs.go`,
 `src/utils/textstyleparser.go`.
 
-**`/v2/send` response.** `201` with an object `{"timestamp": "<decimal string>"}`
-(`ds.SendMessageResponse`, `Timestamp string`). Henk parses it to an int.
+**`/v2/send` response.** `201` with a list holding one object,
+`[{"timestamp": "<decimal string>"}]`. Read from the source as a bare object at first, which
+was wrong: the live probe on rp5 (2026-10-31, after the first deploy) printed the list, and
+until the fix every prompt went out without a reference, so reactions were ignored and no edit
+was made, without a log line. Henk now takes the one entry (a bare object is still accepted)
+and parses it to an int, and the gate warns when a delivered prompt has no reference.
 
 **Errors.** Every signal-cli failure from `SendV2` is answered `400 {"error": ...}`, except
 a rate limit (`429`). Request-shape errors are also `400`. A `400` therefore does not

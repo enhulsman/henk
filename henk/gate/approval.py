@@ -416,6 +416,12 @@ class ApprovalGate:
                 outcome = ApprovalOutcome.CANCELLED
             else:
                 pending.prompt_ref = sent.ref
+                if sent.ref is None:
+                    logger.warning(
+                        "approval ref=%s: the prompt has no reference from the "
+                        "channel; reactions to it are ignored and it will not be "
+                        "edited", reference,
+                    )
                 try:
                     outcome = await asyncio.wait_for(future, self._timeout)
                 except asyncio.TimeoutError:

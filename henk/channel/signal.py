@@ -757,14 +757,20 @@ class SignalCliRestBridge:
 def _response_timestamp(response) -> int | None:
     """The ``timestamp`` of a ``/v2/send`` response as an int, else ``None``.
 
-    Bridge 0.101 answers ``{"timestamp": "<decimal string>"}``; an integer is
-    accepted too. Anything else (no body, not JSON, not an object, no key, not a
-    number) is ``None``.
+    Bridge 0.101 answers ``[{"timestamp": "<decimal string>"}]``, a list with one
+    object per send (seen live on rp5 2026-10-31); a bare object and an integer
+    timestamp are accepted too. Henk sends to one recipient, so a list of any
+    other length is ``None``, as is anything else (no body, not JSON, no key,
+    not a number).
     """
     try:
         body = response.json()
     except ValueError:
         return None
+    if isinstance(body, list):
+        if len(body) != 1:
+            return None
+        body = body[0]
     if not isinstance(body, dict):
         return None
     return _sent_timestamp(body.get("timestamp"))
