@@ -600,12 +600,22 @@ async def test_a_crafted_multiline_value_stays_one_line_end_to_end():
 
 
 def _created(timestamp) -> httpx.Response:
-    return httpx.Response(201, json={"timestamp": timestamp})
+    # Bridge 0.101's real shape, seen live on rp5 2026-10-31: a list with one
+    # object per send, not a bare object.
+    return httpx.Response(201, json=[{"timestamp": timestamp}])
 
 
-@pytest.mark.parametrize("timestamp", [str(T), T], ids=["string", "int"])
-async def test_bridge_send_returns_the_response_timestamp_as_an_int(timestamp):
-    bridge, seen, built = _wire_bridge(lambda request: _created(timestamp))
+@pytest.mark.parametrize(
+    "response",
+    [
+        _created(str(T)),
+        _created(T),
+        httpx.Response(201, json={"timestamp": str(T)}),
+    ],
+    ids=["list-string", "list-int", "bare-object"],
+)
+async def test_bridge_send_returns_the_response_timestamp_as_an_int(response):
+    bridge, seen, built = _wire_bridge(lambda request: response)
     returned = await bridge.send(OWNER, "hello")
     assert returned == T and type(returned) is int
     [request] = seen
@@ -624,9 +634,16 @@ async def test_bridge_send_returns_the_response_timestamp_as_an_int(timestamp):
         httpx.Response(201, json={"timestamp": None}),
         httpx.Response(201, json={"timestamp": "abc"}),
         httpx.Response(201, json=[]),
+        httpx.Response(201, json=[{"timestamp": str(T)}, {"timestamp": str(T + 1)}]),
+        httpx.Response(201, json=[str(T)]),
+        httpx.Response(201, json=[[{"timestamp": str(T)}]]),
+        httpx.Response(201, json=[{"timestamp": None}]),
         httpx.Response(201, content=b"not json"),
     ],
-    ids=["empty", "no-key", "null", "garbage", "array", "not-json"],
+    ids=[
+        "empty", "no-key", "null", "garbage", "empty-list", "two-entries",
+        "list-of-string", "nested-list", "list-null", "not-json",
+    ],
 )
 async def test_bridge_send_without_a_usable_timestamp_returns_none_and_does_not_raise(response):
     # The message WAS accepted. Raising here would make the adapter retry and
