@@ -11,17 +11,18 @@ prompts. Nothing new is stored.
 
 **Your decisions** (my pick first; the build follows the pick unless you say otherwise):
 
-1. **How far back counts as "the same night"**: 6 hours (pick), 3 hours, or 12 hours.
+1. **How far back counts as "the same night"** (decided 2026-11-05: 6 hours). Options were 6 hours, 3 hours or 12 hours.
    At 06:36 the 03:54 handoff was 2 h 42 min old, so 3 hours would have caught it, with
    18 minutes to spare. The link flapped until about 06:32, though, so a recovery or
    retry alert around 07:00 would already have been outside 3 hours. 6 hours covers a
    whole night's incident with margin. 12 hours starts linking unrelated day and night
    incidents.
-2. **Room in the digest**: recent handoffs take at most 2 of the existing 3 slots
-   (pick), or a 4th slot is added just for them. The 2 are the newest and the oldest
-   in the window, so the start of a long chain stays visible. The pick keeps the size and token
-   cost the same. A 4th slot keeps all older history but makes every triage prompt
-   about 300 tokens longer.
+2. **Room in the digest** (decided 2026-11-05: a 4th slot). The digest grows from 3 to
+   4 entries and from 6,000 to 8,000 characters, so recent handoffs no longer push out
+   as much older history. Recent handoffs take at most 2 entries: the newest and the
+   oldest in the window, so the start of a long chain stays visible. On a busy night
+   older history keeps 2 entries (it would have kept 1 with 3 slots). A full digest costs
+   about 500 tokens more per triage; most triages are not full.
 
 ## Why
 
@@ -46,8 +47,8 @@ cause, and the digest ignores it.
   labelled **same window**.
 - Up to 2 such handoffs, newest first, are placed right after the recurrence
   reference (if any) and before the identity, rule and node ranks. Each handoff still
-  appears once. The existing bounds (3 entries, 1,200-character excerpts, 6,000
-  characters in total) are unchanged.
+  appears once. The bounds grow from 3 to 4 entries and from 6,000 to 8,000
+  characters in total; the 1,200 and 4,000-character excerpt bounds are unchanged.
 - When the digest shows a same-window entry, the triage framing tells Henk that the
   entry was picked for its timing alone, and asks him to say whether it shares this
   incident's cause and to link it only when the evidence supports that.

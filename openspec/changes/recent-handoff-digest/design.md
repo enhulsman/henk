@@ -30,7 +30,8 @@ time alone never makes a handoff related.
   of a shared cause.
 
 **Non-Goals:**
-- Changing the digest's bounds (3 entries, 1,200 / 4,000 / 6,000 characters).
+- Changing the excerpt bounds (1,200 / 4,000 characters). The entry and total bounds do
+  change: 3 to 4 entries, 6,000 to 8,000 characters (owner decision, 2026-11-05).
 - Changing what is retained, the archive schema, or the audit record's shape.
 - Site-level node grouping, or a fix for alerts lost while the home link is down.
 
@@ -74,16 +75,14 @@ incident with margin. Beyond that, unrelated day and night incidents start shari
 window. The window bounds how
 far back is admitted, not what is shown: the cap of 2 does that.
 
-Why 2: without a recurrence reference, at least 1 slot is left for structural
-history. With one, the 6,000-character budget decides: a full-size reference (about
-4,200 characters rendered) leaves room for one 1,200-character entry, so only the
-newest same-window entry fits and the rest are counted as omitted. That drops the
-oldest, the likely start of a chain, which cuts against keeping it. It is a deliberate
-choice: a recurrence reference is already the history for this alert, and the newest
-entry says what the site looks like now. Rendering the oldest first when only one fits
-was considered and left out to keep one ordering rule. A storm of handoffs
-within the window can never push out the recurrence reference, because it is placed
-first by construction.
+Why 2 of 4 (the owner chose a 4th slot over sharing the existing 3): without a
+recurrence reference, older history keeps 2 entries on a busy night. With one, the
+reference (about 4,400 characters rendered, worst case) plus 2 same-window entries
+(about 1,600 each, worst case with a full identity list in the header), the digest
+header and the omission marker come to about 7,800 characters. That is why the total
+is 8,000 and not 7,500: at 7,500 a long header could drop the oldest same-window entry
+next to a full-size reference. A storm of handoffs within the window can never push out
+the recurrence reference, because it is placed first by construction.
 
 ### D2: The label states the window and keeps the structural relation
 
@@ -111,7 +110,7 @@ existing framing tests and recorded hashes for such turns stay valid.
 
 Unplaced same-window handoffs are counted in the omission marker. `render_digest` gains
 an `extra_omitted` argument, used both in the reserve it sizes for the marker and in
-the marker itself, so the count can never push the digest past 6,000 characters. The
+the marker itself, so the count can never push the digest past 8,000 characters. The
 marker keeps its existing wording ("related handoffs omitted ..."), so a turn with no
 same-window handoff renders byte-identical to today.
 
@@ -141,8 +140,9 @@ are computed from, so eligibility, the window and the rendered ages agree.
   nothing, because the real label is in the entry header the application writes.
 - [Old structural history is displaced on a busy night] → at most 2 of 3 slots, and
   the omission marker still counts what was left out.
-- [Prompt size] → unchanged bounds; the framing step is about 50 tokens, only on turns
-  that show a same-window entry.
+- [Prompt size] → a full digest is up to 2,000 characters (about 500 tokens) longer;
+  most digests are not full. The framing step is about 50 tokens, only on turns that
+  show a same-window entry.
 - [Replay comparability] → recordings made before the change keep their old composed
   content. New recordings of turns with a same-window entry have a different framing
   hash, which replay already reports.

@@ -27,13 +27,13 @@ Each handoff SHALL appear at most once, at its best rank: a handoff placed as
 same-window SHALL NOT appear again at a structural rank, and a recurrence reference SHALL
 NOT appear again as same-window. Within a rank the newest comes first. The digest SHALL
 be bounded by fixed limits:
-- at most 3 entries;
+- at most 4 entries;
 - an excerpt of at most 1,200 characters per entry;
-- a total of at most 6,000 characters.
+- a total of at most 8,000 characters.
 
 When the turn is a recurrence whose prior handoff is retained, that handoff SHALL be the
 first entry, marked as the recurrence reference, with an excerpt of up to 4,000
-characters. **The recurrence reference counts toward the 6,000-character total.** Further
+characters. **The recurrence reference counts toward the 8,000-character total.** Further
 entries fill the remaining budget in order (same-window, then the structural ranks) at
 their own excerpt bound. An entry that does not fit SHALL be omitted, not shortened below
 its excerpt bound, and the digest SHALL state how many related handoffs were omitted,
@@ -62,7 +62,7 @@ no digest. The triage's audit record SHALL list the retained-handoff ids the dig
 
 #### Scenario: A recent handoff outranks older same-identity history
 - **WHEN** an incident fires, three handoffs for its identity were published 22 days ago, and a handoff naming the same node was published 5 minutes ago
-- **THEN** the digest's first entry is the 5-minute-old handoff with relation `same window (same node)`, followed by the two newest same-identity handoffs
+- **THEN** the digest's first entry is the 5-minute-old handoff with relation `same window (same node)`, followed by the three same-identity handoffs, newest first
 
 #### Scenario: A recent handoff with no structural relation is shown
 - **WHEN** an incident fires and a handoff sharing none of its identity, rule or nodes was published 2 hours 40 minutes ago
@@ -76,13 +76,17 @@ no digest. The triage's audit record SHALL list the retained-handoff ids the dig
 - **WHEN** an incident that is not a recurrence fires, four handoffs sharing none of its identity, rule or nodes were published within the last 6 hours, and an older same-identity handoff is retained
 - **THEN** the digest shows the newest and the oldest same-window handoffs, newest first, then the same-identity handoff, and states that two handoffs were omitted
 
+#### Scenario: Older history keeps two slots when the window is busy
+- **WHEN** an incident that is not a recurrence fires, two handoffs sharing none of its identity, rule or nodes were published within the last 6 hours, and three older same-identity handoffs are retained (1,000 characters each)
+- **THEN** the digest shows the two same-window handoffs, then the two newest same-identity handoffs, and states that one handoff was omitted
+
 #### Scenario: The recurrence reference stays first and is not repeated
 - **WHEN** a recurrence fires whose retained prior handoff (1,000 characters) was published within the last 6 hours, and two other handoffs (1,000 characters each) were published within the window
 - **THEN** the digest's first entry is the recurrence reference, it does not appear again, and the next two entries are the other same-window handoffs, newest first
 
-#### Scenario: A full-size recurrence reference leaves room for one more entry
-- **WHEN** a recurrence fires whose retained prior handoff is longer than 4,000 characters, and two other handoffs longer than 1,200 characters were published within the last 6 hours
-- **THEN** the digest shows the recurrence reference and the newest same-window handoff, stays within 6,000 characters, and states that one handoff was omitted
+#### Scenario: A full-size recurrence reference leaves room for both same-window entries
+- **WHEN** a recurrence fires whose retained prior handoff is longer than 4,000 characters, three other handoffs longer than 1,200 characters were published within the last 6 hours, and an older same-identity handoff is retained
+- **THEN** the digest shows the recurrence reference, then the newest and the oldest same-window handoffs, stays within 8,000 characters, and states that two handoffs were omitted
 
 #### Scenario: The root of a long chain stays visible
 - **WHEN** an incident fires and handoffs sharing none of its identity, rule or nodes were published 2 h 40 min, 1 h 25 min and 35 min ago
@@ -90,7 +94,7 @@ no digest. The triage's audit record SHALL list the retained-handoff ids the dig
 
 #### Scenario: The recurrence reference counts toward the total
 - **WHEN** a recurrence's retained prior handoff is longer than 4,000 characters and three further related handoffs are retained
-- **THEN** the recurrence reference is excerpted to 4,000 characters, the whole rendered digest — header, entry headers and markers included — is within 6,000 characters, and the digest states how many related handoffs it omitted
+- **THEN** the recurrence reference is excerpted to 4,000 characters, the whole rendered digest — header, entry headers and markers included — is within 8,000 characters, and the digest states how many related handoffs it omitted
 
 #### Scenario: The digest is labelled and delimited as untrusted
 - **WHEN** an event turn carries a digest

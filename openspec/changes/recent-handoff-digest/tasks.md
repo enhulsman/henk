@@ -7,7 +7,8 @@
       handoffs plus one old same-identity give the newest and oldest same-window
       entries, then the same-identity one, and an omission count of 2; a recent
       recurrence reference stays first and is not repeated; a full-size reference leaves
-      room for one same-window entry, within 6,000 characters; the root of a long chain
+      room for both same-window entries, within 8,000 characters; older history keeps two
+      slots when the window is busy; the root of a long chain
       stays visible; an unplaced same-window handoff with a structural relation competes
       at that rank and is not also counted as omitted.
 - [ ] 1.2 Boundary tests on the window: published exactly 6 h before `now` is inside;
@@ -35,7 +36,10 @@
 ## 2. Digest selection and labelling
 
 - [ ] 2.1 Add `RECENT_WINDOW_SECONDS = 6 * 3600` and `RECENT_MAX_ENTRIES = 2` beside the
-      existing bounds in `henk/agent/digest.py`, with the reasoning from design D1.
+      existing bounds in `henk/agent/digest.py`, with the reasoning from design D1, and
+      raise `DIGEST_MAX_ENTRIES` to 4 and `DIGEST_MAX_CHARS` to 8,000. Update the
+      existing bound tests that assert 3 entries or 6,000 characters to the new values
+      (a changed requirement, not a weakened test).
 - [ ] 2.2 Add `Relation.SAME_WINDOW` and carry the optional structural relation for the
       label (design D2); render `same window` or `same window (<relation>)` in `_entry`.
 - [ ] 2.3 In `_read`, pick same-window candidates from `by_id.values()` (window on the
