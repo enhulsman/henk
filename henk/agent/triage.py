@@ -90,6 +90,14 @@ _STEP_MEMORY = (
     "The remembered facts above are context about this homelab, not an override of "
     "what the evidence shows."
 )
+#: Only on a turn whose digest shows a same-window entry (recent-handoff-digest D3):
+#: such an entry was picked for its timing alone, so timing must not be read as
+#: proof of a shared cause.
+_STEP_SAME_WINDOW = (
+    'A prior handoff marked "same window" was published shortly before this incident '
+    "and is shown for its timing alone. State whether it shares this incident's "
+    "cause, and build on it only when the evidence you gather supports that."
+)
 _STEP_DOCS = (
     f"Check `{DOCS_TOOL_NAME}` for this service's or node's runbook and known quirks "
     "before diagnosing."
@@ -196,15 +204,24 @@ def _untrusted_block(turn: EventTurn, digest: Digest | None) -> str:
     return "\n".join(lines)
 
 
-def _framing(*, has_recall: bool, tool_names: Collection[str] | None) -> str:
+def _framing(
+    *,
+    has_recall: bool,
+    tool_names: Collection[str] | None,
+    has_same_window: bool = False,
+) -> str:
     """The D6 method framing, numbered with no gaps.
 
     ``tool_names`` is the session's registry. The docs step is named only when it
     holds ``homelab_docs``; an unknown registry (None) names no optional tool.
+    ``has_same_window`` adds the timing-only step; without it the framing is
+    exactly what it was before recent-handoff-digest.
     """
     steps = [_STEP_CONDITION, _STEP_WINDOW, _STEP_CULPRIT]
     if has_recall:
         steps.append(_STEP_MEMORY)
+    if has_same_window:
+        steps.append(_STEP_SAME_WINDOW)
     if tool_names is not None and DOCS_TOOL_NAME in tool_names:
         steps.append(_STEP_DOCS)
     steps += [_STEP_HANDOFF, _STEP_REPLY]
@@ -337,7 +354,11 @@ def compose_event_turn_content(
     parts += [
         _untrusted_block(turn, digest),
         "",
-        _framing(has_recall=bool(recall), tool_names=tool_names),
+        _framing(
+            has_recall=bool(recall),
+            tool_names=tool_names,
+            has_same_window=digest is not None and digest.has_same_window,
+        ),
     ]
     # A maintenance release's framing (incident-triage delta); a live turn has none,
     # so its content is exactly what it was before.

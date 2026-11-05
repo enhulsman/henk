@@ -26,6 +26,8 @@ from henk.agent.digest import (
     DIGEST_MAX_CHARS,
     DIGEST_MAX_ENTRIES,
     DIGEST_RECURRENCE_MAX_CHARS,
+    RECENT_MAX_ENTRIES,
+    RECENT_WINDOW_SECONDS,
     Digest,
     Relation,
     RefState,
@@ -288,12 +290,12 @@ def test_ranking_and_bounds_hold():
     )
     digest = render_digest(related=related, now=NOW)
     headers = _entry_headers(digest.text)
-    assert len(headers) == DIGEST_MAX_ENTRIES == 3
-    assert digest.shown_ids == (6, 5, 3)
+    assert len(headers) == DIGEST_MAX_ENTRIES == 4
+    assert digest.shown_ids == (6, 5, 3, 4)
     assert ["same identity" in headers[0], "same identity" in headers[1],
-            "same rule" in headers[2]] == [True, True, True]
-    assert digest.omitted == 3
-    assert "[related handoffs omitted to stay within the digest's bounds: 3]" in digest.text
+            "same rule" in headers[2], "same rule" in headers[3]] == [True] * 4
+    assert digest.omitted == 2
+    assert "[related handoffs omitted to stay within the digest's bounds: 2]" in digest.text
     assert len(digest.text) <= DIGEST_MAX_CHARS
 
 
@@ -316,35 +318,36 @@ def test_an_excerpt_within_its_bound_is_shown_whole_and_not_marked():
 
 
 def test_long_entries_are_dropped_whole_and_counted_rather_than_cut():
-    # Five same-identity handoffs, each over the excerpt bound: the newest three are
+    # Five same-identity handoffs, each over the excerpt bound: the newest four are
     # shown at exactly 1,200 characters each, and the rest are counted, not cut.
     related = rank_related(
         [_same_identity(i, age_days=i, document=f"{i}" * 3_000) for i in range(1, 6)],
         _context(),
     )
     digest = render_digest(related=related, now=NOW)
-    assert digest.shown_ids == (1, 2, 3)
-    assert digest.omitted == 2
-    for i in (1, 2, 3):
+    assert digest.shown_ids == (1, 2, 3, 4)
+    assert digest.omitted == 1
+    for i in (1, 2, 3, 4):
         assert re.search(rf"(?m)^{i}{{1200}}$", digest.text)
     assert len(digest.text) <= DIGEST_MAX_CHARS
 
 
 def test_a_smaller_later_entry_still_fills_the_remaining_budget():
-    # The recurrence reference leaves ~1,700 characters. A 1,200-character excerpt
-    # of the next-ranked handoff fits once; the third (also long) does not, and a
-    # short fourth still does.
+    # The recurrence reference leaves ~3,700 characters. Two 1,200-character
+    # excerpts of the next-ranked handoffs fit; the third (also long) does not, and
+    # a short fourth still does.
     reference = _same_identity(1, document="R" * 9_000)
     related = rank_related(
         [
             _same_identity(2, age_days=2, document="A" * 3_000),
             _same_identity(3, age_days=3, document="B" * 3_000),
-            _same_rule(4, age_days=4, document="short one"),
+            _same_identity(4, age_days=4, document="C" * 3_000),
+            _same_rule(5, age_days=5, document="short one"),
         ],
         _context(),
     )
     digest = render_digest(related=related, recurrence=reference, now=NOW)
-    assert digest.shown_ids == (1, 2, 4)
+    assert digest.shown_ids == (1, 2, 3, 5)
     assert digest.omitted == 1
     assert len(digest.text) <= DIGEST_MAX_CHARS
 
@@ -370,86 +373,89 @@ def test_the_recurrence_reference_counts_toward_the_total():
     assert "[excerpt shortened: 4000 of 9000 characters shown]" in text
     # The whole rendered digest, header, entry headers and markers included.
     assert text.startswith(PRIOR_HANDOFFS_HEADER)
-    assert len(text) <= DIGEST_MAX_CHARS == 6_000
-    # At most one short other fits beside it; the rest are counted as omitted.
-    assert len(digest.shown_ids) == 2
-    assert digest.omitted == 2
-    assert text.endswith("[related handoffs omitted to stay within the digest's bounds: 2]")
+    assert len(text) <= DIGEST_MAX_CHARS == 8_000
+    # Two full-size others fit beside it; the third is counted as omitted.
+    assert len(digest.shown_ids) == 3
+    assert digest.omitted == 1
+    assert text.endswith("[related handoffs omitted to stay within the digest's bounds: 1]")
 
 
 def test_the_total_counts_every_rendered_character():
-    # The excerpts alone (4,000 + 1,000 + 950 = 5,950) are within 6,000; with the
-    # digest header, the entry headers and the omission marker they are not. A
-    # digest that counted only excerpts would show all three and exceed the bound.
+    # The excerpts alone (4,000 + 1,200 + 1,200 + 1,150 = 7,550) are within 8,000;
+    # with the digest header, the entry headers and the omission marker they are
+    # not. A digest that counted only excerpts would show all four and exceed it.
     reference = _same_identity(1, document="R" * 4_000)
     related = rank_related(
-        [_same_identity(2, age_days=2, document="z" * 1_000),
-         _same_identity(3, age_days=3, document="w" * 950)],
+        [_same_identity(2, age_days=2, document="z" * 1_200),
+         _same_identity(3, age_days=3, document="w" * 1_200),
+         _same_identity(4, age_days=4, document="v" * 1_150)],
         _context(),
     )
     digest = render_digest(related=related, recurrence=reference, now=NOW)
     assert len(digest.text) <= DIGEST_MAX_CHARS
-    assert digest.shown_ids == (1, 2)
+    assert digest.shown_ids == (1, 2, 3)
     assert digest.omitted == 1
 
 
-def _three(s2: int, s3: int, *extra: RetainedHandoff):
-    """A 4,000-character reference and two short others, sized ``s2`` and ``s3``."""
+def _four(s3: int, s4: int, *extra: RetainedHandoff):
+    """A 4,000-character reference, a 1,200-character other, and two more sized
+    ``s3`` and ``s4``: the entry bound's worth."""
     reference = _same_identity(1, document="R" * 4_000)
     related = rank_related(
-        [_same_identity(2, age_days=2, document="a" * s2),
-         _same_identity(3, age_days=3, document="b" * s3), *extra],
+        [_same_identity(2, age_days=2, document="a" * DIGEST_ENTRY_MAX_CHARS),
+         _same_identity(3, age_days=3, document="b" * s3),
+         _same_identity(4, age_days=4, document="c" * s4), *extra],
         _context(),
     )
     return reference, related
 
 
-def _rendered_len(s2: int, s3: int) -> int:
-    """The length of the three-entry digest with no bound applied."""
-    reference, related = _three(s2, s3)
+def _rendered_len(s3: int, s4: int) -> int:
+    """The length of the four-entry digest with no bound applied."""
+    reference, related = _four(s3, s4)
     digest = render_digest(related=related, recurrence=reference, now=NOW,
                            max_chars=10**9)
-    assert digest.shown_ids == (1, 2, 3)
+    assert digest.shown_ids == (1, 2, 3, 4)
     return len(digest.text)
 
 
 def _sizes_rendering_to(total: int) -> tuple[int, int]:
-    s3 = 700 + total - _rendered_len(700, 700)
-    assert 0 < s3 <= DIGEST_ENTRY_MAX_CHARS
-    assert _rendered_len(700, s3) == total
-    return 700, s3
+    s4 = 1_000 + total - _rendered_len(1_000, 1_000)
+    assert 0 < s4 <= DIGEST_ENTRY_MAX_CHARS
+    assert _rendered_len(1_000, s4) == total
+    return 1_000, s4
 
 
 def test_a_digest_rendering_to_exactly_the_bound_is_shown_whole():
-    reference, related = _three(*_sizes_rendering_to(DIGEST_MAX_CHARS))
+    reference, related = _four(*_sizes_rendering_to(DIGEST_MAX_CHARS))
     digest = render_digest(related=related, recurrence=reference, now=NOW)
-    assert digest.shown_ids == (1, 2, 3)
+    assert digest.shown_ids == (1, 2, 3, 4)
     assert digest.omitted == 0
     assert len(digest.text) == DIGEST_MAX_CHARS
 
 
 def test_one_rendered_character_over_the_bound_omits_the_last_entry():
     # Headers and markers are what tip it over: counting only excerpts, or leaving
-    # out the digest header, would keep the third entry.
-    reference, related = _three(*_sizes_rendering_to(DIGEST_MAX_CHARS + 1))
+    # out the digest header, would keep the fourth entry.
+    reference, related = _four(*_sizes_rendering_to(DIGEST_MAX_CHARS + 1))
     digest = render_digest(related=related, recurrence=reference, now=NOW)
-    assert digest.shown_ids == (1, 2)
+    assert digest.shown_ids == (1, 2, 3)
     assert digest.omitted == 1
     assert len(digest.text) <= DIGEST_MAX_CHARS
 
 
 def test_the_omission_marker_is_counted_in_the_total():
-    # Three entries render to exactly 6,000; a fourth related handoff means the
+    # Four entries render to exactly 8,000; a fifth related handoff means the
     # digest must state an omission, and the marker must fit too. Room for it is
-    # made by dropping the third entry, whose place the short fourth then takes.
-    s2, s3 = _sizes_rendering_to(DIGEST_MAX_CHARS)
-    reference, related = _three(s2, s3, _same_identity(4, age_days=4, document="c"))
+    # made by dropping the fourth entry, whose place the short fifth then takes.
+    s3, s4 = _sizes_rendering_to(DIGEST_MAX_CHARS)
+    reference, related = _four(s3, s4, _same_identity(5, age_days=5, document="d"))
     digest = render_digest(related=related, recurrence=reference, now=NOW)
     assert len(digest.text) <= DIGEST_MAX_CHARS
     assert digest.text.endswith(
         "[related handoffs omitted to stay within the digest's bounds: 1]"
     )
-    assert digest.shown_ids == (1, 2, 4)
+    assert digest.shown_ids == (1, 2, 3, 5)
 
 
 def test_a_recurrence_reference_is_not_repeated_as_a_related_entry(tmp_path: Path):
@@ -462,6 +468,9 @@ def test_a_recurrence_reference_is_not_repeated_as_a_related_entry(tmp_path: Pat
     assert digest.text.count("THE-REFERENCE") == 1
     assert digest.omitted == 0
     assert "omitted" not in digest.text
+    # Published 2 h ago, inside the window, and still not repeated as same-window.
+    assert "same window" not in digest.text
+    assert digest.has_same_window is False
 
 
 # --- 8.1 The digest is labelled and delimited as untrusted --------------------------
@@ -750,32 +759,39 @@ def test_a_storm_names_each_ref_once_and_marks_one_reference(tmp_path: Path):
 
 
 def test_each_ref_is_described_by_what_the_digest_actually_rendered(tmp_path: Path):
-    # Three recurring identities, three retained handoffs, each long: the first is
-    # the reference, the second fits beside it at 1,200 characters, the third does
-    # not fit and must not be presented as though its content were shown.
+    # Four recurring identities, four retained handoffs, each long: the first is
+    # the reference, the next two fit beside it at 1,200 characters, the fourth
+    # does not fit and must not be presented as though its content were shown.
+    # Published 7-10 h ago, outside the same window, so ranking alone places them.
     archive = _archive(tmp_path)
     subject_c = _grafana(
         "HenkDiskFull", {"identity_scope": "host", "host": "host-c.example"}, eid="e3"
     )
-    keys = [derive_identity(e).key for e in (SUBJECT_A, SUBJECT_B, subject_c)]
-    for n, (key, age) in enumerate(zip(keys, (1, 2, 3)), 1):
+    subject_d = _grafana(
+        "HenkDiskFull", {"identity_scope": "host", "host": "host-d.example"}, eid="e4"
+    )
+    subjects = (SUBJECT_A, SUBJECT_B, subject_c, subject_d)
+    keys = [derive_identity(e).key for e in subjects]
+    for n, (key, age) in enumerate(zip(keys, (7, 8, 9, 10)), 1):
         _retain(archive, f"{n}" * 9_000, identity=key, rule=RULE,
                 message_id=f"hf-{n}", at=NOW - age * 3600)
     turn = _turn(*(
         _item(e, recurrence=True, ref=format_handoff_result(f"hf-{n}"))
-        for n, e in enumerate((SUBJECT_A, SUBJECT_B, subject_c), 1)
+        for n, e in enumerate(subjects, 1)
     ))
     digest = read_digest(archive, turn)
     assert [(r.message_id, r.state) for r in digest.refs] == [
         ("hf-1", RefState.REFERENCE), ("hf-2", RefState.SHOWN),
-        ("hf-3", RefState.OMITTED),
+        ("hf-3", RefState.SHOWN), ("hf-4", RefState.OMITTED),
     ]
-    assert len(digest.shown_ids) == 2
+    assert len(digest.shown_ids) == 3
+    assert digest.has_same_window is False
     note = _compose(turn, digest).split("\nRecurrence:", 1)[1]
     assert "prior handoff hf-1 is the recurrence reference" in note
     assert "prior handoff hf-2 is shown in the prior-handoffs digest" in note
-    assert "prior handoff hf-3 is retained, but the digest's bounds left it out" in note
-    assert "3" * 50 not in note
+    assert "prior handoff hf-3 is shown in the prior-handoffs digest" in note
+    assert "prior handoff hf-4 is retained, but the digest's bounds left it out" in note
+    assert "4" * 50 not in note
 
 
 def test_the_recurrence_ref_in_the_note_is_neutralised():
@@ -821,3 +837,374 @@ def test_a_digest_read_failure_is_logged_and_yields_no_digest(fail_on, caplog):
     assert "could not be read" in note
     assert "not available" in note
     assert "build on" not in note.lower()
+
+
+# --- recent-handoff-digest: the same window ------------------------------------------
+#
+# From `specs/triage-handoff` (the same-window relation and its slot rule) and
+# `specs/incident-triage` (*A same-window handoff is framed as timing only, only when
+# shown*) in openspec/changes/recent-handoff-digest, design D1-D3a.
+
+MINUTE = 60.0
+HOUR = 3600.0
+#: The framing step a same-window entry adds (design D3), matched by its opening.
+SAME_WINDOW_STEP = 'A prior handoff marked "same window"'
+
+
+class _ListArchive:
+    """An archive over fixed rows, read the way :class:`HandoffStore` reads."""
+
+    def __init__(self, *handoffs: RetainedHandoff, now: float = NOW) -> None:
+        self.handoffs = list(handoffs)
+        self.store = SimpleNamespace(clock=lambda: now)
+
+    def eligible(self, now=None):
+        return sorted(self.handoffs, key=lambda h: (-h.published_at, -h.id))
+
+    def find_by_message_ref(self, ref, now=None):
+        from henk.store.handoffs import parse_handoff_message_id
+
+        mid = parse_handoff_message_id(ref)
+        return next((h for h in self.eligible() if h.message_id == mid), None)
+
+
+def _ago(handoff: RetainedHandoff, seconds: float) -> RetainedHandoff:
+    return RetainedHandoff(**{**handoff.__dict__, "published_at": NOW - seconds})
+
+
+def _recent_unrelated(hid: int, seconds: float, **kw) -> RetainedHandoff:
+    return _ago(_unrelated(hid, **kw), seconds)
+
+
+def test_a_recent_handoff_outranks_older_same_identity_history():
+    """*A recent handoff outranks older same-identity history*."""
+    old = [_same_identity(i, age_days=22, document=f"OLD-{i}") for i in (1, 2, 3)]
+    old[0] = _ago(old[0], 22 * DAY + 2 * MINUTE)  # a strict order among the three
+    old[2] = _ago(old[2], 22 * DAY - 2 * MINUTE)
+    recent = _ago(_same_node(9, document="RECENT-NODE"), 5 * MINUTE)
+    digest = read_digest(_ListArchive(*old, recent), _turn())
+    headers = _entry_headers(digest.text)
+    assert digest.shown_ids == (9, 3, 2, 1)
+    assert "relation=same window (same node) " in headers[0]
+    assert all("relation=same identity " in h for h in headers[1:])
+    assert digest.omitted == 0
+    assert digest.has_same_window is True
+
+
+def test_a_recent_handoff_with_no_structural_relation_is_shown():
+    """*A recent handoff with no structural relation is shown*."""
+    digest = read_digest(
+        _ListArchive(_recent_unrelated(4, 2 * HOUR + 40 * MINUTE, document="NIGHT")),
+        _turn(),
+    )
+    [header] = _entry_headers(digest.text)
+    assert "relation=same window published=" in header
+    assert "age=2h40m" in header
+    assert "NIGHT" in digest.text
+    assert digest.shown_ids == (4,)
+    assert digest.has_same_window is True
+
+
+def test_a_handoff_outside_the_window_gets_no_same_window_place():
+    """*A handoff outside the window gets no same-window place*."""
+    archive = _ListArchive(_recent_unrelated(4, 6 * HOUR + MINUTE, document="TOO-OLD"))
+    turn = _turn()
+    digest = read_digest(archive, turn)
+    assert digest.text is None and digest.shown_ids == ()
+    assert digest.has_same_window is False
+    content = _compose(turn, digest)
+    assert PRIOR_HANDOFFS_HEADER not in content
+    assert "TOO-OLD" not in content
+
+
+def test_same_window_entries_leave_room_for_history():
+    """*Same-window entries leave room for history*."""
+    recent = [
+        _recent_unrelated(hid, age) for hid, age in
+        ((11, 30 * MINUTE), (12, HOUR), (13, 2 * HOUR), (14, 3 * HOUR))
+    ]
+    old = _same_identity(1, age_days=10)
+    digest = read_digest(_ListArchive(*recent, old), _turn())
+    assert digest.shown_ids == (11, 14, 1)
+    headers = _entry_headers(digest.text)
+    assert "relation=same window published=" in headers[0]
+    assert "relation=same window published=" in headers[1]
+    assert "relation=same identity " in headers[2]
+    assert digest.omitted == 2
+    assert digest.text.endswith(
+        "[related handoffs omitted to stay within the digest's bounds: 2]"
+    )
+
+
+def test_older_history_keeps_two_slots_when_the_window_is_busy():
+    """*Older history keeps two slots when the window is busy*."""
+    recent = [_recent_unrelated(11, 20 * MINUTE), _recent_unrelated(12, 4 * HOUR)]
+    old = [
+        _same_identity(hid, age_days=days, document="h" * 1_000)
+        for hid, days in ((1, 3), (2, 5), (3, 8))
+    ]
+    digest = read_digest(_ListArchive(*recent, *old), _turn())
+    assert digest.shown_ids == (11, 12, 1, 2)
+    assert digest.omitted == 1
+    assert len(digest.text) <= DIGEST_MAX_CHARS
+
+
+def test_the_recurrence_reference_stays_first_and_is_not_repeated():
+    """*The recurrence reference stays first and is not repeated*."""
+    reference = _ago(
+        _same_identity(1, document="REF-" + "r" * 996, message_id="hf-1"), HOUR
+    )
+    others = [
+        _recent_unrelated(11, 30 * MINUTE, document="o" * 1_000),
+        _recent_unrelated(12, 2 * HOUR, document="p" * 1_000),
+    ]
+    turn = _turn(_item(SUBJECT_A, recurrence=True, ref=format_handoff_result("hf-1")))
+    digest = read_digest(_ListArchive(reference, *others), turn)
+    assert digest.shown_ids == (1, 11, 12)
+    headers = _entry_headers(digest.text)
+    assert "relation=recurrence reference " in headers[0]
+    assert all("relation=same window" in h for h in headers[1:])
+    assert digest.text.count("REF-") == 1
+    assert digest.omitted == 0
+    assert [(r.message_id, r.state) for r in digest.refs] == [("hf-1", RefState.REFERENCE)]
+
+
+def _long_identities(base: str) -> tuple[str, ...]:
+    return (base, *(f"gatus:svc/endpoint-{i:03d}" for i in range(40)))
+
+
+def test_a_full_size_recurrence_reference_leaves_room_for_both_same_window_entries():
+    """*A full-size recurrence reference leaves room for both same-window entries*,
+    with every header at its worst case: a full identity list."""
+    def long(h: RetainedHandoff) -> RetainedHandoff:
+        return RetainedHandoff(**{
+            **h.__dict__, "identity_keys": _long_identities(h.identity_keys[0]),
+        })
+
+    reference = long(_ago(
+        _same_identity(1, document="R" * 9_000, message_id="hf-1"), 5 * HOUR
+    ))
+    others = [
+        long(_recent_unrelated(hid, age, document=f"{hid}" * 3_000))
+        for hid, age in ((11, 20 * MINUTE), (12, 2 * HOUR), (13, 4 * HOUR))
+    ]
+    history = long(_same_identity(2, age_days=5, document="H" * 3_000))
+    turn = _turn(_item(SUBJECT_A, recurrence=True, ref=format_handoff_result("hf-1")))
+    digest = read_digest(_ListArchive(reference, *others, history), turn)
+    assert digest.shown_ids == (1, 11, 13)
+    assert len(digest.text) <= DIGEST_MAX_CHARS == 8_000
+    assert digest.omitted == 2
+    assert digest.text.endswith(
+        "[related handoffs omitted to stay within the digest's bounds: 2]"
+    )
+
+
+def test_the_root_of_a_long_chain_stays_visible():
+    """*The root of a long chain stays visible*."""
+    chain = [
+        _recent_unrelated(21, 2 * HOUR + 40 * MINUTE, document="ROOT"),
+        _recent_unrelated(22, HOUR + 25 * MINUTE, document="MIDDLE"),
+        _recent_unrelated(23, 35 * MINUTE, document="LATEST"),
+    ]
+    digest = read_digest(_ListArchive(*chain), _turn())
+    assert digest.shown_ids == (23, 21)
+    assert "MIDDLE" not in digest.text
+    assert digest.omitted == 1
+    assert digest.text.endswith(
+        "[related handoffs omitted to stay within the digest's bounds: 1]"
+    )
+
+
+def test_an_unplaced_same_window_handoff_competes_at_its_structural_rank():
+    # Four in the window: the newest and the oldest are placed. Of the two between,
+    # the same-rule one competes at its rank (after the older same-identity one) and
+    # is labelled by that rank alone; the unrelated one is counted as omitted, once.
+    newest = _recent_unrelated(11, 10 * MINUTE)
+    middle_rule = _ago(_same_rule(12, document="MIDDLE-RULE"), HOUR)
+    middle_none = _recent_unrelated(13, 2 * HOUR, document="MIDDLE-NONE")
+    oldest = _recent_unrelated(14, 3 * HOUR)
+    history = _same_identity(1, age_days=5)
+    digest = read_digest(
+        _ListArchive(newest, middle_rule, middle_none, oldest, history), _turn()
+    )
+    assert digest.shown_ids == (11, 14, 1, 12)
+    headers = _entry_headers(digest.text)
+    assert "relation=same rule " in headers[3]
+    assert "MIDDLE-NONE" not in digest.text
+    assert digest.omitted == 1
+
+
+def test_a_same_window_entry_keeps_its_best_structural_relation_in_the_label():
+    digest = read_digest(_ListArchive(_ago(_same_identity(1), HOUR)), _turn())
+    [header] = _entry_headers(digest.text)
+    assert "relation=same window (same identity) " in header
+
+
+def test_the_bounds_are_four_entries_and_eight_thousand_characters():
+    assert (DIGEST_MAX_ENTRIES, DIGEST_MAX_CHARS) == (4, 8_000)
+    assert (DIGEST_ENTRY_MAX_CHARS, DIGEST_RECURRENCE_MAX_CHARS) == (1_200, 4_000)
+    assert (RECENT_WINDOW_SECONDS, RECENT_MAX_ENTRIES) == (6 * 3600, 2)
+
+
+# --- 1.2 Window boundaries ------------------------------------------------------------
+
+
+def test_a_handoff_published_exactly_six_hours_ago_is_inside_the_window(tmp_path: Path):
+    archive = _archive(tmp_path)
+    _retain(archive, "EDGE", identity="gatus:svc/web", rule="gatus:svc/web",
+            nodes=("rp2",), at=NOW - RECENT_WINDOW_SECONDS)
+    digest = read_digest(archive, _turn())
+    [header] = _entry_headers(digest.text)
+    assert "relation=same window published=" in header
+    assert "age=6h0m" in header
+
+
+def test_a_handoff_published_after_now_is_not_same_window(tmp_path: Path):
+    # Clock skew: a row stamped later than the read. It is not "recent"; with a
+    # structural relation it is shown at that rank, with an age of 0m, never negative.
+    archive = _archive(tmp_path)
+    _retain(archive, "SKEWED-UNRELATED", identity="gatus:svc/web", rule="gatus:svc/web",
+            nodes=("rp2",), message_id="hf-a", at=NOW + 5 * MINUTE)
+    assert read_digest(archive, _turn()).text is None
+    _retain(archive, "SKEWED-RELATED", identity=IDENTITY_A, rule=RULE,
+            message_id="hf-b", at=NOW + 5 * MINUTE)
+    digest = read_digest(archive, _turn())
+    [header] = _entry_headers(digest.text)
+    assert "relation=same identity " in header
+    assert "age=0m" in header and "age=-" not in header
+    assert digest.has_same_window is False
+
+
+# --- 1.4 The night of 2026-11-05 -------------------------------------------------------
+#
+# Rebuilt from the audit log's shape, placeholder ids and text only. Times are CET
+# (UTC+1): 03:54 CET is 02:54Z.
+
+NIGHT = 1_793_836_800.0  # 2026-11-05T00:00:00Z
+OUTAGE_AT = NIGHT + 2 * HOUR + 54 * MINUTE  # 03:54 CET
+BACKUP_AT = NIGHT + 2 * HOUR + 59 * MINUTE  # 03:59 CET
+DNS_AT = NIGHT + 5 * HOUR + 36 * MINUTE  # 06:36 CET
+
+BACKUP_EVENT = _grafana("HenkBackupFreshness", {"node": "rp5"}, eid="backup")
+DNS_EVENT = _event("Gatus: vps/dns", "endpoint dns-vps has been triggered", eid="dns")
+
+
+def _night_archive(tmp_path: Path) -> tuple[HandoffStore, dict[str, int]]:
+    archive = _archive(tmp_path)
+    backup_key = derive_identity(BACKUP_EVENT).key
+    dns_key = derive_identity(DNS_EVENT).key
+    ids: dict[str, int] = {}
+    for n in range(3):  # 13 October: three same-identity backup handoffs
+        ids[f"oct-{n}"] = _retain(
+            archive, f"OCT-BACKUP-{n}", identity=backup_key, rule=backup_key,
+            nodes=("rp5",), message_id=f"hf-oct-{n}", at=BACKUP_AT - 22 * DAY + n * 60,
+        ).id
+    ids["old-dns"] = _retain(
+        archive, "OLD-VPS-DNS", identity=dns_key, rule=dns_key, nodes=("vps",),
+        message_id="hf-old-dns", at=DNS_AT - 30 * DAY,
+    ).id
+    ids["outage"] = _retain(
+        archive, "OUTAGE: home site offline", identity="grafana:HenkInstanceDown",
+        rule="grafana:HenkInstanceDown", nodes=("rp5", "rp2"), message_id="hf-outage",
+        at=OUTAGE_AT,
+    ).id
+    return archive, ids
+
+
+def test_the_backup_triage_of_2026_11_05_sees_the_outage_handoff_first(tmp_path: Path):
+    archive, ids = _night_archive(tmp_path)
+    digest = read_digest(archive, _turn(_item(BACKUP_EVENT)), now=BACKUP_AT)
+    assert digest.shown_ids[0] == ids["outage"]
+    [first, *_] = _entry_headers(digest.text)
+    assert "relation=same window (same node) " in first
+    assert "age=5m" in first
+
+
+def test_the_vps_dns_triage_of_2026_11_05_sees_the_nights_handoffs_first(tmp_path: Path):
+    archive, ids = _night_archive(tmp_path)
+    backup = _retain(
+        archive, "BACKUP: rsync could not reach the vps",
+        identity=derive_identity(BACKUP_EVENT).key,
+        rule=derive_identity(BACKUP_EVENT).key, nodes=("rp5",), message_id="hf-backup", at=BACKUP_AT,
+    )
+    digest = read_digest(archive, _turn(_item(DNS_EVENT)), now=DNS_AT)
+    assert digest.shown_ids[:2] == (backup.id, ids["outage"])
+    assert ids["old-dns"] in digest.shown_ids[2:]
+    headers = _entry_headers(digest.text)
+    assert "age=2h37m" in headers[0] and "age=2h42m" in headers[1]
+    assert all("relation=same window published=" in h for h in headers[:2])
+
+
+# --- 1.5 The framing step follows what the digest showed ----------------------------
+
+
+def test_the_framing_carries_the_same_window_step_only_when_shown():
+    """*A same-window handoff is framed as timing only, only when shown*."""
+    turn = _turn()
+    recall = render_recall_block([_Mem("a fact")]).text
+    tools = TOOLS | {"homelab_docs"}
+    with_window = read_digest(_ListArchive(_recent_unrelated(4, HOUR)), turn)
+    structural = read_digest(_ListArchive(_same_identity(1, age_days=3)), turn)
+    assert with_window.has_same_window and not structural.has_same_window
+
+    framed = _after_block(_compose(turn, with_window, recall=recall, tool_names=tools))
+    plain = _after_block(_compose(turn, structural, recall=recall, tool_names=tools))
+    baseline = _after_block(_compose(turn, None, recall=recall, tool_names=tools))
+    # Without a same-window entry the framing is exactly what it was before.
+    assert plain == baseline
+    assert SAME_WINDOW_STEP not in plain
+    # With one, the step sits after the memory step and before the docs step.
+    assert framed.count(SAME_WINDOW_STEP) == 1
+    step = framed[framed.index(SAME_WINDOW_STEP):].splitlines()[0]
+    assert "for its timing alone" in step
+    assert "shares this incident's cause" in step
+    order = [framed.index("remembered facts"), framed.index(SAME_WINDOW_STEP),
+             framed.index("homelab_docs")]
+    assert order == sorted(order)
+    # Numbered with no gaps: one more step than the plain framing.
+    numbers = re.findall(r"(?m)^(\d+)\. ", framed)
+    assert numbers == [str(i) for i in range(1, len(numbers) + 1)]
+    assert len(numbers) == len(re.findall(r"(?m)^(\d+)\. ", plain)) + 1
+
+
+def test_a_same_window_entry_omitted_for_size_does_not_add_the_step():
+    # has_same_window follows what was rendered, not what was selected: the
+    # reference fits, the same-window entry after it does not.
+    reference = _same_identity(1, document="short reference")
+    huge = _ago(_unrelated(4, document="x" * 2_000), HOUR)
+    alone = render_digest(related=[], recurrence=reference, now=NOW)
+    digest = render_digest(related=[], recurrence=reference, same_window=[(huge, None)],
+                           now=NOW, max_chars=len(alone.text) + 100)
+    assert digest.shown_ids == (1,)
+    assert digest.omitted == 1
+    assert digest.has_same_window is False
+    assert SAME_WINDOW_STEP not in _compose(_turn(), digest)
+
+
+@pytest.mark.parametrize("extra", [9, 10, 99, 100])
+def test_the_marker_reserve_holds_whatever_the_unplaced_count(extra):
+    # The reserve is sized for the count the marker will state, unplaced handoffs
+    # included: when that count gains a digit, a reserve sized without them would
+    # let an entry fill the budget exactly and the marker overrun it by one.
+    entry = _same_identity(1, document="e" * 500)
+    one = render_digest(related=[(entry, Relation.SAME_IDENTITY)], now=NOW,
+                        max_chars=10**9)
+    for max_chars in range(len(one.text), len(one.text) + 80):
+        digest = render_digest(related=[(entry, Relation.SAME_IDENTITY)],
+                               extra_omitted=extra, now=NOW, max_chars=max_chars)
+        assert digest.text is None or len(digest.text) <= max_chars, max_chars
+
+
+def test_an_unplaced_same_window_count_is_budgeted_in_the_marker():
+    # Four entries render to exactly 8,000 and none of them is omitted; the only
+    # omission is a same-window handoff left out before rendering. Its marker must
+    # still fit, so room is made for it (D3a), never appended past the bound.
+    reference, related = _four(*_sizes_rendering_to(DIGEST_MAX_CHARS))
+    digest = render_digest(related=related, recurrence=reference, extra_omitted=1,
+                           now=NOW)
+    assert len(digest.text) <= DIGEST_MAX_CHARS
+    assert digest.shown_ids == (1, 2, 3)
+    assert digest.omitted == 2
+    assert digest.text.endswith(
+        "[related handoffs omitted to stay within the digest's bounds: 2]"
+    )

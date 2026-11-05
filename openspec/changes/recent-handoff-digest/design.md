@@ -138,7 +138,7 @@ are computed from, so eligibility, the window and the rendered ages agree.
   sessions stay tainted (no owner-turn-only writes), and the framing step lowers trust
   in exactly these entries. A forged "same window" label inside a document gains
   nothing, because the real label is in the entry header the application writes.
-- [Old structural history is displaced on a busy night] → at most 2 of 3 slots, and
+- [Old structural history is displaced on a busy night] → at most 2 of 4 slots, and
   the omission marker still counts what was left out.
 - [Prompt size] → a full digest is up to 2,000 characters (about 500 tokens) longer;
   most digests are not full. The framing step is about 50 tokens, only on turns that
