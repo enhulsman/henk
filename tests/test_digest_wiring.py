@@ -119,8 +119,8 @@ async def test_the_record_names_what_history_was_shown(tmp_path: Path):
     content = factory.created[0].contents[0]
     [record] = _sessions(audit)
     shown = record["prior_handoff_ids"]
-    # Three of the five related handoffs, newest first; never the unrelated one.
-    assert shown == [retained[0].id, retained[1].id, retained[2].id]
+    # Four of the five related handoffs, newest first; never the unrelated one.
+    assert shown == [h.id for h in retained[:4]]
     by_id = {h.id: h for h in retained}
     positions = [content.index(by_id[i].document) for i in shown]
     assert positions == sorted(positions)
@@ -143,6 +143,25 @@ async def test_a_triage_with_no_related_history_records_an_empty_list(tmp_path: 
     await core.process(_turn())
     assert PRIOR_HANDOFFS_HEADER not in factory.created[0].contents[0]
     assert _sessions(audit)[0]["prior_handoff_ids"] == []
+
+
+async def test_the_record_names_a_same_window_entry(tmp_path: Path):
+    """*The record names what history was shown*, including a same-window entry:
+    a handoff related by nothing but its timing (recent-handoff-digest)."""
+    archive = HandoffStore(_store(tmp_path))
+    recent = _retain(archive, "NIGHT-OUTAGE", at=T0 - 2 * HOUR, identity="gatus:svc/web",
+                     rule="gatus:svc/web", nodes=("rp2",))
+    older = _retain(archive, "PRIOR-SAME", at=T0 - 3 * DAY)
+    audit = tmp_path / "audit.jsonl"
+    factory = EventSessionFactory()
+    core = AgentCore(factory, FakeChannel(), clock=make_clock([0]),
+                     audit=AuditLog(audit), handoff_archive=archive)
+    await core.process(_turn())
+    content = factory.created[0].contents[0]
+    assert "relation=same window published=" in content
+    assert content.index("NIGHT-OUTAGE") < content.index("PRIOR-SAME")
+    [record] = _sessions(audit)
+    assert record["prior_handoff_ids"] == [recent.id, older.id]
 
 
 async def test_a_triage_with_no_archive_records_an_empty_list(tmp_path: Path):
@@ -460,6 +479,9 @@ async def test_an_owner_follow_up_in_a_triage_session_is_not_given_the_digest(
     await core.process("tell me more")
     event_content, follow_up = factory.created[0].contents
     assert "RETAINED-HANDOFF" in event_content
+    # An hour old: shown as same-window, so the event turn carries the step.
+    assert "relation=same window (same identity)" in event_content
+    assert 'A prior handoff marked "same window"' in event_content
     assert "RETAINED-HANDOFF" not in follow_up
     assert PRIOR_HANDOFFS_HEADER not in follow_up
     assert archive.reads == reads_after_event

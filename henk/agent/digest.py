@@ -17,8 +17,13 @@ What is load-bearing:
 - **Related**, ranked: the same identity key, then the same rule key, then an
   intersecting node. Each handoff appears once, at its best rank, newest first
   within a rank.
-- **Bounds are module constants** (D17): at most 3 entries, 1,200 characters per
-  excerpt, 4,000 for the recurrence reference, and 6,000 for the whole digest *as
+- **Same window** (recent-handoff-digest D1): a handoff published within
+  :data:`RECENT_WINDOW_SECONDS` before the read is eligible whatever its relation,
+  because timing is the strongest sign of a shared cause and the structural
+  relations ignore it. At most :data:`RECENT_MAX_ENTRIES` are placed, the newest
+  and the oldest in the window, right after the recurrence reference.
+- **Bounds are module constants** (D17): at most 4 entries, 1,200 characters per
+  excerpt, 4,000 for the recurrence reference, and 8,000 for the whole digest *as
   rendered* — header, entry headers, excerpts and every marker. The recurrence
   reference is the first entry and counts toward the total. An entry that does not
   fit is omitted whole and counted, never cut below its excerpt bound.
@@ -42,14 +47,32 @@ from henk.tools.query_renderers import _stamp
 
 logger = logging.getLogger("henk.agent.digest")
 
-#: At most this many entries, the recurrence reference included (D9).
-DIGEST_MAX_ENTRIES = 3
+#: At most this many entries, the recurrence reference included (D9; raised from 3
+#: by recent-handoff-digest, so same-window entries do not push out as much history).
+DIGEST_MAX_ENTRIES = 4
 #: An ordinary entry's excerpt is at most this many characters (D9).
 DIGEST_ENTRY_MAX_CHARS = 1_200
 #: The recurrence reference's excerpt is at most this many characters (D9).
 DIGEST_RECURRENCE_MAX_CHARS = 4_000
-#: The whole digest, as rendered, is at most this many characters (D9).
-DIGEST_MAX_CHARS = 6_000
+#: The whole digest, as rendered, is at most this many characters (D9). Sized by
+#: recent-handoff-digest D1: a full-size recurrence reference (about 4,400 rendered),
+#: two same-window entries with full identity lists (about 1,600 each), the digest
+#: header and the omission marker come to about 7,800. At 7,500 a long header could
+#: drop the oldest same-window entry next to a full-size reference.
+DIGEST_MAX_CHARS = 8_000
+
+#: A handoff published within this many seconds before the digest is read is a
+#: same-window candidate, whatever its relation (recent-handoff-digest D1). Six
+#: hours covers a whole night's incident: on 2026-11-05 the 03:54 outage handoff
+#: was 2h42m old at the 06:36 triage, and the link flapped until about 06:32, so a
+#: three-hour window would have lost a recovery alert half an hour later. Longer
+#: windows start joining unrelated day and night incidents. The window bounds what
+#: is admitted; RECENT_MAX_ENTRIES bounds what is shown.
+RECENT_WINDOW_SECONDS = 6 * 3600
+#: At most this many same-window handoffs are placed: the newest (the chain's
+#: current state) and the oldest (the best single guess at its start). With 4
+#: entries, older history keeps 2 when there is no recurrence reference.
+RECENT_MAX_ENTRIES = 2
 
 #: An entry header's identity list is cut to this many characters. Identity keys
 #: are derived from payload titles, so they are neither short nor trusted; the cut
@@ -64,6 +87,8 @@ class Relation(enum.Enum):
     SAME_IDENTITY = "same identity"
     SAME_RULE = "same rule"
     SAME_NODE = "same node"
+    #: Published within the recent window; placed by its own slot rule, not by rank.
+    SAME_WINDOW = "same window"
 
 
 #: Rank of each relation; lower is better. The recurrence reference is placed
@@ -113,6 +138,9 @@ class Digest:
     omitted: int = 0
     refs: tuple[RecurrenceRef, ...] = ()
     read_failed: bool = False
+    #: At least one same-window entry was *rendered* (one omitted for size does not
+    #: count); the framing adds its timing-only step on this (D3).
+    has_same_window: bool = False
 
 
 EMPTY_DIGEST = Digest()
@@ -186,12 +214,23 @@ def _identities(keys: Sequence[str]) -> str:
     return f"[{joined}]"
 
 
-def _entry(
-    number: int, handoff: RetainedHandoff, relation: Relation, bound: int, now: float
-) -> str:
+def _label(relation: Relation, structural: Relation | None) -> str:
+    """``same window (same node)``: the window selected it, the rest is history (D2)."""
+    if relation is Relation.SAME_WINDOW and structural is not None:
+        return f"{relation.value} ({structural.value})"
+    return relation.value
+
+
+#: One entry to try: the handoff, the relation that selected it, its structural
+#: relation when that is not the selecting one, and its excerpt bound.
+_Candidate = tuple[RetainedHandoff, Relation, "Relation | None", int]
+
+
+def _entry(number: int, candidate: _Candidate, now: float) -> str:
     """One entry: its header line, its excerpt, and a marker if it was shortened."""
+    handoff, relation, structural, bound = candidate
     header = (
-        f"[prior handoff {number}] relation={relation.value} "
+        f"[prior handoff {number}] relation={_label(relation, structural)} "
         f"published={_published(handoff.published_at)} "
         f"age={_age(now - handoff.published_at)} "
         f"nodes=[{', '.join(handoff.nodes)}] "
@@ -210,25 +249,25 @@ def _omission(count: int) -> str:
 
 
 def _fill(
-    candidates: Sequence[tuple[RetainedHandoff, Relation, int]],
+    candidates: Sequence[_Candidate],
     now: float,
     max_chars: int,
     reserve: int,
-) -> tuple[list[str], list[int]]:
+) -> tuple[list[str], list[_Candidate]]:
     """Greedy fill in order: an entry that does not fit is skipped whole."""
     used = len(PRIOR_HANDOFFS_HEADER) + reserve
     parts: list[str] = [PRIOR_HANDOFFS_HEADER]
-    shown: list[int] = []
-    for handoff, relation, bound in candidates:
+    shown: list[_Candidate] = []
+    for candidate in candidates:
         if len(shown) >= DIGEST_MAX_ENTRIES:
             break
-        entry = _entry(len(shown) + 1, handoff, relation, bound, now)
+        entry = _entry(len(shown) + 1, candidate, now)
         cost = 1 + len(entry)  # the newline that joins it
         if used + cost > max_chars:
             continue
         parts.append(entry)
         used += cost
-        shown.append(handoff.id)
+        shown.append(candidate)
     return parts, shown
 
 
@@ -236,15 +275,23 @@ def render_digest(
     *,
     related: Sequence[tuple[RetainedHandoff, Relation]],
     recurrence: RetainedHandoff | None = None,
+    same_window: Sequence[tuple[RetainedHandoff, Relation | None]] = (),
+    extra_omitted: int = 0,
     now: float,
     max_chars: int = DIGEST_MAX_CHARS,
 ) -> Digest:
     """Render the digest within its bounds.
 
     ``recurrence`` is the recurrence reference, placed first at its own excerpt
-    bound; ``related`` is the ranked rest (:func:`rank_related`, which must exclude
-    the reference). Entries are tried in order; one that does not fit what is left
-    is omitted whole and counted, and later, smaller entries may still fit.
+    bound; ``same_window`` are the placed same-window handoffs, newest first, each
+    with its structural relation or None, placed next; ``related`` is the ranked
+    rest (:func:`rank_related`, which must exclude the reference and the placed
+    same-window handoffs). Entries are tried in order; one that does not fit what is
+    left is omitted whole and counted, and later, smaller entries may still fit.
+
+    ``extra_omitted`` counts handoffs left out before rendering (same-window
+    handoffs that were not placed and have no structural rank, D3a). They are
+    counted in the omission marker, and in the room reserved for it.
 
     The budget counts every character rendered. The omission marker is budgeted
     too: when a first fill without it leaves anything out, the fill is redone with
@@ -252,23 +299,34 @@ def render_digest(
     appending it can never push the digest over ``max_chars``. A digest that omits
     nothing reserves nothing.
     """
-    candidates: list[tuple[RetainedHandoff, Relation, int]] = []
+    candidates: list[_Candidate] = []
     if recurrence is not None:
-        candidates.append((recurrence, Relation.RECURRENCE, DIGEST_RECURRENCE_MAX_CHARS))
-    candidates += [(h, rel, DIGEST_ENTRY_MAX_CHARS) for h, rel in related]
+        candidates.append(
+            (recurrence, Relation.RECURRENCE, None, DIGEST_RECURRENCE_MAX_CHARS)
+        )
+    candidates += [
+        (h, Relation.SAME_WINDOW, structural, DIGEST_ENTRY_MAX_CHARS)
+        for h, structural in same_window
+    ]
+    candidates += [(h, rel, None, DIGEST_ENTRY_MAX_CHARS) for h, rel in related]
     if not candidates:
         return EMPTY_DIGEST
 
     parts, shown = _fill(candidates, now, max_chars, reserve=0)
-    if len(shown) < len(candidates):
-        reserve = 1 + len(_omission(len(candidates)))
+    if len(shown) < len(candidates) or extra_omitted:
+        reserve = 1 + len(_omission(len(candidates) + extra_omitted))
         parts, shown = _fill(candidates, now, max_chars, reserve=reserve)
     if not shown:
         return EMPTY_DIGEST
-    omitted = len(candidates) - len(shown)
+    omitted = len(candidates) - len(shown) + extra_omitted
     if omitted:
         parts.append(_omission(omitted))
-    return Digest(text="\n".join(parts), shown_ids=tuple(shown), omitted=omitted)
+    return Digest(
+        text="\n".join(parts),
+        shown_ids=tuple(c[0].id for c in shown),
+        omitted=omitted,
+        has_same_window=any(c[1] is Relation.SAME_WINDOW for c in shown),
+    )
 
 
 # --- Reading -------------------------------------------------------------------------
@@ -335,8 +393,20 @@ def _read(archive: Any, turn: Any, now: float | None) -> Digest:
     # A ref that resolved but is not the reference competes as ordinary history.
     extra = [h for _, h in found if h is not None and h.id not in exclude]
     by_id = {h.id: h for h in [*extra, *eligible]}
-    related = rank_related(by_id.values(), context, exclude_ids=exclude)
-    digest = render_digest(related=related, recurrence=reference, now=at)
+    placed, unplaced = _same_window(by_id.values(), at, exclude)
+    related = rank_related(
+        by_id.values(), context, exclude_ids=exclude | {h.id for h in placed}
+    )
+    # An unplaced one with a structural relation competes at that rank (it is in
+    # ``related``); one without is omitted here, and counted once (D3a).
+    extra_omitted = sum(1 for h in unplaced if relation_of(h, context) is None)
+    digest = render_digest(
+        related=related,
+        recurrence=reference,
+        same_window=[(h, relation_of(h, context)) for h in placed],
+        extra_omitted=extra_omitted,
+        now=at,
+    )
 
     refs: list[RecurrenceRef] = []
     for mid, handoff in found:
@@ -356,4 +426,30 @@ def _read(archive: Any, turn: Any, now: float | None) -> Digest:
         shown_ids=digest.shown_ids,
         omitted=digest.omitted,
         refs=tuple(refs),
+        has_same_window=digest.has_same_window,
     )
+
+
+def _same_window(
+    handoffs: Iterable[RetainedHandoff], now: float, exclude: Collection[int]
+) -> tuple[list[RetainedHandoff], list[RetainedHandoff]]:
+    """``(placed, unplaced)`` same-window handoffs (recent-handoff-digest D1).
+
+    In the window: published at most :data:`RECENT_WINDOW_SECONDS` before ``now``
+    (the boundary inclusive) and not after it, so a row stamped later than the read
+    (clock skew) is not "recent". The recurrence reference (``exclude``) is never a
+    candidate. Placed: the newest and the oldest, newest first.
+    """
+    window = sorted(
+        (
+            h for h in handoffs
+            if h.id not in exclude and 0 <= now - h.published_at <= RECENT_WINDOW_SECONDS
+        ),
+        key=lambda h: (-h.published_at, -h.id),
+    )
+    if len(window) <= RECENT_MAX_ENTRIES:
+        return window, []
+    # Newest plus oldest, so a long chain's start stays visible (D1). Written for
+    # RECENT_MAX_ENTRIES == 2: the newest RECENT_MAX_ENTRIES - 1, then the oldest.
+    placed = [*window[: RECENT_MAX_ENTRIES - 1], window[-1]]
+    return placed, window[RECENT_MAX_ENTRIES - 1 : -1]
